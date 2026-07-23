@@ -1,0 +1,16 @@
+/**
+ * @file GIT.CHERRYPICK
+ * @version 1.0
+ */
+SUBROUTINE GIT.CHERRYPICK
+CM = FIELD(TRIM(SENTENCE()), " ", 3)
+IF CM = "" THEN
+   PRINT "usage: GIT CHERRY-PICK commit"
+   RETURN
+END
+OUT = ""
+CALL GITCHERRYPICK(".recgit", CM, OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
+RETURN

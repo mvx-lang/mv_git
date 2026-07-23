@@ -1,0 +1,12 @@
+/**
+ * @file GIT.BRANCH
+ * @version 1.0
+ */
+SUBROUTINE GIT.BRANCH
+NM = FIELD(TRIM(SENTENCE()), " ", 3)
+OUT = ""
+CALL GITBRANCH(".recgit", NM, OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
+RETURN

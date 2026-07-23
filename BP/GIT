@@ -17,4 +17,8 @@ CALL CMD.ADD("LOG", "commit history", "GIT.LOG")
 CALL CMD.ADD("DIFF", "unstaged record changes {file}", "GIT.DIFF")
 CALL CMD.ADD("SHOW", "committed content of a record (file id)", "GIT.SHOW")
 CALL CMD.ADD("RESTORE", "restore records from HEAD (file)", "GIT.RESTORE")
+CALL CMD.ADD("BRANCH", "list or create a branch (name)", "GIT.BRANCH")
+CALL CMD.ADD("CHECKOUT", "switch branch, update records (name)", "GIT.CHECKOUT")
+CALL CMD.ADD("MERGE", "merge a branch into this one (name)", "GIT.MERGE")
+CALL CMD.ADD("CHERRY-PICK", "apply one commit (commit)", "GIT.CHERRYPICK")
 CALL CMD.RUN

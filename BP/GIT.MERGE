@@ -1,0 +1,16 @@
+/**
+ * @file GIT.MERGE
+ * @version 1.0
+ */
+SUBROUTINE GIT.MERGE
+NM = FIELD(TRIM(SENTENCE()), " ", 3)
+IF NM = "" THEN
+   PRINT "usage: GIT MERGE branch"
+   RETURN
+END
+OUT = ""
+CALL GITMERGE(".recgit", NM, OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
+RETURN

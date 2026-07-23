@@ -143,11 +143,19 @@ static int open_named(mvx_ctx *ctx, const char *name, mv_value *fvar) {
     return r;
 }
 
+/* Init a bare repo whose initial branch is main (modern default). */
+static int init_bare_main(git_repository **repo, const char *path) {
+    git_repository_init_options o = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+    o.flags = GIT_REPOSITORY_INIT_BARE | GIT_REPOSITORY_INIT_MKPATH;
+    o.initial_head = "main";
+    return git_repository_init_ext(repo, path, &o);
+}
+
 /* Open (init if needed) the bare repo, and its persistent index. */
 static int repo_open(const char *path, git_repository **repo,
                      git_index **index) {
     if (git_repository_open(repo, path) != 0 &&
-        git_repository_init(repo, path, 1) != 0)
+        init_bare_main(repo, path) != 0)
         return -1;
     if (index) {
         char ipath[4200];
@@ -195,7 +203,7 @@ void mvx_sub_GITINIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         mv_set_str(argv[1], "already a repository", 20);
         return;
     }
-    if (git_repository_init(&repo, rp, 1) != 0) {
+    if (init_bare_main(&repo, rp) != 0) {
         fail(argv[1], "init");
         return;
     }
@@ -640,6 +648,306 @@ void mvx_sub_GITSHOW(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     if (te) git_tree_entry_free(te);
     if (t) git_tree_free(t);
+    git_repository_free(repo);
+}
+
+/* Write one tracked subtree's records back into its MVX file, deleting
+   records absent from the tree. */
+static void materialize_file(mvx_ctx *ctx, git_repository *repo,
+                             git_tree *subtree, const char *fn,
+                             int64_t *nw, int64_t *nd) {
+    mv_value fvar, id, rec;
+    mv_init(&fvar); mv_init(&id); mv_init(&rec);
+    if (fn[0]) {
+        mv_value spec;
+        mv_init(&spec);
+        size_t ln = strlen(fn);
+        if (!(ln > 5 && strcmp(fn + ln - 5, ".DICT") == 0)) {
+            mv_set_str(&spec, fn, (int64_t)ln);
+            mvx_createfile(ctx, &spec, NULL);
+        }
+        mv_clear(&spec);
+    }
+    if (!open_named(ctx, fn, &fvar)) {
+        mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+        return;
+    }
+    char (*seen)[256] = NULL;
+    size_t ns = 0, cap = 0;
+    size_t cnt = git_tree_entrycount(subtree);
+    for (size_t i = 0; i < cnt; i++) {
+        const git_tree_entry *te = git_tree_entry_byindex(subtree, i);
+        const char *name = git_tree_entry_name(te);
+        git_blob *blob = NULL;
+        if (git_blob_lookup(&blob, repo, git_tree_entry_id(te)) != 0)
+            continue;
+        const char *cp = git_blob_rawcontent(blob);
+        int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        mv_set_str(&rec, r, rl);
+        free(r);
+        mv_set_str(&id, name, (int64_t)strlen(name));
+        mvx_write(ctx, &rec, &fvar, &id, 0);
+        (*nw)++;
+        if (ns == cap) { cap = cap ? cap * 2 : 64;
+            seen = realloc(seen, cap * sizeof *seen);
+            if (!seen) mvx_fatal("out of memory in checkout"); }
+        snprintf(seen[ns++], 256, "%s", name);
+        git_blob_free(blob);
+    }
+    mvx_select(ctx, &fvar);
+    mv_value dl;
+    mv_init(&dl);
+    while (mvx_readnext(ctx, &dl)) {
+        char idb[256];
+        arg_str(&dl, idb, sizeof idb);
+        int found = 0;
+        for (size_t i = 0; i < ns; i++)
+            if (strcmp(seen[i], idb) == 0) { found = 1; break; }
+        if (!found) { mvx_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+    }
+    mv_clear(&dl);
+    free(seen);
+    mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+}
+
+/* Materialize every tracked file in a commit tree into the hash files. */
+static void materialize_tree(mvx_ctx *ctx, git_repository *repo,
+                             git_tree *tree, int64_t *nw, int64_t *nd) {
+    size_t n = git_tree_entrycount(tree);
+    for (size_t i = 0; i < n; i++) {
+        const git_tree_entry *te = git_tree_entry_byindex(tree, i);
+        if (git_tree_entry_type(te) != GIT_OBJECT_TREE) continue;
+        git_tree *sub = NULL;
+        if (git_tree_lookup(&sub, repo, git_tree_entry_id(te)) != 0)
+            continue;
+        materialize_file(ctx, repo, sub, git_tree_entry_name(te), nw, nd);
+        git_tree_free(sub);
+    }
+}
+
+/* Reset the persistent index to a commit tree (so status is clean). */
+static void sync_index(git_repository *repo, const char *rp,
+                       git_tree *tree) {
+    char ipath[4200];
+    snprintf(ipath, sizeof ipath, "%s/index", rp);
+    git_index *idx = NULL;
+    if (git_index_open(&idx, ipath) == 0) {
+        git_index_read_tree(idx, tree);
+        git_index_write(idx);
+        git_index_free(idx);
+    }
+}
+
+/* GITBRANCH(repo, name, out) — list branches, or create one at HEAD. */
+void mvx_sub_GITBRANCH(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+
+    if (!name[0]) {                     /* list */
+        sbuf s = {0, 0, 0};
+        git_branch_iterator *it = NULL;
+        git_reference *cur = NULL;
+        const char *curname = NULL;
+        if (git_repository_head(&cur, repo) == 0)
+            git_branch_name(&curname, cur);
+        if (git_branch_iterator_new(&it, repo, GIT_BRANCH_LOCAL) == 0) {
+            git_reference *ref = NULL;
+            git_branch_t bt;
+            while (git_branch_next(&ref, &bt, it) == 0) {
+                const char *bn = NULL;
+                git_branch_name(&bn, ref);
+                char line[300];
+                snprintf(line, sizeof line, "%s %s",
+                         (curname && bn && strcmp(curname, bn) == 0)
+                             ? "*" : " ",
+                         bn ? bn : "?");
+                sb_line(&s, line);
+                git_reference_free(ref);
+            }
+            git_branch_iterator_free(it);
+        }
+        if (cur) git_reference_free(cur);
+        git_repository_free(repo);
+        sb_out(&s, argv[2], "no branches");
+        return;
+    }
+
+    git_object *head = NULL;
+    git_commit *c = NULL;
+    git_reference *br = NULL;
+    int rc = git_revparse_single(&head, repo, "HEAD");
+    if (rc == 0) rc = git_commit_lookup(&c, repo, git_object_id(head));
+    if (rc == 0) rc = git_branch_create(&br, repo, name, c, 0);
+    if (br) git_reference_free(br);
+    if (c) git_commit_free(c);
+    if (head) git_object_free(head);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[2], "branch"); return; }
+    char out[300];
+    snprintf(out, sizeof out, "created branch %s", name);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
+}
+
+/* GITCHECKOUT(repo, name, out) — switch to a branch and write its
+   records into the hash files (our working tree). */
+void mvx_sub_GITCHECKOUT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_reference *br = NULL;
+    if (git_branch_lookup(&br, repo, name, GIT_BRANCH_LOCAL) != 0) {
+        git_repository_free(repo);
+        fail(argv[2], "no such branch");
+        return;
+    }
+    git_repository_set_head(repo, git_reference_name(br));
+    git_reference_free(br);
+    git_tree *t = head_tree(repo);
+    int64_t nw = 0, nd = 0;
+    if (t) {
+        materialize_tree(ctx, repo, t, &nw, &nd);
+        sync_index(repo, rp, t);
+        git_tree_free(t);
+    }
+    git_repository_free(repo);
+    char out[300];
+    snprintf(out, sizeof out,
+             "switched to %s (%lld record(s) updated, %lld removed)",
+             name, (long long)nw, (long long)nd);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
+}
+
+/* Commit a merged/cherry-picked index and materialize it. */
+static void finish_merge(mvx_ctx *ctx, git_repository *repo,
+                         const char *rp, git_index *mindex,
+                         git_commit *ours, git_commit *theirs,
+                         const char *msg, mv_value *out) {
+    if (git_index_has_conflicts(mindex)) {
+        sbuf s = {0, 0, 0};
+        sb_line(&s, "CONFLICT — resolve these records, then GIT ADD "
+                    "and GIT COMMIT:");
+        git_index_conflict_iterator *ci = NULL;
+        if (git_index_conflict_iterator_new(&ci, mindex) == 0) {
+            const git_index_entry *a, *o, *th;
+            while (git_index_conflict_next(&a, &o, &th, ci) == 0) {
+                const char *p = th ? th->path : (o ? o->path :
+                                (a ? a->path : "?"));
+                char line[700];
+                snprintf(line, sizeof line, "  %s", p);
+                sb_line(&s, line);
+            }
+            git_index_conflict_iterator_free(ci);
+        }
+        sb_out(&s, out, "conflict");
+        return;
+    }
+    git_oid tree_oid, commit_oid;
+    git_tree *tree = NULL;
+    git_signature *sig = NULL;
+    int rc = git_index_write_tree_to(&tree_oid, mindex, repo);
+    if (rc == 0) rc = git_tree_lookup(&tree, repo, &tree_oid);
+    if (rc == 0 && git_signature_default(&sig, repo) != 0)
+        rc = git_signature_now(&sig, "MVX", "mvx@localhost");
+    if (rc == 0) {
+        const git_commit *parents[2];
+        int np = 1;
+        parents[0] = ours;
+        if (theirs) { parents[1] = theirs; np = 2; }
+        rc = git_commit_create(&commit_oid, repo, "HEAD", sig, sig,
+                               NULL, msg, tree, np, parents);
+    }
+    int64_t nw = 0, nd = 0;
+    if (rc == 0 && tree) {
+        materialize_tree(ctx, repo, tree, &nw, &nd);
+        sync_index(repo, rp, tree);
+    }
+    if (sig) git_signature_free(sig);
+    if (tree) git_tree_free(tree);
+    if (rc != 0) { fail(out, "merge commit"); return; }
+    char o[300];
+    snprintf(o, sizeof o, "%s (%lld record(s) updated, %lld removed)",
+             msg, (long long)nw, (long long)nd);
+    mv_set_str(out, o, (int64_t)strlen(o));
+}
+
+/* GITMERGE(repo, branch, out) — 3-way merge a branch into HEAD. */
+void mvx_sub_GITMERGE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_object *ho = NULL;
+    git_commit *ours = NULL, *theirs = NULL;
+    git_reference *br = NULL;
+    git_index *mindex = NULL;
+    int rc = git_revparse_single(&ho, repo, "HEAD");
+    if (rc == 0) rc = git_commit_lookup(&ours, repo, git_object_id(ho));
+    if (rc == 0) rc = git_branch_lookup(&br, repo, name, GIT_BRANCH_LOCAL);
+    if (rc == 0)
+        rc = git_commit_lookup(&theirs, repo,
+                               git_reference_target(br));
+    if (rc == 0)
+        rc = git_merge_commits(&mindex, repo, ours, theirs, NULL);
+    if (rc == 0) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "Merge branch '%s'", name);
+        finish_merge(ctx, repo, rp, mindex, ours, theirs, msg, argv[2]);
+    } else {
+        fail(argv[2], "merge");
+    }
+    if (mindex) git_index_free(mindex);
+    if (br) git_reference_free(br);
+    if (theirs) git_commit_free(theirs);
+    if (ours) git_commit_free(ours);
+    if (ho) git_object_free(ho);
+    git_repository_free(repo);
+}
+
+/* GITCHERRYPICK(repo, commitish, out) — apply one commit onto HEAD. */
+void mvx_sub_GITCHERRYPICK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], rev[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], rev, sizeof rev);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_object *ho = NULL, *co = NULL;
+    git_commit *ours = NULL, *pick = NULL;
+    git_index *mindex = NULL;
+    int rc = git_revparse_single(&ho, repo, "HEAD");
+    if (rc == 0) rc = git_commit_lookup(&ours, repo, git_object_id(ho));
+    if (rc == 0) rc = git_revparse_single(&co, repo, rev);
+    if (rc == 0) rc = git_commit_lookup(&pick, repo, git_object_id(co));
+    if (rc == 0)
+        rc = git_cherrypick_commit(&mindex, repo, pick, ours, 0, NULL);
+    if (rc == 0) {
+        const char *sum = git_commit_summary(pick);
+        char msg[400];
+        snprintf(msg, sizeof msg, "%s", sum ? sum : "cherry-pick");
+        finish_merge(ctx, repo, rp, mindex, ours, NULL, msg, argv[2]);
+    } else {
+        fail(argv[2], "cherry-pick");
+    }
+    if (mindex) git_index_free(mindex);
+    if (pick) git_commit_free(pick);
+    if (ours) git_commit_free(ours);
+    if (co) git_object_free(co);
+    if (ho) git_object_free(ho);
     git_repository_free(repo);
 }
 

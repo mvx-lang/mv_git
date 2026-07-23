@@ -1,0 +1,14 @@
+/**
+ * @file GIT.CHECKOUT
+ * @version 1.0
+ */
+SUBROUTINE GIT.CHECKOUT
+NM = FIELD(TRIM(SENTENCE()), " ", 3)
+IF NM = "" THEN
+   PRINT "usage: GIT CHECKOUT branch"
+   RETURN
+END
+OUT = ""
+CALL GITCHECKOUT(".recgit", NM, OUT)
+PRINT OUT
+RETURN
