@@ -1,18 +1,17 @@
-/* Native git operations for the git package, via libgit2.
+/* Native git for hash-file records, via libgit2 — modelled on real git.
  *
- * These are cataloged subroutines: each matches the MVX subroutine ABI
- * (ctx, argc, argv), so the BASIC GIT verb CALLs them like any other
- * subroutine, and the runtime CALL resolver loads this library from the
- * package's LIB/ on first use.  libgit2 is a dependency of this library
- * alone, not of the core runtime or of compiled programs.
+ * The working tree is the live records in an MVX file; the index (a
+ * persistent staging area at <repo>/index) is git's staging area; and
+ * commits are commits, in a bare repo (default .recgit).  A record maps
+ * to the git path "<file>/<id>", so ordinary git tooling reads the
+ * history.  Attribute marks translate to newlines in the blob (and
+ * back on restore) so diffs are line-oriented.
  *
- * Structured arguments, no shell: the commit message cannot inject, and
- * git needs no external binary.  These are library calls, not exec, so
- * they run at any privilege tier.
- *
- * Local plumbing only (init, add, commit, status, log, diff).  Network
- * operations (clone/push/pull) need transport and credential handling
- * and are left to a later pass.
+ * These are cataloged subroutines (the MVX subroutine ABI), CALLed by
+ * the BASIC GIT verb.  libgit2 links into this library alone; records
+ * flow through the runtime storage API called from here — nothing
+ * touches a filesystem working tree.  Library calls, not exec: any
+ * privilege tier.
  */
 #include "mvx_runtime.h"
 
@@ -21,7 +20,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* --- arg helpers ------------------------------------------------------- */
+/* --- helpers ----------------------------------------------------------- */
+
+static void ensure_init(void) {
+    static int done;
+    if (!done) { git_libgit2_init(); done = 1; }
+}
 
 static void arg_str(const mv_value *v, char *out, size_t cap) {
     char nb[40];
@@ -32,15 +36,6 @@ static void arg_str(const mv_value *v, char *out, size_t cap) {
     out[n] = '\0';
 }
 
-static void ensure_init(void) {
-    static int done;
-    if (!done) {
-        git_libgit2_init();
-        done = 1;
-    }
-}
-
-/* Report an error into the out value (last arg), prefixed "git: ". */
 static void fail(mv_value *out, const char *what) {
     const git_error *e = git_error_last();
     char buf[512];
@@ -49,7 +44,14 @@ static void fail(mv_value *out, const char *what) {
     mv_set_str(out, buf, (int64_t)strlen(buf));
 }
 
-/* --- dynamic-string output builder ------------------------------------ */
+static char *xlate(const char *p, int64_t n, char from, char to,
+                   int64_t *outn) {
+    char *b = malloc(n ? (size_t)n : 1);
+    if (!b) mvx_fatal("out of memory in git translate");
+    for (int64_t i = 0; i < n; i++) b[i] = p[i] == from ? to : p[i];
+    *outn = n;
+    return b;
+}
 
 typedef struct { char *d; size_t len, cap; } sbuf;
 
@@ -65,273 +67,108 @@ static void sb_put(sbuf *s, const char *p, size_t n) {
 }
 
 static void sb_line(sbuf *s, const char *line) {
-    if (s->len) {
-        char am = (char)0xFE;           /* attribute mark between lines */
-        sb_put(s, &am, 1);
-    }
+    if (s->len) { char am = (char)0xFE; sb_put(s, &am, 1); }
     sb_put(s, line, strlen(line));
 }
 
-/* --- GITINIT(path, out) ------------------------------------------------ */
+static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
+    if (s->d) mv_set_str(dst, s->d, (int64_t)s->len);
+    else mv_set_str(dst, empty, (int64_t)strlen(empty));
+    free(s->d);
+}
+
+/* Open (init if needed) the bare repo, and its persistent index. */
+static int repo_open(const char *path, git_repository **repo,
+                     git_index **index) {
+    if (git_repository_open(repo, path) != 0 &&
+        git_repository_init(repo, path, 1) != 0)
+        return -1;
+    if (index) {
+        char ipath[4200];
+        snprintf(ipath, sizeof ipath, "%s/index", path);
+        if (git_index_open(index, ipath) != 0) {
+            git_repository_free(*repo);
+            return -1;
+        }
+        git_index_read(*index, 0);      /* load if present */
+    }
+    return 0;
+}
+
+static git_tree *head_tree(git_repository *repo) {
+    git_object *h = NULL;
+    git_commit *c = NULL;
+    git_tree *t = NULL;
+    if (git_revparse_single(&h, repo, "HEAD") == 0 &&
+        git_commit_lookup(&c, repo, git_object_id(h)) == 0)
+        git_commit_tree(&t, c);
+    if (c) git_commit_free(c);
+    if (h) git_object_free(h);
+    return t;
+}
+
+/* Blob oid of a record's current content (translated, not stored). */
+static int record_oid(const char *content, int64_t len, git_oid *oid) {
+    int64_t bl;
+    char *b = xlate(content, len, (char)0xFE, '\n', &bl);
+    int rc = git_odb_hash(oid, b, (size_t)bl, GIT_OBJECT_BLOB);
+    free(b);
+    return rc;
+}
+
+/* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
     ensure_init();
-    char path[4096];
-    arg_str(argv[0], path, sizeof path);
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
     git_repository *repo = NULL;
-    if (git_repository_init(&repo, path, 0) != 0) {
+    if (git_repository_open(&repo, rp) == 0) {
+        git_repository_free(repo);
+        mv_set_str(argv[1], "already a repository", 20);
+        return;
+    }
+    if (git_repository_init(&repo, rp, 1) != 0) {
         fail(argv[1], "init");
         return;
     }
     git_repository_free(repo);
-    mv_set_str(argv[1], "", 0);
+    mv_set_str(argv[1], "initialised empty git repository", 32);
 }
 
-/* --- GITADD(repo, pathspec, out) --------------------------------------- */
+/* Stage the current content of one MVX file's records (or one record)
+   into the index.  GITADD(repo, file, record-or-empty, out) */
 void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
-    if (argc < 3) return;
-    ensure_init();
-    char path[4096], spec[1024];
-    arg_str(argv[0], path, sizeof path);
-    arg_str(argv[1], spec, sizeof spec);
-
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, path) != 0) {
-        fail(argv[2], "open");
-        return;
-    }
-    git_index *idx = NULL;
-    int rc = git_repository_index(&idx, repo);
-    if (rc == 0) {
-        char *paths[] = {spec};
-        git_strarray ps = {paths, 1};
-        rc = git_index_add_all(idx, &ps, GIT_INDEX_ADD_DEFAULT, NULL, NULL);
-        if (rc == 0) rc = git_index_write(idx);
-    }
-    if (idx) git_index_free(idx);
-    git_repository_free(repo);
-    if (rc != 0) { fail(argv[2], "add"); return; }
-    mv_set_str(argv[2], "", 0);
-}
-
-/* --- GITCOMMIT(repo, message, out) ------------------------------------- */
-void mvx_sub_GITCOMMIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
-    if (argc < 3) return;
-    ensure_init();
-    char path[4096];
-    char msg[4096];
-    arg_str(argv[0], path, sizeof path);
-    arg_str(argv[1], msg, sizeof msg);
-
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, path) != 0) {
-        fail(argv[2], "open");
-        return;
-    }
-
-    git_index *idx = NULL;
-    git_oid tree_oid, commit_oid;
-    git_tree *tree = NULL;
-    git_signature *sig = NULL;
-    git_object *parent_obj = NULL;
-    git_commit *parent = NULL;
-    int rc = git_repository_index(&idx, repo);
-    if (rc == 0) rc = git_index_write_tree(&tree_oid, idx);
-    if (rc == 0) rc = git_tree_lookup(&tree, repo, &tree_oid);
-    if (rc == 0 && git_signature_default(&sig, repo) != 0)
-        rc = git_signature_now(&sig, "MVX", "mvx@localhost");
-
-    const git_commit *parents[1];
-    int nparents = 0;
-    if (rc == 0 &&
-        git_revparse_single(&parent_obj, repo, "HEAD") == 0) {
-        if (git_commit_lookup(&parent, repo,
-                              git_object_id(parent_obj)) == 0) {
-            parents[0] = parent;
-            nparents = 1;
-        }
-    }
-    if (rc == 0)
-        rc = git_commit_create(&commit_oid, repo, "HEAD", sig, sig,
-                               NULL, msg, tree, nparents, parents);
-
-    if (parent) git_commit_free(parent);
-    if (parent_obj) git_object_free(parent_obj);
-    if (sig) git_signature_free(sig);
-    if (tree) git_tree_free(tree);
-    if (idx) git_index_free(idx);
-    git_repository_free(repo);
-
-    if (rc != 0) { fail(argv[2], "commit"); return; }
-    char sha[8];
-    git_oid_tostr(sha, sizeof sha, &commit_oid);
-    char out[64];
-    snprintf(out, sizeof out, "committed %s", sha);
-    mv_set_str(argv[2], out, (int64_t)strlen(out));
-}
-
-/* --- GITSTATUS(repo, out) ---------------------------------------------- */
-void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
-    if (argc < 2) return;
-    ensure_init();
-    char path[4096];
-    arg_str(argv[0], path, sizeof path);
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, path) != 0) {
-        fail(argv[1], "open");
-        return;
-    }
-    git_status_list *list = NULL;
-    git_status_options opt = GIT_STATUS_OPTIONS_INIT;
-    opt.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED;
-    sbuf s = {0, 0, 0};
-    if (git_status_list_new(&list, repo, &opt) == 0) {
-        size_t n = git_status_list_entrycount(list);
-        for (size_t i = 0; i < n; i++) {
-            const git_status_entry *e = git_status_byindex(list, i);
-            const char *p = e->index_to_workdir
-                ? e->index_to_workdir->new_file.path
-                : (e->head_to_index
-                       ? e->head_to_index->new_file.path : "?");
-            const char *tag = "  ";
-            unsigned st = e->status;
-            if (st & GIT_STATUS_WT_NEW)             tag = "??";
-            else if (st & GIT_STATUS_INDEX_NEW)     tag = "A ";
-            else if (st & (GIT_STATUS_INDEX_MODIFIED |
-                           GIT_STATUS_WT_MODIFIED))  tag = "M ";
-            else if (st & (GIT_STATUS_INDEX_DELETED |
-                           GIT_STATUS_WT_DELETED))   tag = "D ";
-            char line[4200];
-            snprintf(line, sizeof line, "%s%s", tag, p);
-            sb_line(&s, line);
-        }
-        if (n == 0) sb_line(&s, "clean");
-        git_status_list_free(list);
-    }
-    git_repository_free(repo);
-    mv_set_str(argv[1], s.d ? s.d : "clean", s.d ? (int64_t)s.len : 5);
-    free(s.d);
-}
-
-/* --- GITLOG(repo, count, out) ------------------------------------------ */
-void mvx_sub_GITLOG(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
-    if (argc < 3) return;
-    ensure_init();
-    char path[4096];
-    arg_str(argv[0], path, sizeof path);
-    int64_t want = 0;
-    {
-        char nb[40];
-        const char *p;
-        int64_t n = mv_val_chars(argv[1], nb, sizeof nb, &p);
-        char tmp[32];
-        if (n > 0 && (size_t)n < sizeof tmp) {
-            memcpy(tmp, p, (size_t)n);
-            tmp[n] = '\0';
-            want = atoll(tmp);
-        }
-    }
-    if (want <= 0) want = 10;
-
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, path) != 0) {
-        fail(argv[2], "open");
-        return;
-    }
-    git_revwalk *walk = NULL;
-    sbuf s = {0, 0, 0};
-    if (git_revwalk_new(&walk, repo) == 0 &&
-        git_revwalk_push_head(walk) == 0) {
-        git_oid oid;
-        int64_t seen = 0;
-        while (seen < want && git_revwalk_next(&oid, walk) == 0) {
-            git_commit *c = NULL;
-            if (git_commit_lookup(&c, repo, &oid) != 0) break;
-            char sha[8];
-            git_oid_tostr(sha, sizeof sha, &oid);
-            const char *summary = git_commit_summary(c);
-            char line[4200];
-            snprintf(line, sizeof line, "%s %s", sha,
-                     summary ? summary : "");
-            sb_line(&s, line);
-            git_commit_free(c);
-            seen++;
-        }
-    }
-    if (walk) git_revwalk_free(walk);
-    git_repository_free(repo);
-    if (!s.d) sb_line(&s, "no history");
-    mv_set_str(argv[2], s.d, (int64_t)s.len);
-    free(s.d);
-}
-
-/* --- direct record versioning ------------------------------------------
-   GITSAVE / GITRESTORE version hash-file records IN PLACE: a record's
-   bytes become a git blob directly (no export to a file), and a blob's
-   bytes are written straight back to the record.  The hash file is
-   git's source of truth; git objects live in a small bare repo.  Marks
-   translate to newlines in the blob so git diffs are line-oriented, and
-   back on restore. */
-
-static char *xlate(const char *p, int64_t n, char from, char to,
-                   int64_t *outn) {
-    char *b = malloc(n ? (size_t)n : 1);
-    if (!b) mvx_fatal("out of memory in git record translate");
-    for (int64_t i = 0; i < n; i++) b[i] = p[i] == from ? to : p[i];
-    *outn = n;
-    return b;
-}
-
-/* Open the record-history repo, initialising a bare one if absent. */
-static int rec_repo(git_repository **repo, const char *path) {
-    if (git_repository_open(repo, path) == 0) return 0;
-    return git_repository_init(repo, path, 1);      /* bare */
-}
-
-/* GITSAVE(repopath, file, message, out) — commit a file's records. */
-void mvx_sub_GITSAVE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 4) return;
     ensure_init();
-    char rp[4096], fn[256], msg[4096];
+    char rp[4096], fn[256], only[256];
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], fn, sizeof fn);
-    arg_str(argv[2], msg, sizeof msg);
+    arg_str(argv[2], only, sizeof only);
 
     git_repository *repo = NULL;
-    if (rec_repo(&repo, rp) != 0) {
-        fail(argv[3], "open repo");
-        return;
-    }
-
     git_index *index = NULL;
-    git_object *headobj = NULL;
-    git_commit *parent = NULL;
-    git_tree *ptree = NULL, *tree = NULL;
-    git_signature *sig = NULL;
-    git_oid tree_oid, commit_oid;
-    int rc = git_index_new(&index);
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
 
-    if (rc == 0 && git_revparse_single(&headobj, repo, "HEAD") == 0 &&
-        git_commit_lookup(&parent, repo, git_object_id(headobj)) == 0 &&
-        git_commit_tree(&ptree, parent) == 0)
-        git_index_read_tree(index, ptree);
-
-    if (rc == 0) git_index_remove_directory(index, fn, 0);
-
-    /* stream records into blobs + index entries, directly */
     mv_value spec, fvar, id, rec;
     mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
     mv_set_str(&spec, fn, (int64_t)strlen(fn));
     int64_t n = 0;
-    if (rc == 0 && mvx_open(ctx, NULL, &spec, &fvar)) {
-        mvx_select(ctx, &fvar);
-        while (mvx_readnext(ctx, &id)) {
-            if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
+    if (mvx_open(ctx, NULL, &spec, &fvar)) {
+        int one = only[0] != '\0';
+        int have = 1;
+        if (one) {
+            mv_set_str(&id, only, (int64_t)strlen(only));
+            have = mvx_read(ctx, &rec, &fvar, &id, 0);
+        } else {
+            mvx_select(ctx, &fvar);
+        }
+        while (have) {
+            if (!one) {
+                if (!mvx_readnext(ctx, &id)) break;
+                if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
+            }
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
             const char *cp;
@@ -343,21 +180,88 @@ void mvx_sub_GITSAVE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
                                             (size_t)bl) == 0) {
                 git_index_entry e;
                 memset(&e, 0, sizeof e);
-                char pathbuf[600];
-                snprintf(pathbuf, sizeof pathbuf, "%s/%s", fn, idb);
-                e.path = pathbuf;
+                char path[600];
+                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
                 e.id = boid;
                 git_index_add(index, &e);
                 n++;
             }
             free(blob);
+            if (one) break;
         }
     }
     mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 
-    if (rc == 0) rc = git_index_write_tree_to(&tree_oid, index, repo);
+    int rc = git_index_write(index);
+    git_index_free(index);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[3], "write index"); return; }
+    char out[64];
+    snprintf(out, sizeof out, "staged %lld record(s)", (long long)n);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
+}
+
+/* Unstage/remove tracking of a record.  GITRM(repo, file, record, out) */
+void mvx_sub_GITRM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], fn[256], recid[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], fn, sizeof fn);
+    arg_str(argv[2], recid, sizeof recid);
+
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
+    char path[600];
+    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    int rc;
+    if (recid[0]) rc = git_index_remove_bypath(index, path);
+    else rc = git_index_remove_directory(index, fn, 0);
+    if (rc == 0) rc = git_index_write(index);
+    git_index_free(index);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[3], "rm"); return; }
+    mv_set_str(argv[3], "removed from tracking", 21);
+}
+
+/* GITCOMMIT(repo, message, out) — commit the staged index. */
+void mvx_sub_GITCOMMIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], msg[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], msg, sizeof msg);
+
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+
+    git_oid tree_oid, commit_oid;
+    git_tree *tree = NULL, *ptree = NULL;
+    git_signature *sig = NULL;
+    git_object *headobj = NULL;
+    git_commit *parent = NULL;
+    int rc = git_index_write_tree_to(&tree_oid, index, repo);
     if (rc == 0) rc = git_tree_lookup(&tree, repo, &tree_oid);
+
+    if (git_revparse_single(&headobj, repo, "HEAD") == 0 &&
+        git_commit_lookup(&parent, repo, git_object_id(headobj)) == 0 &&
+        git_commit_tree(&ptree, parent) == 0) {
+        /* nothing to commit if the tree is unchanged */
+        if (rc == 0 && git_oid_equal(git_tree_id(ptree), &tree_oid)) {
+            git_tree_free(ptree); git_commit_free(parent);
+            git_object_free(headobj);
+            if (tree) git_tree_free(tree);
+            git_index_free(index); git_repository_free(repo);
+            mv_set_str(argv[2], "nothing to commit", 17);
+            return;
+        }
+    }
     if (rc == 0 && git_signature_default(&sig, repo) != 0)
         rc = git_signature_now(&sig, "MVX", "mvx@localhost");
     if (rc == 0) {
@@ -367,156 +271,372 @@ void mvx_sub_GITSAVE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         rc = git_commit_create(&commit_oid, repo, "HEAD", sig, sig,
                                NULL, msg, tree, np, parents);
     }
-
     if (sig) git_signature_free(sig);
-    if (tree) git_tree_free(tree);
     if (ptree) git_tree_free(ptree);
     if (parent) git_commit_free(parent);
     if (headobj) git_object_free(headobj);
-    if (index) git_index_free(index);
+    if (tree) git_tree_free(tree);
+    git_index_free(index);
     git_repository_free(repo);
-
-    if (rc != 0) { fail(argv[3], "save"); return; }
+    if (rc != 0) { fail(argv[2], "commit"); return; }
     char sha[8], out[80];
     git_oid_tostr(sha, sizeof sha, &commit_oid);
-    snprintf(out, sizeof out, "saved %lld record(s), %s",
-             (long long)n, sha);
-    mv_set_str(argv[3], out, (int64_t)strlen(out));
+    snprintf(out, sizeof out, "[%s] %s", sha, msg);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
 }
 
-/* GITRESTORE(repopath, file, out) — write a file's records back from
-   the latest commit, deleting records absent from it. */
+/* Distinct top-level file names across index + HEAD tree. */
+typedef struct { char (*n)[256]; size_t c, cap; } nameset;
+
+static void ns_add(nameset *s, const char *name) {
+    for (size_t i = 0; i < s->c; i++)
+        if (strcmp(s->n[i], name) == 0) return;
+    if (s->c == s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 16;
+        s->n = realloc(s->n, s->cap * sizeof *s->n);
+        if (!s->n) mvx_fatal("out of memory in git status");
+    }
+    snprintf(s->n[s->c++], 256, "%s", name);
+}
+
+static void split_top(const char *path, char *top, size_t cap) {
+    const char *slash = strchr(path, '/');
+    size_t n = slash ? (size_t)(slash - path) : strlen(path);
+    if (n >= cap) n = cap - 1;
+    memcpy(top, path, n);
+    top[n] = '\0';
+}
+
+/* GITSTATUS(repo, out) — real-git short status across tracked files. */
+void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
+    git_tree *ht = head_tree(repo);
+    sbuf s = {0, 0, 0};
+
+    /* staged: HEAD tree vs index */
+    git_diff *sd = NULL;
+    if (git_diff_tree_to_index(&sd, repo, ht, index, NULL) == 0) {
+        size_t n = git_diff_num_deltas(sd);
+        for (size_t i = 0; i < n; i++) {
+            const git_diff_delta *d = git_diff_get_delta(sd, i);
+            char line[700];
+            snprintf(line, sizeof line, "%c  %s",
+                     git_diff_status_char(d->status), d->new_file.path);
+            sb_line(&s, line);
+        }
+        git_diff_free(sd);
+    }
+
+    /* working (records) vs index: modified / untracked / deleted */
+    nameset files = {0, 0, 0};
+    size_t ic = git_index_entrycount(index);
+    for (size_t i = 0; i < ic; i++) {
+        const git_index_entry *e = git_index_get_byindex(index, i);
+        char top[256];
+        split_top(e->path, top, sizeof top);
+        ns_add(&files, top);
+    }
+    for (size_t f = 0; f < files.c; f++) {
+        const char *fn = files.n[f];
+        mv_value spec, fvar, id, rec;
+        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
+        mv_set_str(&spec, fn, (int64_t)strlen(fn));
+        /* mark index entries for this file as unseen */
+        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+            mvx_select(ctx, &fvar);
+            while (mvx_readnext(ctx, &id)) {
+                if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
+                char idb[256], nb[40], path[600];
+                arg_str(&id, idb, sizeof idb);
+                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                size_t pos;
+                const git_index_entry *ie =
+                    git_index_get_bypath(index, path, 0) ? NULL : NULL;
+                (void)ie; (void)pos;
+                const git_index_entry *entry =
+                    git_index_get_bypath(index, path, 0);
+                const char *cp;
+                int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                git_oid woid;
+                record_oid(cp, clen, &woid);
+                if (!entry) {
+                    char line[700];
+                    snprintf(line, sizeof line, "?? %s", path);
+                    sb_line(&s, line);
+                } else if (!git_oid_equal(&entry->id, &woid)) {
+                    char line[700];
+                    snprintf(line, sizeof line, " M %s", path);
+                    sb_line(&s, line);
+                }
+            }
+        }
+        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+    }
+    /* deleted: index entry whose record no longer exists */
+    for (size_t i = 0; i < ic; i++) {
+        const git_index_entry *e = git_index_get_byindex(index, i);
+        char top[256];
+        split_top(e->path, top, sizeof top);
+        const char *recid = strchr(e->path, '/');
+        recid = recid ? recid + 1 : e->path;
+        mv_value spec, fvar, id, rec;
+        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
+        mv_set_str(&spec, top, (int64_t)strlen(top));
+        int gone = 1;
+        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+            mv_set_str(&id, recid, (int64_t)strlen(recid));
+            gone = !mvx_read(ctx, &rec, &fvar, &id, 0);
+        }
+        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+        if (gone) {
+            char line[700];
+            snprintf(line, sizeof line, " D %s", e->path);
+            sb_line(&s, line);
+        }
+    }
+    free(files.n);
+    if (ht) git_tree_free(ht);
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&s, argv[1], "nothing to commit, working tree clean");
+}
+
+/* GITLOG(repo, count, out) */
+void mvx_sub_GITLOG(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], cnt[32];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], cnt, sizeof cnt);
+    int64_t want = atoll(cnt);
+    if (want <= 0) want = 20;
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) {
+        mv_set_str(argv[2], "no history", 10);
+        return;
+    }
+    git_revwalk *w = NULL;
+    sbuf s = {0, 0, 0};
+    if (git_revwalk_new(&w, repo) == 0 && git_revwalk_push_head(w) == 0) {
+        git_oid oid;
+        int64_t seen = 0;
+        while (seen < want && git_revwalk_next(&oid, w) == 0) {
+            git_commit *c = NULL;
+            if (git_commit_lookup(&c, repo, &oid) != 0) break;
+            char sha[8];
+            git_oid_tostr(sha, sizeof sha, &oid);
+            const char *sum = git_commit_summary(c);
+            char line[4200];
+            snprintf(line, sizeof line, "%s %s", sha, sum ? sum : "");
+            sb_line(&s, line);
+            git_commit_free(c);
+            seen++;
+        }
+    }
+    if (w) git_revwalk_free(w);
+    git_repository_free(repo);
+    sb_out(&s, argv[2], "no history");
+}
+
+/* diff line callback: accumulate +/-/space lines into an sbuf. */
+static int diff_line_cb(const git_diff_delta *d, const git_diff_hunk *h,
+                        const git_diff_line *l, void *payload) {
+    (void)d; (void)h;
+    sbuf *s = payload;
+    char pfx = l->origin;               /* '+', '-', ' ', 'F','H' */
+    /* records never end in a newline; drop the "no newline" markers */
+    if (pfx == GIT_DIFF_LINE_CONTEXT_EOFNL ||
+        pfx == GIT_DIFF_LINE_ADD_EOFNL ||
+        pfx == GIT_DIFF_LINE_DEL_EOFNL)
+        return 0;
+    char line[4200];
+    int n;
+    if (pfx == '+' || pfx == '-' || pfx == ' ')
+        n = snprintf(line, sizeof line, "%c%.*s", pfx,
+                     (int)l->content_len, l->content);
+    else
+        n = snprintf(line, sizeof line, "%.*s",
+                     (int)l->content_len, l->content);
+    /* content includes its own newline; strip for line-per-attribute */
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+        line[--n] = '\0';
+    sb_line(s, line);
+    return 0;
+}
+
+/* GITDIFF(repo, file, out) — unstaged record changes (working vs index)
+   as a unified diff.  file "" diffs all tracked files. */
+void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], only[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], only, sizeof only);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+    sbuf s = {0, 0, 0};
+
+    size_t ic = git_index_entrycount(index);
+    for (size_t i = 0; i < ic; i++) {
+        const git_index_entry *e = git_index_get_byindex(index, i);
+        char top[256];
+        split_top(e->path, top, sizeof top);
+        if (only[0] && strcmp(only, top) != 0) continue;
+        const char *recid = strchr(e->path, '/');
+        recid = recid ? recid + 1 : e->path;
+
+        mv_value spec, fvar, id, rec;
+        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
+        mv_set_str(&spec, top, (int64_t)strlen(top));
+        int have = 0;
+        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+            mv_set_str(&id, recid, (int64_t)strlen(recid));
+            have = mvx_read(ctx, &rec, &fvar, &id, 0);
+        }
+        git_blob *old = NULL;
+        if (git_blob_lookup(&old, repo, &e->id) == 0) {
+            char nb[40];
+            const char *cp = "";
+            int64_t clen = 0, bl = 0;
+            char *buf = NULL;
+            if (have) {
+                clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+            }
+            git_oid woid;
+            int changed = 1;
+            if (git_odb_hash(&woid, buf ? buf : "", (size_t)bl,
+                             GIT_OBJECT_BLOB) == 0)
+                changed = !git_oid_equal(&woid, &e->id);
+            if (changed) {
+                char hdr[700];
+                snprintf(hdr, sizeof hdr, "diff %s", e->path);
+                sb_line(&s, hdr);
+                git_diff_blob_to_buffer(old, e->path, buf, (size_t)bl,
+                                        e->path, NULL, NULL, NULL, NULL,
+                                        diff_line_cb, &s);
+            }
+            free(buf);
+            git_blob_free(old);
+        }
+        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&s, argv[2], "no changes");
+}
+
+/* GITSHOW(repo, file, record, out) — committed content of a record. */
+void mvx_sub_GITSHOW(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], fn[256], recid[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], fn, sizeof fn);
+    arg_str(argv[2], recid, sizeof recid);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
+    git_tree *t = head_tree(repo);
+    char path[600];
+    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    git_tree_entry *te = NULL;
+    git_blob *blob = NULL;
+    if (t && git_tree_entry_bypath(&te, t, path) == 0 &&
+        git_blob_lookup(&blob, repo, git_tree_entry_id(te)) == 0) {
+        const char *cp = git_blob_rawcontent(blob);
+        int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        mv_set_str(argv[3], r, rl);
+        free(r);
+        git_blob_free(blob);
+    } else {
+        mv_set_str(argv[3], "", 0);
+    }
+    if (te) git_tree_entry_free(te);
+    if (t) git_tree_free(t);
+    git_repository_free(repo);
+}
+
+/* GITRESTORE(repo, file, out) — write records back from HEAD, deleting
+   records absent from the commit (git restore / checkout of the file). */
 void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], fn[256];
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], fn, sizeof fn);
-
     git_repository *repo = NULL;
-    if (git_repository_open(&repo, rp) != 0) {
-        fail(argv[2], "open repo");
-        return;
-    }
-    git_object *headobj = NULL;
-    git_commit *commit = NULL;
-    git_tree *tree = NULL, *subtree = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_tree *t = head_tree(repo);
     git_tree_entry *sub = NULL;
-    int64_t nw = 0, nd = 0;
-
-    int rc = git_revparse_single(&headobj, repo, "HEAD");
-    if (rc == 0)
-        rc = git_commit_lookup(&commit, repo, git_object_id(headobj));
-    if (rc == 0) rc = git_commit_tree(&tree, commit);
-    if (rc == 0) rc = git_tree_entry_bypath(&sub, tree, fn);
-    if (rc == 0)
-        rc = git_tree_lookup(&subtree, repo, git_tree_entry_id(sub));
-    if (rc != 0) {
-        if (headobj) git_object_free(headobj);
-        if (commit) git_commit_free(commit);
-        if (tree) git_tree_free(tree);
+    git_tree *subtree = NULL;
+    if (!t || git_tree_entry_bypath(&sub, t, fn) != 0 ||
+        git_tree_lookup(&subtree, repo, git_tree_entry_id(sub)) != 0) {
+        if (sub) git_tree_entry_free(sub);
+        if (t) git_tree_free(t);
         git_repository_free(repo);
-        fail(argv[2], "no saved history for file");
+        fail(argv[2], "no committed history for file");
         return;
     }
-
     mv_value spec, fvar, id, rec;
     mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
     mv_set_str(&spec, fn, (int64_t)strlen(fn));
     mvx_createfile(ctx, &spec, NULL);
-    if (!mvx_open(ctx, NULL, &spec, &fvar)) {
-        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
-        git_tree_entry_free(sub); git_tree_free(subtree);
-        git_tree_free(tree); git_commit_free(commit);
-        git_object_free(headobj); git_repository_free(repo);
-        fail(argv[2], "cannot open file");
-        return;
-    }
-
-    /* collect ids present in git, writing each record back */
+    int64_t nw = 0, nd = 0;
     char (*seen)[256] = NULL;
-    size_t nseen = 0, seencap = 0;
-    size_t cnt = git_tree_entrycount(subtree);
-    for (size_t i = 0; i < cnt; i++) {
-        const git_tree_entry *te = git_tree_entry_byindex(subtree, i);
-        const char *name = git_tree_entry_name(te);
-        git_blob *blob = NULL;
-        if (git_blob_lookup(&blob, repo, git_tree_entry_id(te)) != 0)
-            continue;
-        const char *cp = git_blob_rawcontent(blob);
-        int64_t clen = (int64_t)git_blob_rawsize(blob);
-        int64_t rl;
-        char *recbuf = xlate(cp, clen, '\n', (char)0xFE, &rl);
-        mv_set_str(&rec, recbuf, rl);
-        free(recbuf);
-        mv_set_str(&id, name, (int64_t)strlen(name));
-        mvx_write(ctx, &rec, &fvar, &id, 0);
-        nw++;
-        if (nseen == seencap) {
-            seencap = seencap ? seencap * 2 : 64;
-            seen = realloc(seen, seencap * sizeof *seen);
-            if (!seen) mvx_fatal("out of memory in GITRESTORE");
+    size_t ns = 0, cap = 0;
+    if (mvx_open(ctx, NULL, &spec, &fvar)) {
+        size_t cnt = git_tree_entrycount(subtree);
+        for (size_t i = 0; i < cnt; i++) {
+            const git_tree_entry *te = git_tree_entry_byindex(subtree, i);
+            const char *name = git_tree_entry_name(te);
+            git_blob *blob = NULL;
+            if (git_blob_lookup(&blob, repo, git_tree_entry_id(te)) != 0)
+                continue;
+            const char *cp = git_blob_rawcontent(blob);
+            int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+            char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+            mv_set_str(&rec, r, rl);
+            free(r);
+            mv_set_str(&id, name, (int64_t)strlen(name));
+            mvx_write(ctx, &rec, &fvar, &id, 0);
+            nw++;
+            if (ns == cap) { cap = cap ? cap * 2 : 64;
+                seen = realloc(seen, cap * sizeof *seen);
+                if (!seen) mvx_fatal("out of memory in restore"); }
+            snprintf(seen[ns++], 256, "%s", name);
+            git_blob_free(blob);
         }
-        snprintf(seen[nseen++], 256, "%s", name);
-        git_blob_free(blob);
+        mvx_select(ctx, &fvar);
+        mv_value dl;
+        mv_init(&dl);
+        while (mvx_readnext(ctx, &dl)) {
+            char idb[256];
+            arg_str(&dl, idb, sizeof idb);
+            int found = 0;
+            for (size_t i = 0; i < ns; i++)
+                if (strcmp(seen[i], idb) == 0) { found = 1; break; }
+            if (!found) { mvx_delete_rec(ctx, &fvar, &dl); nd++; }
+        }
+        mv_clear(&dl);
     }
-
-    /* delete records no longer in git */
-    mvx_select(ctx, &fvar);
-    mv_value delid;
-    mv_init(&delid);
-    while (mvx_readnext(ctx, &delid)) {
-        char idb[256];
-        arg_str(&delid, idb, sizeof idb);
-        int found = 0;
-        for (size_t i = 0; i < nseen; i++)
-            if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-        if (!found) { mvx_delete_rec(ctx, &fvar, &delid); nd++; }
-    }
-    mv_clear(&delid);
     free(seen);
-
     mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
     git_tree_entry_free(sub);
     git_tree_free(subtree);
-    git_tree_free(tree);
-    git_commit_free(commit);
-    git_object_free(headobj);
+    git_tree_free(t);
     git_repository_free(repo);
-
     char out[80];
     snprintf(out, sizeof out, "restored %lld record(s), %lld removed",
              (long long)nw, (long long)nd);
     mv_set_str(argv[2], out, (int64_t)strlen(out));
-}
-
-/* --- GITDIFF(repo, out) ------------------------------------------------ */
-void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
-    if (argc < 2) return;
-    ensure_init();
-    char path[4096];
-    arg_str(argv[0], path, sizeof path);
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, path) != 0) {
-        fail(argv[1], "open");
-        return;
-    }
-    git_diff *diff = NULL;
-    sbuf s = {0, 0, 0};
-    if (git_diff_index_to_workdir(&diff, repo, NULL, NULL) == 0) {
-        size_t n = git_diff_num_deltas(diff);
-        for (size_t i = 0; i < n; i++) {
-            const git_diff_delta *d = git_diff_get_delta(diff, i);
-            char line[4200];
-            snprintf(line, sizeof line, "%c %s",
-                     git_diff_status_char(d->status), d->new_file.path);
-            sb_line(&s, line);
-        }
-        if (n == 0) sb_line(&s, "no changes");
-        git_diff_free(diff);
-    }
-    git_repository_free(repo);
-    mv_set_str(argv[1], s.d ? s.d : "no changes", s.d ? (int64_t)s.len : 10);
-    free(s.d);
 }

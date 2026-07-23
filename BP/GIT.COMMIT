@@ -1,0 +1,20 @@
+/**
+ * @file GIT.COMMIT
+ * @version 4.0
+ */
+SUBROUTINE GIT.COMMIT
+S = TRIM(SENTENCE())
+A3 = FIELD(S, " ", 3)
+IF A3 = "-m" THEN
+   MSG = FIELD(S, " ", 4, 99)
+END ELSE
+   MSG = FIELD(S, " ", 3, 99)
+END
+IF MSG = "" THEN
+   PRINT "usage: GIT COMMIT -m message"
+   RETURN
+END
+OUT = ""
+CALL GITCOMMIT(".recgit", MSG, OUT)
+PRINT OUT
+RETURN

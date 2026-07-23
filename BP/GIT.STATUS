@@ -1,10 +1,10 @@
 /**
- * @file GIT.LOG
+ * @file GIT.STATUS
  * @version 4.0
  */
-SUBROUTINE GIT.LOG
+SUBROUTINE GIT.STATUS
 OUT = ""
-CALL GITLOG(".recgit", "20", OUT)
+CALL GITSTATUS(".recgit", OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I

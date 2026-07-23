@@ -1,9 +1,7 @@
 /**
  * @file GIT.RESTORE
- * @version 1.0
+ * @version 4.0
  */
-* GIT RESTORE file — write the file's records back from the latest
-* commit (records absent from git are deleted).
 SUBROUTINE GIT.RESTORE
 FN = FIELD(TRIM(SENTENCE()), " ", 3)
 IF FN = "" THEN

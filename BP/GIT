@@ -1,11 +1,17 @@
 /**
  * @file GIT
- * @version 3.0
+ * @version 4.0
  */
-* GIT — version hash-file records directly (no export copy).  Records
-* become git blobs in place; git objects live in a bare repo (.recgit).
-CALL CMD.INIT("GIT", "version hash-file records with git")
-CALL CMD.ADD("SAVE", "commit a file's records", "GIT.SAVE")
-CALL CMD.ADD("RESTORE", "restore a file's records from git", "GIT.RESTORE")
-CALL CMD.ADD("LOG", "recent history", "GIT.LOG")
+* GIT — git for hash-file records, modelled on real git.  The "path"
+* is an MVX file plus record id; the working tree is the live records.
+CALL CMD.INIT("GIT", "version-control hash-file records")
+CALL CMD.ADD("INIT", "create the record repository", "GIT.INIT")
+CALL CMD.ADD("ADD", "stage records (file {id})", "GIT.ADD")
+CALL CMD.ADD("RM", "unstage a record (file id)", "GIT.RM")
+CALL CMD.ADD("STATUS", "show staged / changed records", "GIT.STATUS")
+CALL CMD.ADD("COMMIT", "commit staged records (-m msg)", "GIT.COMMIT")
+CALL CMD.ADD("LOG", "commit history", "GIT.LOG")
+CALL CMD.ADD("DIFF", "unstaged record changes {file}", "GIT.DIFF")
+CALL CMD.ADD("SHOW", "committed content of a record (file id)", "GIT.SHOW")
+CALL CMD.ADD("RESTORE", "restore records from HEAD (file)", "GIT.RESTORE")
 CALL CMD.RUN

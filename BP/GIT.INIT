@@ -1,0 +1,9 @@
+/**
+ * @file GIT.INIT
+ * @version 4.0
+ */
+SUBROUTINE GIT.INIT
+OUT = ""
+CALL GITINIT(".recgit", OUT)
+PRINT OUT
+RETURN

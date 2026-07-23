@@ -1,0 +1,18 @@
+/**
+ * @file GIT.SHOW
+ * @version 4.0
+ */
+SUBROUTINE GIT.SHOW
+S = TRIM(SENTENCE())
+FN = FIELD(S, " ", 3)
+ID = FIELD(S, " ", 4)
+IF FN = "" OR ID = "" THEN
+   PRINT "usage: GIT SHOW file record"
+   RETURN
+END
+OUT = ""
+CALL GITSHOW(".recgit", FN, ID, OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
+RETURN

@@ -1,0 +1,16 @@
+/**
+ * @file GIT.ADD
+ * @version 4.0
+ */
+SUBROUTINE GIT.ADD
+S = TRIM(SENTENCE())
+FN = FIELD(S, " ", 3)
+ID = FIELD(S, " ", 4)
+IF FN = "" THEN
+   PRINT "usage: GIT ADD file {record}"
+   RETURN
+END
+OUT = ""
+CALL GITADD(".recgit", FN, ID, OUT)
+PRINT OUT
+RETURN

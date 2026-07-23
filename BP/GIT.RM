@@ -1,0 +1,16 @@
+/**
+ * @file GIT.RM
+ * @version 4.0
+ */
+SUBROUTINE GIT.RM
+S = TRIM(SENTENCE())
+FN = FIELD(S, " ", 3)
+ID = FIELD(S, " ", 4)
+IF FN = "" THEN
+   PRINT "usage: GIT RM file {record}"
+   RETURN
+END
+OUT = ""
+CALL GITRM(".recgit", FN, ID, OUT)
+PRINT OUT
+RETURN
