@@ -1,0 +1,16 @@
+/**
+ * @file GIT.EXPORT
+ * @version 1.0
+ */
+* GIT EXPORT file — export a hash file to its directory file and stage
+* it for commit.
+SUBROUTINE GIT.EXPORT
+FN = FIELD(TRIM(SENTENCE()), " ", 3)
+IF FN = "" THEN
+   PRINT "usage: GIT EXPORT file"
+   RETURN
+END
+EXECUTE "EXPORT ":FN
+EXECUTE "!git add ":FN:".EXP"
+PRINT FN:".EXP staged"
+RETURN

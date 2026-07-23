@@ -1,0 +1,14 @@
+/**
+ * @file GIT.COMMIT
+ * @version 1.0
+ */
+* GIT COMMIT message... — commit staged changes.
+SUBROUTINE GIT.COMMIT
+S = TRIM(SENTENCE())
+MSG = FIELD(S, " ", 3, 99)
+IF MSG = "" THEN
+   PRINT "usage: GIT COMMIT message"
+   RETURN
+END
+EXECUTE "!git commit -m '":MSG:"'"
+RETURN

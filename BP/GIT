@@ -1,11 +1,14 @@
-* /**
-*  * @file GIT
-*  * @version 1.0
-*  */
+/**
+ * @file GIT
+ * @version 1.1
+ */
 * GIT — git for MVX accounts, built on the cmd framework.
 CALL CMD.INIT("GIT", "work with the account's git repository")
 CALL CMD.ADD("STATUS", "working tree status", "GIT.STATUS")
 CALL CMD.ADD("LOG", "recent history", "GIT.LOG")
 CALL CMD.ADD("DIFF", "unstaged changes", "GIT.DIFF")
 CALL CMD.ADD("INIT", "initialise a repository here", "GIT.INIT")
+CALL CMD.ADD("EXPORT", "export a hash file and stage it", "GIT.EXPORT")
+CALL CMD.ADD("IMPORT", "import a hash file from its export", "GIT.IMPORT")
+CALL CMD.ADD("COMMIT", "commit staged changes", "GIT.COMMIT")
 CALL CMD.RUN

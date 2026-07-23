@@ -1,0 +1,14 @@
+/**
+ * @file GIT.IMPORT
+ * @version 1.0
+ */
+* GIT IMPORT file — import a hash file from its directory file (after a
+* pull or checkout changed it).
+SUBROUTINE GIT.IMPORT
+FN = FIELD(TRIM(SENTENCE()), " ", 3)
+IF FN = "" THEN
+   PRINT "usage: GIT IMPORT file"
+   RETURN
+END
+EXECUTE "IMPORT ":FN
+RETURN
