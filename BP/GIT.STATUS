@@ -1,0 +1,7 @@
+* /**
+*  * @file GIT.STATUS
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.STATUS
+EXECUTE "!git status --short --branch"
+RETURN

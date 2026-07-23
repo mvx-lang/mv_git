@@ -1,0 +1,7 @@
+* /**
+*  * @file GIT.DIFF
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.DIFF
+EXECUTE "!git diff --stat"
+RETURN

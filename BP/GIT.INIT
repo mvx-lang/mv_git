@@ -1,0 +1,7 @@
+* /**
+*  * @file GIT.INIT
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.INIT
+EXECUTE "!git init"
+RETURN

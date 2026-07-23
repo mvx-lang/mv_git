@@ -1,0 +1,7 @@
+* /**
+*  * @file GIT.LOG
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.LOG
+EXECUTE "!git log --oneline -10"
+RETURN
