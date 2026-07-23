@@ -1,7 +1,11 @@
-* /**
-*  * @file GIT.LOG
-*  * @version 1.0
-*  */
+/**
+ * @file GIT.LOG
+ * @version 2.1
+ */
 SUBROUTINE GIT.LOG
-EXECUTE "!git log --oneline -10"
+OUT = ""
+CALL GITLOG(".", "10", OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
 RETURN

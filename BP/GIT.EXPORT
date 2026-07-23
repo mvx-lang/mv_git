@@ -1,9 +1,9 @@
 /**
  * @file GIT.EXPORT
- * @version 1.0
+ * @version 2.0
  */
 * GIT EXPORT file — export a hash file to its directory file and stage
-* it for commit.
+* it (native add, no shell).
 SUBROUTINE GIT.EXPORT
 FN = FIELD(TRIM(SENTENCE()), " ", 3)
 IF FN = "" THEN
@@ -11,6 +11,11 @@ IF FN = "" THEN
    RETURN
 END
 EXECUTE "EXPORT ":FN
-EXECUTE "!git add ":FN:".EXP"
-PRINT FN:".EXP staged"
+ERR = ""
+CALL GITADD(".", FN:".EXP", ERR)
+IF ERR = "" THEN
+   PRINT FN:".EXP staged"
+END ELSE
+   PRINT ERR
+END
 RETURN

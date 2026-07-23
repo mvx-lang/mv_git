@@ -1,7 +1,13 @@
-* /**
-*  * @file GIT.INIT
-*  * @version 1.0
-*  */
+/**
+ * @file GIT.INIT
+ * @version 2.0
+ */
 SUBROUTINE GIT.INIT
-EXECUTE "!git init"
+ERR = ""
+CALL GITINIT(".", ERR)
+IF ERR = "" THEN
+   PRINT "initialised git repository"
+END ELSE
+   PRINT ERR
+END
 RETURN

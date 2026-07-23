@@ -1,7 +1,11 @@
-* /**
-*  * @file GIT.STATUS
-*  * @version 1.0
-*  */
+/**
+ * @file GIT.STATUS
+ * @version 2.1
+ */
 SUBROUTINE GIT.STATUS
-EXECUTE "!git status --short --branch"
+OUT = ""
+CALL GITSTATUS(".", OUT)
+FOR I = 1 TO DCOUNT(OUT, @AM)
+   PRINT OUT<I>
+NEXT I
 RETURN
