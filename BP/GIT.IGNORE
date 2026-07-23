@@ -1,0 +1,24 @@
+/**
+ * @file GIT.IGNORE
+ * @version 1.0
+ */
+* GIT IGNORE pattern — keep matching records out of history.
+SUBROUTINE GIT.IGNORE
+PAT = FIELD(TRIM(SENTENCE()), " ", 3, 99)
+IF PAT = "" THEN
+   PRINT "usage: GIT IGNORE pattern"
+   RETURN
+END
+OPEN "." TO ACC ELSE
+   PRINT "cannot open the account directory"
+   RETURN
+END
+READ IG FROM ACC, "GITIGNORE" ELSE IG = ""
+LOCATE(PAT, IG; POS) THEN
+   PRINT PAT:" already ignored"
+   RETURN
+END
+IG<-1> = PAT
+WRITE IG ON ACC, "GITIGNORE"
+PRINT "ignoring ":PAT
+RETURN

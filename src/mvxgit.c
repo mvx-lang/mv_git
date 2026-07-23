@@ -15,6 +15,7 @@
  */
 #include "mvx_runtime.h"
 
+#include <fnmatch.h>
 #include <git2.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +76,71 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
     if (s->d) mv_set_str(dst, s->d, (int64_t)s->len);
     else mv_set_str(dst, empty, (int64_t)strlen(empty));
     free(s->d);
+}
+
+/* --- ignore rules ------------------------------------------------------
+   The account's GITIGNORE record (a file in the account root, one glob
+   per line) keeps bulk data out of history: ignore "ORDERS" to skip a
+   million order records while "ORDERS.DICT" (the dictionary) stays
+   trackable.  A pattern matches either the file name or the full
+   "file/record" path. */
+static char g_ign[128][256];
+static int g_nign, g_ign_loaded;
+
+static void load_ignores(void) {
+    if (g_ign_loaded) return;
+    g_ign_loaded = 1;
+    g_nign = 0;
+    const char *acct = getenv("MVXACCOUNT");
+    if (!acct || !acct[0]) acct = ".";
+    char path[4096];
+    snprintf(path, sizeof path, "%s/GITIGNORE", acct);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    char ln[512];
+    while (fgets(ln, sizeof ln, fp) && g_nign < 128) {
+        size_t n = strlen(ln);
+        while (n && (ln[n - 1] == '\n' || ln[n - 1] == '\r' ||
+                     ln[n - 1] == ' '))
+            ln[--n] = '\0';
+        char *p = ln;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '#') continue;
+        snprintf(g_ign[g_nign++], 256, "%s", p);
+    }
+    fclose(fp);
+}
+
+static int ignored(const char *file, const char *path) {
+    load_ignores();
+    for (int i = 0; i < g_nign; i++) {
+        if (fnmatch(g_ign[i], file, 0) == 0) return 1;
+        if (fnmatch(g_ign[i], path, FNM_PATHNAME) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Open an MVX file by its git name: a trailing ".DICT" opens the
+   dictionary of the base file, so dictionaries are trackable as
+   "<file>.DICT". */
+static int open_named(mvx_ctx *ctx, const char *name, mv_value *fvar) {
+    size_t n = strlen(name);
+    mv_value spec;
+    mv_init(&spec);
+    if (n > 5 && strcmp(name + n - 5, ".DICT") == 0) {
+        mv_value dictv;
+        mv_init(&dictv);
+        mv_set_str(&dictv, "DICT", 4);
+        mv_set_str(&spec, name, (int64_t)(n - 5));
+        int r = mvx_open(ctx, &dictv, &spec, fvar);
+        mv_clear(&dictv);
+        mv_clear(&spec);
+        return r;
+    }
+    mv_set_str(&spec, name, (int64_t)n);
+    int r = mvx_open(ctx, NULL, &spec, fvar);
+    mv_clear(&spec);
+    return r;
 }
 
 /* Open (init if needed) the bare repo, and its persistent index. */
@@ -151,11 +217,19 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
 
-    mv_value spec, fvar, id, rec;
-    mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
-    mv_set_str(&spec, fn, (int64_t)strlen(fn));
-    int64_t n = 0;
-    if (mvx_open(ctx, NULL, &spec, &fvar)) {
+    if (ignored(fn, fn)) {
+        char out[300];
+        snprintf(out, sizeof out, "%s is in GITIGNORE, nothing staged", fn);
+        mv_set_str(argv[3], out, (int64_t)strlen(out));
+        git_index_free(index);
+        git_repository_free(repo);
+        return;
+    }
+
+    mv_value fvar, id, rec;
+    mv_init(&fvar); mv_init(&id); mv_init(&rec);
+    int64_t n = 0, skipped = 0;
+    if (open_named(ctx, fn, &fvar)) {
         int one = only[0] != '\0';
         int have = 1;
         if (one) {
@@ -171,6 +245,12 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
+            {
+                char pcheck[600];
+                snprintf(pcheck, sizeof pcheck, "%s/%s", fn, idb);
+                if (ignored(fn, pcheck)) { skipped++; if (one) break;
+                    else continue; }
+            }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
             int64_t bl;
@@ -192,14 +272,18 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             if (one) break;
         }
     }
-    mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+    mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 
     int rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
     if (rc != 0) { fail(argv[3], "write index"); return; }
-    char out[64];
-    snprintf(out, sizeof out, "staged %lld record(s)", (long long)n);
+    char out[96];
+    if (skipped)
+        snprintf(out, sizeof out, "staged %lld record(s), %lld ignored",
+                 (long long)n, (long long)skipped);
+    else
+        snprintf(out, sizeof out, "staged %lld record(s)", (long long)n);
     mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
@@ -344,21 +428,15 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     for (size_t f = 0; f < files.c; f++) {
         const char *fn = files.n[f];
-        mv_value spec, fvar, id, rec;
-        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
-        mv_set_str(&spec, fn, (int64_t)strlen(fn));
-        /* mark index entries for this file as unseen */
-        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+        mv_value fvar, id, rec;
+        mv_init(&fvar); mv_init(&id); mv_init(&rec);
+        if (open_named(ctx, fn, &fvar)) {
             mvx_select(ctx, &fvar);
             while (mvx_readnext(ctx, &id)) {
                 if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
                 char idb[256], nb[40], path[600];
                 arg_str(&id, idb, sizeof idb);
                 snprintf(path, sizeof path, "%s/%s", fn, idb);
-                size_t pos;
-                const git_index_entry *ie =
-                    git_index_get_bypath(index, path, 0) ? NULL : NULL;
-                (void)ie; (void)pos;
                 const git_index_entry *entry =
                     git_index_get_bypath(index, path, 0);
                 const char *cp;
@@ -366,6 +444,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
                 git_oid woid;
                 record_oid(cp, clen, &woid);
                 if (!entry) {
+                    if (ignored(fn, path)) continue;   /* not untracked */
                     char line[700];
                     snprintf(line, sizeof line, "?? %s", path);
                     sb_line(&s, line);
@@ -376,7 +455,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
                 }
             }
         }
-        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+        mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
     }
     /* deleted: index entry whose record no longer exists */
     for (size_t i = 0; i < ic; i++) {
@@ -385,15 +464,14 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         split_top(e->path, top, sizeof top);
         const char *recid = strchr(e->path, '/');
         recid = recid ? recid + 1 : e->path;
-        mv_value spec, fvar, id, rec;
-        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
-        mv_set_str(&spec, top, (int64_t)strlen(top));
+        mv_value fvar, id, rec;
+        mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int gone = 1;
-        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+        if (open_named(ctx, top, &fvar)) {
             mv_set_str(&id, recid, (int64_t)strlen(recid));
             gone = !mvx_read(ctx, &rec, &fvar, &id, 0);
         }
-        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+        mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
         if (gone) {
             char line[700];
             snprintf(line, sizeof line, " D %s", e->path);
@@ -493,11 +571,10 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         const char *recid = strchr(e->path, '/');
         recid = recid ? recid + 1 : e->path;
 
-        mv_value spec, fvar, id, rec;
-        mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
-        mv_set_str(&spec, top, (int64_t)strlen(top));
+        mv_value fvar, id, rec;
+        mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int have = 0;
-        if (mvx_open(ctx, NULL, &spec, &fvar)) {
+        if (open_named(ctx, top, &fvar)) {
             mv_set_str(&id, recid, (int64_t)strlen(recid));
             have = mvx_read(ctx, &rec, &fvar, &id, 0);
         }
@@ -527,7 +604,7 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             free(buf);
             git_blob_free(old);
         }
-        mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+        mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
     }
     git_index_free(index);
     git_repository_free(repo);
@@ -587,14 +664,12 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         fail(argv[2], "no committed history for file");
         return;
     }
-    mv_value spec, fvar, id, rec;
-    mv_init(&spec); mv_init(&fvar); mv_init(&id); mv_init(&rec);
-    mv_set_str(&spec, fn, (int64_t)strlen(fn));
-    mvx_createfile(ctx, &spec, NULL);
+    mv_value fvar, id, rec;
+    mv_init(&fvar); mv_init(&id); mv_init(&rec);
     int64_t nw = 0, nd = 0;
     char (*seen)[256] = NULL;
     size_t ns = 0, cap = 0;
-    if (mvx_open(ctx, NULL, &spec, &fvar)) {
+    if (open_named(ctx, fn, &fvar)) {
         size_t cnt = git_tree_entrycount(subtree);
         for (size_t i = 0; i < cnt; i++) {
             const git_tree_entry *te = git_tree_entry_byindex(subtree, i);
@@ -630,7 +705,7 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         mv_clear(&dl);
     }
     free(seen);
-    mv_clear(&spec); mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
+    mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
     git_tree_entry_free(sub);
     git_tree_free(subtree);
     git_tree_free(t);

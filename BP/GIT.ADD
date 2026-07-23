@@ -1,13 +1,19 @@
 /**
  * @file GIT.ADD
- * @version 4.0
+ * @version 4.1
  */
 SUBROUTINE GIT.ADD
 S = TRIM(SENTENCE())
-FN = FIELD(S, " ", 3)
-ID = FIELD(S, " ", 4)
-IF FN = "" THEN
-   PRINT "usage: GIT ADD file {record}"
+A = FIELD(S, " ", 3)
+IF A = "DICT" THEN
+   FN = FIELD(S, " ", 4):".DICT"
+   ID = FIELD(S, " ", 5)
+END ELSE
+   FN = A
+   ID = FIELD(S, " ", 4)
+END
+IF FN = ".DICT" OR FN = "" THEN
+   PRINT "usage: GIT ADD {DICT} file {record}"
    RETURN
 END
 OUT = ""
