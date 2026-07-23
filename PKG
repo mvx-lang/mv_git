@@ -1,4 +1,4 @@
 git
-2.0
-native git via libgit2
+3.0
+version hash-file records with git (direct)
 cmd

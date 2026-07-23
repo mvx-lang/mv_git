@@ -1,10 +1,10 @@
 /**
  * @file GIT.LOG
- * @version 2.1
+ * @version 3.0
  */
 SUBROUTINE GIT.LOG
 OUT = ""
-CALL GITLOG(".", "10", OUT)
+CALL GITLOG(".recgit", "10", OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I

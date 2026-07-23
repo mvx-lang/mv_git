@@ -1,0 +1,16 @@
+/**
+ * @file GIT.RESTORE
+ * @version 1.0
+ */
+* GIT RESTORE file — write the file's records back from the latest
+* commit (records absent from git are deleted).
+SUBROUTINE GIT.RESTORE
+FN = FIELD(TRIM(SENTENCE()), " ", 3)
+IF FN = "" THEN
+   PRINT "usage: GIT RESTORE file"
+   RETURN
+END
+OUT = ""
+CALL GITRESTORE(".recgit", FN, OUT)
+PRINT OUT
+RETURN
