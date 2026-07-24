@@ -18,20 +18,19 @@
  * checkout, switch, pull, merge, rebase, reset, restore, cherry-pick,
  * revert, stash — succeeds in a directory that is an MVX account (it
  * carries a .mvx descriptor), mvx-git rebuilds the account so its hash
- * files match the git-tracked legible form.  The rebuild is exactly
- * `mvx -a <account> -c CONVERT-ACCOUNT` (developer privilege); no MVX
- * internals are changed.
+ * files match the git-tracked directory form.  Symmetrically, before a
+ * commit or add it exports the live hash files back to the directory
+ * form so git records the legible version.  Both directions run
+ * mvx-convert-acct; no MVX internals are changed.
  *
  * A clone is special: it creates a brand-new directory.  If the clone
- * carries a .mvx descriptor it is provisioned automatically; if not,
- * and stdin is a terminal, mvx-git asks whether to make it a new
- * account (default no) and, on yes, creates one with BUILD — which adds
- * only a .mvx and a VOC, so declining leaves an ordinary checkout and
- * an accidental yes cannot mangle a non-MVX repository.  In an ordinary
- * repository it otherwise does nothing extra and behaves like git.
+ * carries a .mvx descriptor it is rebuilt automatically; if not, and
+ * stdin is a terminal, mvx-git asks whether to make it a new account
+ * (default no).  Declining leaves an ordinary checkout; in an ordinary
+ * repository mvx-git does nothing extra and behaves like git.
  *
- * The real git is found on PATH as "git"; the MVX shell as $MVX, else
- * "mvx" on PATH.
+ * The real git is found on PATH as "git"; mvx-convert-acct via
+ * $MVXCONVERT or PATH.
  */
 
 #include <errno.h>
@@ -142,22 +141,23 @@ static int account_from_cwd(char *out, size_t cap) {
     }
 }
 
-/* Provision `acct` with an MVX verb: CONVERT-ACCOUNT rebuilds an
- * exported account into hash files; BUILD creates a fresh one (writing
- * the .mvx descriptor and an empty VOC) without touching other
- * directories, so it is safe on a repo that only might be an account. */
-static void provision(const char *acct, const char *verb) {
-    int building = strcmp(verb, "BUILD") == 0;
-    fprintf(stderr, "mvx-git: %s MVX account %s\n",
-            building ? "creating" : "rebuilding", acct);
-    const char *mvx = getenv("MVX");
-    if (!mvx || !mvx[0]) mvx = "mvx";
-    setenv("MVXPRIV", "developer", 1);          /* provisioning catalogs */
-    char *rargv[] = {(char *)mvx, "-a", (char *)acct, "-c",
-                     (char *)verb, NULL};
+/* Convert the account with mvx-convert-acct: import (git directory form
+ * -> live hash files) or, with do_export, export (hash files -> git
+ * directory form).  The tool is found via $MVXCONVERT or PATH. */
+static void convert_acct(const char *acct, int do_export) {
+    fprintf(stderr, "mvx-git: %s account %s\n",
+            do_export ? "exporting" : "rebuilding", acct);
+    const char *tool = getenv("MVXCONVERT");
+    if (!tool || !tool[0]) tool = "mvx-convert-acct";
+    char *rargv[5];
+    int n = 0;
+    rargv[n++] = (char *)tool;
+    if (do_export) rargv[n++] = "--export";
+    rargv[n++] = (char *)acct;
+    rargv[n] = NULL;
     int rc = run(rargv);
     if (rc != 0)
-        fprintf(stderr, "mvx-git: account %s failed (exit %d)\n", verb, rc);
+        fprintf(stderr, "mvx-git: account conversion failed (exit %d)\n", rc);
 }
 
 /* Decide whether a freshly cloned non-account directory should become a
@@ -195,32 +195,34 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "-c") == 0) i++;
     }
 
+    /* Commit-style commands record the git directory form, so export the
+     * live hash files to it BEFORE git runs. */
+    char acct[PATH_MAX];
+    int committing = sub && (!strcmp(sub, "commit") || !strcmp(sub, "add"));
+    if (committing && account_from_cwd(acct, sizeof acct) && is_account(acct))
+        convert_acct(acct, 1);
+
     int code = run(gargv);
     free(gargv);
 
-    /* Only follow up after a successful tree-changing command. */
+    /* Only follow up after a successful command. */
     if (code != 0 || !sub || !tree_changing(sub)) return code;
 
-    /* clone lands in a brand-new directory: provision it as an account.
-     * A committed .mvx descriptor means "this is an account" — rebuild
-     * it automatically.  Otherwise offer to make one (terminal only,
-     * default no), and create it conservatively with BUILD. */
+    /* clone lands in a brand-new directory: rebuild it into hash files.
+     * A committed .mvx means "this is an account"; otherwise offer to
+     * make one (terminal only, default no). */
     if (strcmp(sub, "clone") == 0) {
-        char acct[PATH_MAX];
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
             return code;                            /* target undetermined */
-        if (is_account(acct))
-            provision(acct, "CONVERT-ACCOUNT");
-        else if (ask_create_account(acct))
-            provision(acct, "BUILD");
+        if (is_account(acct) || ask_create_account(acct))
+            convert_acct(acct, 0);
         return code;
     }
 
     /* Every other tree-changing command runs inside an existing tree:
-     * re-sync only when it is already an MVX account, never prompt. */
-    char acct[PATH_MAX];
+     * re-import only when it is already an MVX account, never prompt. */
     if (account_from_cwd(acct, sizeof acct) && is_account(acct))
-        provision(acct, "CONVERT-ACCOUNT");
+        convert_acct(acct, 0);
 
     return code;   /* git's exit code is what callers expect */
 }
