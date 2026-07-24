@@ -30,3 +30,10 @@ cc -O2 -fPIC -shared $UNDEF \
    "$PKG/src/mvxgit.c" $LDFLAGS \
    -o "$PKG/LIB/libmvxgit.$EXT"
 echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
+
+# mvx-git: a drop-in git wrapper that rebuilds an MVX account after any
+# tree-changing command.  Plain C — it shells out to git and mvx — so it
+# needs no libraries of its own.
+mkdir -p "$PKG/bin"
+cc -O2 "$PKG/src/mvx-git.c" -o "$PKG/bin/mvx-git"
+echo "  built bin/mvx-git (git wrapper)"
