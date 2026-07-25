@@ -699,7 +699,7 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo,
         mv_set_str(&rec, r, rl);
         free(r);
         mv_set_str(&id, name, (int64_t)strlen(name));
-        mvx_write(ctx, &rec, &fvar, &id, 0);
+        mvx_write(ctx, &rec, &fvar, &id, 0, 0);
         (*nw)++;
         if (ns == cap) { cap = cap ? cap * 2 : 64;
             seen = realloc(seen, cap * sizeof *seen);
@@ -1003,7 +1003,7 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             mv_set_str(&rec, r, rl);
             free(r);
             mv_set_str(&id, name, (int64_t)strlen(name));
-            mvx_write(ctx, &rec, &fvar, &id, 0);
+            mvx_write(ctx, &rec, &fvar, &id, 0, 0);
             nw++;
             if (ns == cap) { cap = cap ? cap * 2 : 64;
                 seen = realloc(seen, cap * sizeof *seen);
