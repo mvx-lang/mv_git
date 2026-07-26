@@ -12,12 +12,15 @@
 
 /* mvx-git — git for MVX accounts.
  *
- * For a record-git account (one carrying a .recgit bare repo, or being
- * `init`-ed) mvx-git drives the record-git engine directly: it reads and
- * writes the account's hash-file records straight to/from git objects via
- * libgit2 — exactly the engine the BASIC GIT verb uses (#58).  The working
- * tree is the live records, so there is no filesystem checkout and no export
- * copy; commit/add/checkout touch the records, not a duplicated directory.
+ * Inside an MVX account (a directory carrying a .mvx descriptor) mvx-git drives
+ * the record-git engine directly: it reads and writes the account's hash-file
+ * records straight to/from git objects in the account's own .git via libgit2 —
+ * exactly the engine the BASIC GIT verb uses (#58).  The working tree is the
+ * live records, so there is no export copy; commit/add/checkout touch the
+ * records.  The .git is an ordinary repository (a host like GitHub sees a
+ * normal repo); a plain git clone/checkout materialises the records as files
+ * "incorrectly", and the committed .mvx marks the result as an account so the
+ * account tooling rebuilds it.
  *
  * Everything else is forwarded verbatim to the real git: commands the engine
  * does not implement, and any command run outside a record-git account (so
@@ -121,10 +124,13 @@ static int is_account(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
-/* True if the account already carries a record-git repository. */
-static int has_recgit(const char *dir) {
+/* True if the account carries its own git repository (a .git directly in the
+ * account root).  A standalone account does; an account that is a subdirectory
+ * of a larger repo does not — it is tracked by that repo, so mvx-git forwards
+ * to it and the account is rebuilt with mvx-convert-acct (or an mvx-git clone). */
+static int has_own_git(const char *dir) {
     char p[PATH_MAX];
-    snprintf(p, sizeof p, "%s/.recgit", dir);
+    snprintf(p, sizeof p, "%s/.git", dir);
     struct stat sb;
     return stat(p, &sb) == 0;
 }
@@ -209,7 +215,7 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
     struct dirent *e;
     while ((e = readdir(d))) {
         const char *n = e->d_name;
-        if (n[0] == '.') continue;                 /* .mvx .recgit .gitignore */
+        if (n[0] == '.') continue;                 /* .mvx .git .gitignore */
         if (!strcmp(n, "mvxdata.lmdb") || !strcmp(n, "CATALOG") ||
             !strcmp(n, "LIB") || !strcmp(n, "bin") || !strcmp(n, "PACKAGES"))
             continue;
@@ -255,7 +261,7 @@ static int engine_run(const char *acct, const char *sub,
         return 1;
     }
     mvx_ctx *ctx = mvx_ctx_create();
-    const char *repo = ".recgit";
+    const char *repo = ".git";
     const char *p0 = positional(argc, argv, subidx, 0);
     const char *p1 = positional(argc, argv, subidx, 1);
     char *out = NULL;
@@ -322,12 +328,14 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "-c") == 0) i++;
     }
 
-    /* Record-git path: an engine command inside an account that already has a
-     * .recgit (or `init`, which creates one) — drive the engine, no git, no
-     * convert. */
+    /* Record-git path: an engine command in an MVX account (a .mvx marks it)
+     * that has its own .git — or `init`, which creates one — drives the engine
+     * on that .git: records straight to/from git objects, no export copy, no
+     * convert.  A subdirectory account (no .git of its own) is tracked by the
+     * enclosing repo, so it falls through to plain git below. */
     char acct[PATH_MAX];
     if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct) &&
-        (has_recgit(acct) || !strcmp(sub, "init")))
+        (has_own_git(acct) || !strcmp(sub, "init")))
         return engine_run(acct, sub, argc, argv, subidx);
 
     /* Otherwise forward verbatim to real git. */
@@ -351,10 +359,10 @@ int main(int argc, char **argv) {
         return code;
     }
 
-    /* Any other tree-changing command in a legible account (real git checkout
-     * etc.) rebuilds its hash files from the updated directory form. */
-    if (account_from_cwd(acct, sizeof acct) && is_account(acct) &&
-        !has_recgit(acct))
+    /* Any other tree-changing command forwarded to plain git (pull, rebase,
+     * reset, …) leaves the account's working tree as checked-out record files;
+     * rebuild the live hash files from that directory form. */
+    if (account_from_cwd(acct, sizeof acct) && is_account(acct))
         convert_import(acct);
 
     return code;

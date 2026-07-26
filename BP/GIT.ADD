@@ -26,6 +26,6 @@ IF FN = ".DICT" OR FN = "" THEN
    RETURN
 END
 OUT = ""
-CALL GITADD(".recgit", FN, ID, OUT)
+CALL GITADD(".git", FN, ID, OUT)
 PRINT OUT
 RETURN

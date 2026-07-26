@@ -8,17 +8,16 @@
 /* Plain-C record-git API (#58).
  *
  * The record-git engine reads and writes hash-file records directly to/from
- * git objects in a bare repo (default ".recgit"); its working tree is the live
- * records, so there is no filesystem checkout and no export copy.  The BASIC
- * GIT verb reaches it through the subroutine ABI (mvx_sub_GIT*); this header
- * exposes the same operations as ordinary C functions so the mvx-git
- * executable can drive the identical engine instead of shelling out to git and
- * mvx-convert-acct.
+ * git objects in the account's own git repository; its working tree is the
+ * live records, so there is no export copy.  The BASIC GIT verb reaches it
+ * through the subroutine ABI (mvx_sub_GIT*); this header exposes the same
+ * operations as ordinary C functions so the mvx-git executable can drive the
+ * identical engine instead of shelling out to git and mvx-convert-acct.
  *
  * Each call returns a malloc'd output string the caller frees.  Lines are
  * separated by the attribute mark 0xFE (@AM) — the mvx-git executable renders
  * those as newlines.  `ctx` is a runtime context bound to the account
- * (MVXACCOUNT); `repo` is the bare-repo path, normally ".recgit".
+ * (MVXACCOUNT); `repo` is the repository path, normally ".git".
  */
 #ifndef MVXGIT_H
 #define MVXGIT_H

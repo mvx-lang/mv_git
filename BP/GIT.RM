@@ -20,6 +20,6 @@ IF FN = "" THEN
    RETURN
 END
 OUT = ""
-CALL GITRM(".recgit", FN, ID, OUT)
+CALL GITRM(".git", FN, ID, OUT)
 PRINT OUT
 RETURN

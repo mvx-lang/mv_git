@@ -12,12 +12,12 @@
 
 /* Native git for hash-file records, via libgit2 — modelled on real git.
  *
- * The working tree is the live records in an MVX file; the index (a
- * persistent staging area at <repo>/index) is git's staging area; and
- * commits are commits, in a bare repo (default .recgit).  A record maps
- * to the git path "<file>/<id>", so ordinary git tooling reads the
- * history.  Attribute marks translate to newlines in the blob (and
- * back on restore) so diffs are line-oriented.
+ * The working tree is the live records in an MVX file; the index (at
+ * <repo>/index) is git's staging area; and commits are commits, in the
+ * account's own git repository (its .git).  A record maps to the git path
+ * "<file>/<id>", so ordinary git tooling and hosts read the history.
+ * Attribute marks translate to newlines in the blob (and back on restore) so
+ * diffs are line-oriented.
  *
  * These are cataloged subroutines (the MVX subroutine ABI), CALLed by
  * the BASIC GIT verb.  libgit2 links into this library alone; records
@@ -155,12 +155,22 @@ static int open_named(mvx_ctx *ctx, const char *name, mv_value *fvar) {
     return r;
 }
 
-/* Init a bare repo whose initial branch is main (modern default). */
+/* Init the account's git repository (initial branch main).  The path is the
+   account's ".git" directory, so this is an ordinary (non-bare) repo that git
+   and hosts like GitHub recognise — the account directory is its working tree.
+   The working tree "checks out incorrectly" under plain git (records are the
+   real working tree, not files), which is fine: the .mvx descriptor marks the
+   directory as an MVX account, and the account tooling rebuilds the records. */
 static int init_bare_main(git_repository **repo, const char *path) {
+    /* A non-bare repo is initialised at its working directory (the account
+       root), where git puts the gitdir at ".git".  Callers pass the gitdir
+       (".git"); its working tree is the parent, i.e. the current directory the
+       caller has already entered. */
+    (void)path;
     git_repository_init_options o = GIT_REPOSITORY_INIT_OPTIONS_INIT;
-    o.flags = GIT_REPOSITORY_INIT_BARE | GIT_REPOSITORY_INIT_MKPATH;
+    o.flags = GIT_REPOSITORY_INIT_MKPATH;
     o.initial_head = "main";
-    return git_repository_init_ext(repo, path, &o);
+    return git_repository_init_ext(repo, ".", &o);
 }
 
 /* Open (init if needed) the bare repo, and its persistent index. */

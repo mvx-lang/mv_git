@@ -13,7 +13,7 @@
  */
 SUBROUTINE GIT.LOG
 OUT = ""
-CALL GITLOG(".recgit", "20", OUT)
+CALL GITLOG(".git", "20", OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
