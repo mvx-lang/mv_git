@@ -128,6 +128,18 @@ static int is_account(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
+/* True if the account keeps an LMDB hash-file store.  A legible/directory
+ * account has none — its files already sit on disk in git-trackable form — so
+ * there is nothing to export before a commit and nothing to rebuild after a
+ * checkout: mvx-git behaves as plain git.  Only an LMDB-backed account needs
+ * the convert step (until it reads/writes those records directly — see #58). */
+static int has_lmdb_store(const char *dir) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/mvxdata.lmdb", dir);
+    struct stat sb;
+    return stat(p, &sb) == 0;
+}
+
 /* Walk up from the current directory to the nearest MVX account root.
  * Returns 1 and fills `out` on success. */
 static int account_from_cwd(char *out, size_t cap) {
@@ -195,11 +207,14 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "-c") == 0) i++;
     }
 
-    /* Commit-style commands record the git directory form, so export the
-     * live hash files to it BEFORE git runs. */
+    /* Commit-style commands record the git directory form.  An LMDB-backed
+     * account must export its live hash files to that form BEFORE git runs; a
+     * legible/directory account already is that form, so there is nothing to
+     * export and mvx-git just runs git verbatim. */
     char acct[PATH_MAX];
     int committing = sub && (!strcmp(sub, "commit") || !strcmp(sub, "add"));
-    if (committing && account_from_cwd(acct, sizeof acct) && is_account(acct))
+    if (committing && account_from_cwd(acct, sizeof acct) && is_account(acct) &&
+        has_lmdb_store(acct))
         convert_acct(acct, 1);
 
     int code = run(gargv);
