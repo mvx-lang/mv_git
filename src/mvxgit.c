@@ -1035,3 +1035,91 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
              (long long)nw, (long long)nd);
     mv_set_str(argv[2], out, (int64_t)strlen(out));
 }
+
+/* --- plain-C API (#58) -------------------------------------------------
+   Thin wrappers the mvx-git executable calls: build the mv_value argv the
+   subroutine ABI expects, invoke the very same engine the GIT verb uses, and
+   return the last (output) arg as a malloc'd @AM-separated string.  So the
+   executable and the verb drive one mechanism — records straight to/from git
+   objects, no export copy. */
+#include "mvxgit.h"
+
+typedef void (*sub_fn)(mvx_ctx *, int32_t, mv_value **);
+
+static char *run_sub(sub_fn fn, mvx_ctx *ctx, const char **args, int n) {
+    mv_value vals[8];
+    mv_value *argv[8];
+    for (int i = 0; i < n; i++) {
+        mv_init(&vals[i]);
+        mv_set_str(&vals[i], args[i], (int64_t)strlen(args[i]));
+        argv[i] = &vals[i];
+    }
+    mv_init(&vals[n]);                   /* output slot */
+    argv[n] = &vals[n];
+    fn(ctx, n + 1, argv);
+    char nb[40];
+    const char *p;
+    int64_t len = mv_val_chars(&vals[n], nb, sizeof nb, &p);
+    char *r = malloc((size_t)len + 1);
+    if (!r) mvx_fatal("out of memory in git");
+    memcpy(r, p, (size_t)len);
+    r[len] = '\0';
+    for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
+    return r;
+}
+
+char *mvx_git_init(mvx_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITINIT, ctx, a, 1);
+}
+char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
+                  const char *id) {
+    const char *a[] = {repo, file, id};
+    return run_sub(mvx_sub_GITADD, ctx, a, 3);
+}
+char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
+                 const char *id) {
+    const char *a[] = {repo, file, id};
+    return run_sub(mvx_sub_GITRM, ctx, a, 3);
+}
+char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg) {
+    const char *a[] = {repo, msg};
+    return run_sub(mvx_sub_GITCOMMIT, ctx, a, 2);
+}
+char *mvx_git_status(mvx_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITSTATUS, ctx, a, 1);
+}
+char *mvx_git_log(mvx_ctx *ctx, const char *repo, const char *count) {
+    const char *a[] = {repo, count};
+    return run_sub(mvx_sub_GITLOG, ctx, a, 2);
+}
+char *mvx_git_diff(mvx_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITDIFF, ctx, a, 2);
+}
+char *mvx_git_show(mvx_ctx *ctx, const char *repo, const char *file,
+                   const char *id) {
+    const char *a[] = {repo, file, id};
+    return run_sub(mvx_sub_GITSHOW, ctx, a, 3);
+}
+char *mvx_git_branch(mvx_ctx *ctx, const char *repo, const char *name) {
+    const char *a[] = {repo, name};
+    return run_sub(mvx_sub_GITBRANCH, ctx, a, 2);
+}
+char *mvx_git_checkout(mvx_ctx *ctx, const char *repo, const char *name) {
+    const char *a[] = {repo, name};
+    return run_sub(mvx_sub_GITCHECKOUT, ctx, a, 2);
+}
+char *mvx_git_merge(mvx_ctx *ctx, const char *repo, const char *branch) {
+    const char *a[] = {repo, branch};
+    return run_sub(mvx_sub_GITMERGE, ctx, a, 2);
+}
+char *mvx_git_cherrypick(mvx_ctx *ctx, const char *repo, const char *commit) {
+    const char *a[] = {repo, commit};
+    return run_sub(mvx_sub_GITCHERRYPICK, ctx, a, 2);
+}
+char *mvx_git_restore(mvx_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITRESTORE, ctx, a, 2);
+}

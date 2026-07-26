@@ -10,31 +10,26 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-/* mvx-git — a drop-in wrapper around git for MVX accounts.
+/* mvx-git — git for MVX accounts.
  *
- * Every command is forwarded verbatim to the real git, so mvx-git is a
- * complete git replacement (you can `alias git=mvx-git`).  The one
- * addition: after a command that changes the working tree — clone,
- * checkout, switch, pull, merge, rebase, reset, restore, cherry-pick,
- * revert, stash — succeeds in a directory that is an MVX account (it
- * carries a .mvx descriptor), mvx-git rebuilds the account so its hash
- * files match the git-tracked directory form.  Symmetrically, before a
- * commit or add it exports the live hash files back to the directory
- * form so git records the legible version.  Both directions run
- * mvx-convert-acct; no MVX internals are changed.
+ * For a record-git account (one carrying a .recgit bare repo, or being
+ * `init`-ed) mvx-git drives the record-git engine directly: it reads and
+ * writes the account's hash-file records straight to/from git objects via
+ * libgit2 — exactly the engine the BASIC GIT verb uses (#58).  The working
+ * tree is the live records, so there is no filesystem checkout and no export
+ * copy; commit/add/checkout touch the records, not a duplicated directory.
  *
- * A clone is special: it creates a brand-new directory.  If the clone
- * carries a .mvx descriptor it is rebuilt automatically; if not, and
- * stdin is a terminal, mvx-git asks whether to make it a new account
- * (default no).  Declining leaves an ordinary checkout; in an ordinary
- * repository mvx-git does nothing extra and behaves like git.
- *
- * The real git is found on PATH as "git"; mvx-convert-acct via
- * $MVXCONVERT or PATH.
+ * Everything else is forwarded verbatim to the real git: commands the engine
+ * does not implement, and any command run outside a record-git account (so
+ * `alias git=mvx-git` still works, and a legible account tracked by ordinary
+ * git behaves normally).  mvx-convert-acct is used only to *adopt* a checkout
+ * made by plain git — turning a cloned legible directory into a live account.
  */
 
+#include "mvxgit.h"
+
+#include <dirent.h>
 #include <errno.h>
-#include <libgen.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,8 +43,10 @@
 #define PATH_MAX 4096
 #endif
 
-/* git subcommands that change the working tree, so the account's hash
- * files may need rebuilding from the updated legible records. */
+/* --- forwarding to real git ------------------------------------------- */
+
+/* git subcommands that change the working tree, so a legible account may need
+ * rebuilding into hash files afterwards (the plain-git adoption path). */
 static int tree_changing(const char *sub) {
     static const char *ops[] = {
         "clone", "checkout", "switch", "pull", "merge", "rebase",
@@ -59,8 +56,7 @@ static int tree_changing(const char *sub) {
     return 0;
 }
 
-/* git clone options that consume the following argument (so it is not
- * mistaken for the URL or target directory). */
+/* git clone options that consume the following argument. */
 static int clone_opt_takes_value(const char *o) {
     static const char *v[] = {
         "-b", "--branch", "-o", "--origin", "-u", "--upload-pack",
@@ -87,8 +83,6 @@ static int run(char *const argv[]) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 
-/* Derive the directory `git clone` creates from a repository URL:
- * the last path component with any trailing "/" and ".git" removed. */
 static void dir_from_url(const char *url, char *out, size_t cap) {
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof tmp, "%s", url);
@@ -102,15 +96,13 @@ static void dir_from_url(const char *url, char *out, size_t cap) {
     if (bn > 4 && strcmp(out + bn - 4, ".git") == 0) out[bn - 4] = '\0';
 }
 
-/* Account directory a clone created: the explicit target argument if
- * given, else the URL basename.  Returns 0 if it cannot be determined. */
 static int clone_target(int argc, char **argv, int subidx,
                         char *out, size_t cap) {
     const char *pos[4];
     int np = 0;
     for (int i = subidx + 1; i < argc && np < 4; i++) {
         if (argv[i][0] == '-') {
-            if (clone_opt_takes_value(argv[i])) i++;   /* skip its value */
+            if (clone_opt_takes_value(argv[i])) i++;
             continue;
         }
         pos[np++] = argv[i];
@@ -120,7 +112,8 @@ static int clone_target(int argc, char **argv, int subidx,
     return 0;
 }
 
-/* True if `dir` is an MVX account (carries a .mvx descriptor). */
+/* --- account detection ------------------------------------------------- */
+
 static int is_account(const char *dir) {
     char p[PATH_MAX];
     snprintf(p, sizeof p, "%s/.mvx", dir);
@@ -128,55 +121,38 @@ static int is_account(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
-/* True if the account keeps an LMDB hash-file store.  A legible/directory
- * account has none — its files already sit on disk in git-trackable form — so
- * there is nothing to export before a commit and nothing to rebuild after a
- * checkout: mvx-git behaves as plain git.  Only an LMDB-backed account needs
- * the convert step (until it reads/writes those records directly — see #58). */
-static int has_lmdb_store(const char *dir) {
+/* True if the account already carries a record-git repository. */
+static int has_recgit(const char *dir) {
     char p[PATH_MAX];
-    snprintf(p, sizeof p, "%s/mvxdata.lmdb", dir);
+    snprintf(p, sizeof p, "%s/.recgit", dir);
     struct stat sb;
     return stat(p, &sb) == 0;
 }
 
-/* Walk up from the current directory to the nearest MVX account root.
- * Returns 1 and fills `out` on success. */
 static int account_from_cwd(char *out, size_t cap) {
     char cur[PATH_MAX];
     if (!getcwd(cur, sizeof cur)) return 0;
     for (;;) {
         if (is_account(cur)) { snprintf(out, cap, "%s", cur); return 1; }
         char *slash = strrchr(cur, '/');
-        if (!slash || slash == cur) return 0;   /* reached root */
+        if (!slash || slash == cur) return 0;
         *slash = '\0';
     }
 }
 
-/* Convert the account with mvx-convert-acct: import (git directory form
- * -> live hash files) or, with do_export, export (hash files -> git
- * directory form).  The tool is found via $MVXCONVERT or PATH. */
-static void convert_acct(const char *acct, int do_export) {
-    fprintf(stderr, "mvx-git: %s account %s\n",
-            do_export ? "exporting" : "rebuilding", acct);
+/* Adopt a plain-git checkout: mvx-convert-acct (import) builds the live hash
+ * files from a cloned/checked-out legible directory.  Found via $MVXCONVERT or
+ * PATH.  This is the only place mvx-git needs convert — never on its own
+ * record-git add/commit/checkout. */
+static void convert_import(const char *acct) {
+    fprintf(stderr, "mvx-git: rebuilding account %s\n", acct);
     const char *tool = getenv("MVXCONVERT");
     if (!tool || !tool[0]) tool = "mvx-convert-acct";
-    char *rargv[5];
-    int n = 0;
-    rargv[n++] = (char *)tool;
-    if (do_export) rargv[n++] = "--export";
-    rargv[n++] = (char *)acct;
-    rargv[n] = NULL;
-    int rc = run(rargv);
-    if (rc != 0)
-        fprintf(stderr, "mvx-git: account conversion failed (exit %d)\n", rc);
+    char *rargv[3] = {(char *)tool, (char *)acct, NULL};
+    if (run(rargv) != 0)
+        fprintf(stderr, "mvx-git: account rebuild failed\n");
 }
 
-/* Decide whether a freshly cloned non-account directory should become a
- * new MVX account.  $MVXGIT_CREATE forces the answer for automation
- * (the coming package installer, CI); otherwise, on a terminal, ask —
- * defaulting to no.  Non-interactive with no override: no, silently, so
- * mvx-git never blocks or nags in a script. */
 static int ask_create_account(const char *acct) {
     const char *env = getenv("MVXGIT_CREATE");
     if (env && env[0] && env[0] != '0' && strcasecmp(env, "no") != 0)
@@ -190,54 +166,196 @@ static int ask_create_account(const char *acct) {
     return buf[0] == 'y' || buf[0] == 'Y';
 }
 
-int main(int argc, char **argv) {
-    /* Forward everything to the real git, verbatim. */
-    char **gargv = malloc((size_t)(argc + 1) * sizeof *gargv);
-    if (!gargv) { perror("mvx-git"); return 1; }
-    gargv[0] = "git";
-    for (int i = 1; i < argc; i++) gargv[i] = argv[i];
-    gargv[argc] = NULL;
+/* --- record-git engine path ------------------------------------------- */
 
+/* Subcommands the record-git engine implements directly. */
+static int engine_sub(const char *sub) {
+    static const char *ops[] = {
+        "init", "add", "rm", "commit", "status", "log", "diff", "show",
+        "branch", "checkout", "merge", "cherry-pick", "restore", NULL};
+    for (int i = 0; ops[i]; i++)
+        if (strcmp(sub, ops[i]) == 0) return 1;
+    return 0;
+}
+
+/* Print engine output (attribute-mark separated) as newline-separated lines. */
+static void print_out(char *s) {
+    if (!s) return;
+    for (char *p = s; *p; p++)
+        if (*p == (char)0xFE) *p = '\n';
+    if (*s) { fputs(s, stdout); fputc('\n', stdout); }
+    free(s);
+}
+
+/* Append b (and a leading @AM if a already has content) to *a. */
+static void join(char **a, const char *b) {
+    if (!b || !*b) return;
+    size_t la = *a ? strlen(*a) : 0, lb = strlen(b);
+    char *r = malloc(la + lb + 2);
+    if (!r) return;
+    if (la) { memcpy(r, *a, la); r[la++] = (char)0xFE; }
+    memcpy(r + la, b, lb + 1);
+    free(*a);
+    *a = r;
+}
+
+/* `add -A`: stage every on-disk directory file (dir-driver files, e.g. BP and
+ * BP.DICT).  LMDB-backed files are not directory entries, so name those
+ * explicitly (`mvx-git add VOC`). */
+static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
+    DIR *d = opendir(acct);
+    if (!d) return NULL;
+    char *out = NULL;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        const char *n = e->d_name;
+        if (n[0] == '.') continue;                 /* .mvx .recgit .gitignore */
+        if (!strcmp(n, "mvxdata.lmdb") || !strcmp(n, "CATALOG") ||
+            !strcmp(n, "LIB") || !strcmp(n, "bin") || !strcmp(n, "PACKAGES"))
+            continue;
+        size_t ln = strlen(n);
+        if (ln > 2 && !strcmp(n + ln - 2, ".O")) continue;
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", acct, n);
+        struct stat sb;
+        if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
+        char *r = mvx_git_add(ctx, repo, n, "");
+        join(&out, r);
+        free(r);
+    }
+    closedir(d);
+    return out ? out : strdup("nothing to stage");
+}
+
+static const char *opt_value(int argc, char **argv, int from,
+                             const char *flag) {
+    size_t fl = strlen(flag);
+    for (int i = from; i < argc; i++) {
+        if (!strcmp(argv[i], flag) && i + 1 < argc) return argv[i + 1];
+        if (!strncmp(argv[i], flag, fl) && argv[i][fl]) return argv[i] + fl;
+    }
+    return NULL;
+}
+
+/* Nth (0-based) positional (non-option) argument after the subcommand. */
+static const char *positional(int argc, char **argv, int subidx, int nth) {
+    int seen = 0;
+    for (int i = subidx + 1; i < argc; i++) {
+        if (argv[i][0] == '-') continue;
+        if (seen++ == nth) return argv[i];
+    }
+    return NULL;
+}
+
+static int engine_run(const char *acct, const char *sub,
+                      int argc, char **argv, int subidx) {
+    setenv("MVXACCOUNT", acct, 1);
+    if (chdir(acct) != 0) {
+        fprintf(stderr, "mvx-git: cannot enter %s\n", acct);
+        return 1;
+    }
+    mvx_ctx *ctx = mvx_ctx_create();
+    const char *repo = ".recgit";
+    const char *p0 = positional(argc, argv, subidx, 0);
+    const char *p1 = positional(argc, argv, subidx, 1);
+    char *out = NULL;
+
+    if (!strcmp(sub, "init")) {
+        out = mvx_git_init(ctx, repo);
+    } else if (!strcmp(sub, "status")) {
+        out = mvx_git_status(ctx, repo);
+    } else if (!strcmp(sub, "add")) {
+        int all = 0;
+        for (int i = subidx + 1; i < argc; i++)
+            if (!strcmp(argv[i], "-A") || !strcmp(argv[i], "--all") ||
+                !strcmp(argv[i], "."))
+                all = 1;
+        if (all) out = add_all(ctx, repo, acct);
+        else if (p0) out = mvx_git_add(ctx, repo, p0, p1 ? p1 : "");
+        else out = strdup("usage: mvx-git add <file> [id] | -A");
+    } else if (!strcmp(sub, "rm")) {
+        if (p0) out = mvx_git_rm(ctx, repo, p0, p1 ? p1 : "");
+        else out = strdup("usage: mvx-git rm <file> [id]");
+    } else if (!strcmp(sub, "commit")) {
+        const char *msg = opt_value(argc, argv, subidx + 1, "-m");
+        out = mvx_git_commit(ctx, repo, msg ? msg : "");
+    } else if (!strcmp(sub, "log")) {
+        const char *n = opt_value(argc, argv, subidx + 1, "-n");
+        if (!n && p0) n = p0;                       /* `log 5` */
+        if (!n)                                     /* `log -5` */
+            for (int i = subidx + 1; i < argc; i++)
+                if (argv[i][0] == '-' && argv[i][1] >= '1' && argv[i][1] <= '9')
+                    n = argv[i] + 1;
+        out = mvx_git_log(ctx, repo, n ? n : "20");
+    } else if (!strcmp(sub, "diff")) {
+        out = mvx_git_diff(ctx, repo, p0 ? p0 : "");
+    } else if (!strcmp(sub, "show")) {
+        if (p0 && p1) out = mvx_git_show(ctx, repo, p0, p1);
+        else out = strdup("usage: mvx-git show <file> <id>");
+    } else if (!strcmp(sub, "branch")) {
+        out = mvx_git_branch(ctx, repo, p0 ? p0 : "");
+    } else if (!strcmp(sub, "checkout")) {
+        if (p0) out = mvx_git_checkout(ctx, repo, p0);
+        else out = strdup("usage: mvx-git checkout <branch>");
+    } else if (!strcmp(sub, "merge")) {
+        if (p0) out = mvx_git_merge(ctx, repo, p0);
+        else out = strdup("usage: mvx-git merge <branch>");
+    } else if (!strcmp(sub, "cherry-pick")) {
+        if (p0) out = mvx_git_cherrypick(ctx, repo, p0);
+        else out = strdup("usage: mvx-git cherry-pick <commit>");
+    } else if (!strcmp(sub, "restore")) {
+        if (p0) out = mvx_git_restore(ctx, repo, p0);
+        else out = strdup("usage: mvx-git restore <file>");
+    }
+
+    print_out(out);
+    mvx_ctx_destroy(ctx);
+    return 0;
+}
+
+int main(int argc, char **argv) {
     /* The subcommand is the first non-option argument. */
     const char *sub = NULL;
     int subidx = 0;
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') { sub = argv[i]; subidx = i; break; }
-        /* git's own value-taking globals (-C, -c) precede the subcommand */
         if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "-c") == 0) i++;
     }
 
-    /* Commit-style commands record the git directory form.  An LMDB-backed
-     * account must export its live hash files to that form BEFORE git runs; a
-     * legible/directory account already is that form, so there is nothing to
-     * export and mvx-git just runs git verbatim. */
+    /* Record-git path: an engine command inside an account that already has a
+     * .recgit (or `init`, which creates one) — drive the engine, no git, no
+     * convert. */
     char acct[PATH_MAX];
-    int committing = sub && (!strcmp(sub, "commit") || !strcmp(sub, "add"));
-    if (committing && account_from_cwd(acct, sizeof acct) && is_account(acct) &&
-        has_lmdb_store(acct))
-        convert_acct(acct, 1);
+    if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct) &&
+        (has_recgit(acct) || !strcmp(sub, "init")))
+        return engine_run(acct, sub, argc, argv, subidx);
 
+    /* Otherwise forward verbatim to real git. */
+    char **gargv = malloc((size_t)(argc + 1) * sizeof *gargv);
+    if (!gargv) { perror("mvx-git"); return 1; }
+    gargv[0] = "git";
+    for (int i = 1; i < argc; i++) gargv[i] = argv[i];
+    gargv[argc] = NULL;
     int code = run(gargv);
     free(gargv);
 
-    /* Only follow up after a successful command. */
     if (code != 0 || !sub || !tree_changing(sub)) return code;
 
-    /* clone lands in a brand-new directory: rebuild it into hash files.
-     * A committed .mvx means "this is an account"; otherwise offer to
-     * make one (terminal only, default no). */
+    /* A clone lands in a brand-new directory: adopt it into hash files if it
+     * carries a .mvx (or the user opts in). */
     if (strcmp(sub, "clone") == 0) {
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
-            return code;                            /* target undetermined */
+            return code;
         if (is_account(acct) || ask_create_account(acct))
-            convert_acct(acct, 0);
+            convert_import(acct);
         return code;
     }
 
-    /* Every other tree-changing command runs inside an existing tree:
-     * re-import only when it is already an MVX account, never prompt. */
-    if (account_from_cwd(acct, sizeof acct) && is_account(acct))
-        convert_acct(acct, 0);
+    /* Any other tree-changing command in a legible account (real git checkout
+     * etc.) rebuilds its hash files from the updated directory form. */
+    if (account_from_cwd(acct, sizeof acct) && is_account(acct) &&
+        !has_recgit(acct))
+        convert_import(acct);
 
-    return code;   /* git's exit code is what callers expect */
+    return code;
 }

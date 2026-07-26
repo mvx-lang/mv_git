@@ -17,8 +17,8 @@ PKG="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$PKG/../.." && pwd)"
 
 case "$(uname)" in
-  Darwin) EXT=dylib ; UNDEF="-undefined dynamic_lookup" ;;
-  *)      EXT=so ; UNDEF="" ;;
+  Darwin) EXT=dylib ; UNDEF="-undefined dynamic_lookup" ; RPATH="@executable_path/../lib" ;;
+  *)      EXT=so ; UNDEF="" ; RPATH='$ORIGIN/../lib' ;;
 esac
 
 CFLAGS="$(pkg-config --cflags libgit2 2>/dev/null || echo -I/opt/homebrew/include)"
@@ -31,9 +31,15 @@ cc -O2 -fPIC -shared $UNDEF \
    -o "$PKG/LIB/libmvxgit.$EXT"
 echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
 
-# mvx-git: a drop-in git wrapper that rebuilds an MVX account after any
-# tree-changing command.  Plain C — it shells out to git and mvx — so it
-# needs no libraries of its own.
+# mvx-git: drives the record-git engine directly (#58), so it compiles the
+# engine in and links the runtime (mvx_ctx + storage API) and libgit2.  It
+# finds libmvxrt beside itself once installed (rpath ../lib, like mvx).  For a
+# non-record-git command it just execs the real git, so no runtime is needed at
+# run time in that path — but the link is unconditional.
 mkdir -p "$PKG/bin"
-cc -O2 "$PKG/src/mvx-git.c" -o "$PKG/bin/mvx-git"
-echo "  built bin/mvx-git (git wrapper)"
+cc -O2 -I"$ROOT/runtime/include" -I"$PKG/src" $CFLAGS \
+   "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" \
+   -L"$ROOT/build/lib" -lmvxrt $LDFLAGS \
+   -Wl,-rpath,"$RPATH" -Wl,-rpath,"$ROOT/build/lib" \
+   -o "$PKG/bin/mvx-git"
+echo "  built bin/mvx-git (record-git engine + git wrapper)"
