@@ -317,6 +317,51 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
+/* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
+   current HEAD) rather than recursing into it as a directory file — so an
+   account can carry submodules (e.g. docs -> the repo wiki).  The submodule is
+   added with plain `git submodule add` (which writes .gitmodules and clones
+   it); this keeps the gitlink current on add/commit.  GITADDSUB(repo, name,
+   out) */
+void mvx_sub_GITADDSUB(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+
+    /* the submodule's HEAD is the commit the gitlink records */
+    git_repository *sub = NULL;
+    git_oid head;
+    int rc = git_repository_open(&sub, name);
+    if (rc == 0) rc = git_reference_name_to_id(&head, sub, "HEAD");
+    if (sub) git_repository_free(sub);
+    if (rc != 0) {
+        git_index_free(index);
+        git_repository_free(repo);
+        fail(argv[2], "submodule HEAD");
+        return;
+    }
+    git_index_entry e;
+    memset(&e, 0, sizeof e);
+    e.path = name;
+    e.mode = GIT_FILEMODE_COMMIT;           /* 0160000 gitlink */
+    e.id = head;
+    rc = git_index_add(index, &e);
+    if (rc == 0) rc = git_index_write(index);
+    git_index_free(index);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[2], "stage submodule"); return; }
+    char out[300];
+    snprintf(out, sizeof out, "staged submodule %s", name);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
+}
+
 /* Unstage/remove tracking of a record.  GITRM(repo, file, record, out) */
 void mvx_sub_GITRM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -452,6 +497,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     size_t ic = git_index_entrycount(index);
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
+        if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
         char top[256];
         split_top(e->path, top, sizeof top);
         ns_add(&files, top);
@@ -490,19 +536,23 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     /* deleted: index entry whose record no longer exists */
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
+        if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
         char top[256];
         split_top(e->path, top, sizeof top);
         const char *recid = strchr(e->path, '/');
         recid = recid ? recid + 1 : e->path;
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
-        int gone = 1;
+        int isrec = 0, gone = 0;
         if (open_named(ctx, top, &fvar)) {
+            isrec = 1;                      /* a real MV file; the entry is a record */
             mv_set_str(&id, recid, (int64_t)strlen(recid));
             gone = !mvx_read(ctx, &rec, &fvar, &id, 0);
         }
         mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
-        if (gone) {
+        /* only a record of an MV file can be reported deleted; a plain file
+           (README, .gitmodules, …) that isn't an MV record is left to git */
+        if (isrec && gone) {
             char line[700];
             snprintf(line, sizeof line, " D %s", e->path);
             sb_line(&s, line);
@@ -1086,6 +1136,10 @@ char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
                   const char *id) {
     const char *a[] = {repo, file, id};
     return run_sub(mvx_sub_GITADD, ctx, a, 3);
+}
+char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name) {
+    const char *a[] = {repo, name};
+    return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
 }
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id) {

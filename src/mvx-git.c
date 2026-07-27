@@ -135,6 +135,15 @@ static int has_own_git(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
+/* True if `acct/name` is a git submodule (a directory carrying its own .git):
+ * it is staged as a gitlink, not recursed into as a directory file. */
+static int is_submodule(const char *acct, const char *name) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/%s/.git", acct, name);
+    struct stat sb;
+    return stat(p, &sb) == 0;
+}
+
 static int account_from_cwd(char *out, size_t cap) {
     char cur[PATH_MAX];
     if (!getcwd(cur, sizeof cur)) return 0;
@@ -225,7 +234,11 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
         snprintf(p, sizeof p, "%s/%s", acct, n);
         struct stat sb;
         if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
-        char *r = mvx_git_add(ctx, repo, n, "");
+        char *r;
+        if (is_submodule(acct, n))
+            r = mvx_git_addsub(ctx, repo, n);   /* a gitlink, not records */
+        else
+            r = mvx_git_add(ctx, repo, n, "");
         join(&out, r);
         free(r);
     }

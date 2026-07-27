@@ -27,6 +27,8 @@
 char *mvx_git_init(mvx_ctx *ctx, const char *repo);
 char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
                   const char *id);
+/* Stage a git submodule directory `name` as a gitlink (not as records). */
+char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name);
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg);
