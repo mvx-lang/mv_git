@@ -1,0 +1,4 @@
+[submodule "docs"]
+	path = docs
+	url = https://github.com/mvx-lang/mv_git.wiki.git
+	branch = master
