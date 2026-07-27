@@ -14,7 +14,11 @@
 # storage drivers; libgit2 links into this library alone.
 set -e
 PKG="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$PKG/../.." && pwd)"
+# The MVX source root supplies the runtime headers (runtime/include) and
+# libmvxrt (build/lib) that mvx-git links.  As a submodule under an mvx
+# checkout it is two levels up; a standalone ev_git checkout points at an mvx
+# tree via $MVX_ROOT.
+ROOT="${MVX_ROOT:-$(cd "$PKG/../.." && pwd)}"
 
 case "$(uname)" in
   Darwin) EXT=dylib ; UNDEF="-undefined dynamic_lookup" ; RPATH="@executable_path/../lib" ;;
