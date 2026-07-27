@@ -29,6 +29,9 @@ char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
                   const char *id);
 /* Stage a git submodule directory `name` as a gitlink (not as records). */
 char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name);
+/* Stage the on-disk working tree exactly as `git add -A` would (modes,
+   .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
+char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo);
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg);

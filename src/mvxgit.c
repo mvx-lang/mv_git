@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* --- helpers ----------------------------------------------------------- */
 
@@ -317,6 +318,38 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
+/* `git add` with git's own semantics: stage every on-disk file in the working
+   tree — honouring .gitignore, executable bits, and top-level as well as nested
+   paths — and stage deletions, exactly as stock git would.  This is step one of
+   a drop-in `mvx-git add -A`; the caller layers step two on top (staging the
+   records of VOC files that are not plain on-disk files, e.g. LMDB hash files).
+   Uses the repository-owned index so libgit2 can stat the working tree and
+   apply the ignore rules.  GITADDDISK(repo, out) */
+void mvx_sub_GITADDDISK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0 &&
+        init_bare_main(&repo, rp) != 0) { fail(argv[1], "open"); return; }
+    git_index *index = NULL;
+    if (git_repository_index(&index, repo) != 0) {
+        git_repository_free(repo);
+        fail(argv[1], "index");
+        return;
+    }
+    git_strarray all = {NULL, 0};              /* empty pathspec ⇒ everything */
+    int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT, NULL, NULL);
+    if (rc == 0) rc = git_index_update_all(index, &all, NULL, NULL);
+    if (rc == 0) rc = git_index_write(index);
+    git_index_free(index);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[1], "add"); return; }
+    mv_set_str(argv[1], "staged working tree", 19);
+}
+
 /* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
    current HEAD) rather than recursing into it as a directory file — so an
    account can carry submodules (e.g. docs -> the repo wiki).  The submodule is
@@ -466,6 +499,25 @@ static void split_top(const char *path, char *top, size_t cap) {
     top[n] = '\0';
 }
 
+/* Whether a top-level name is an MV file (its records are stored canonically,
+   so status/commit read them through the driver) rather than a plain file or
+   directory git tracks verbatim.  An on-disk directory is an MV file only if it
+   carries a dictionary control (<name>.DICT/%FILE%) — a proper DIR file always
+   has one; a plain directory (server/, test/, a .DICT itself, a submodule) does
+   not.  A name with no on-disk directory but tracked in the index is an
+   LMDB-backed hash file, so it is an MV file.  Pure stat(), run in the account
+   (the engine has chdir'd there): it never opens the store, so status on a
+   directory-only account cannot conjure an mvxdata.lmdb. */
+static int is_mv_file(const char *name) {
+    struct stat sb;
+    if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        char ctl[600];
+        snprintf(ctl, sizeof ctl, "%s.DICT/%%FILE%%", name);
+        return stat(ctl, &sb) == 0;
+    }
+    return 1;   /* no on-disk directory ⇒ LMDB-backed */
+}
+
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
 void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
@@ -504,6 +556,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     for (size_t f = 0; f < files.c; f++) {
         const char *fn = files.n[f];
+        if (!is_mv_file(fn)) continue;    /* plain path — git diffs it, below */
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         if (open_named(ctx, fn, &fvar)) {
@@ -539,6 +592,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
         char top[256];
         split_top(e->path, top, sizeof top);
+        if (!is_mv_file(top)) continue;   /* plain path — git tracks deletions */
         const char *recid = strchr(e->path, '/');
         recid = recid ? recid + 1 : e->path;
         mv_value fvar, id, rec;
@@ -559,6 +613,30 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         }
     }
     free(files.n);
+
+    /* plain (non-MV) paths: diff the working tree against the index for tracked
+       files exactly as git would — modified or deleted — skipping MV files,
+       whose records are diffed above (their git-native working bytes differ
+       from the canonical staged blob, so git's own diff would mis-report them).
+       Untracked files are left out: the record-git model reports through its
+       own GITIGNORE, not the working tree at large. */
+    git_diff *wd = NULL;
+    git_diff_options wo = GIT_DIFF_OPTIONS_INIT;
+    if (git_diff_index_to_workdir(&wd, repo, index, &wo) == 0) {
+        size_t n = git_diff_num_deltas(wd);
+        for (size_t i = 0; i < n; i++) {
+            const git_diff_delta *d = git_diff_get_delta(wd, i);
+            char top[256];
+            split_top(d->new_file.path, top, sizeof top);
+            if (is_mv_file(top)) continue;
+            char line[700];
+            snprintf(line, sizeof line, " %c %s",
+                     git_diff_status_char(d->status), d->new_file.path);
+            sb_line(&s, line);
+        }
+        git_diff_free(wd);
+    }
+
     if (ht) git_tree_free(ht);
     git_index_free(index);
     git_repository_free(repo);
@@ -1140,6 +1218,10 @@ char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
 char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
+}
+char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITADDDISK, ctx, a, 1);
 }
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id) {

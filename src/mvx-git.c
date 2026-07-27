@@ -135,15 +135,6 @@ static int has_own_git(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
-/* True if `acct/name` is a git submodule (a directory carrying its own .git):
- * it is staged as a gitlink, not recursed into as a directory file. */
-static int is_submodule(const char *acct, const char *name) {
-    char p[PATH_MAX];
-    snprintf(p, sizeof p, "%s/%s/.git", acct, name);
-    struct stat sb;
-    return stat(p, &sb) == 0;
-}
-
 static int account_from_cwd(char *out, size_t cap) {
     char cur[PATH_MAX];
     if (!getcwd(cur, sizeof cur)) return 0;
@@ -214,35 +205,98 @@ static void join(char **a, const char *b) {
     *a = r;
 }
 
-/* `add -A`: stage every on-disk directory file (dir-driver files, e.g. BP and
- * BP.DICT).  LMDB-backed files are not directory entries, so name those
- * explicitly (`mvx-git add VOC`). */
+/* `add -A` is a two-fold process, which is what makes mvx-git a drop-in for
+ * git rather than an MV-only tool:
+ *
+ *   1. Exactly what git does — stage every on-disk file in the working tree,
+ *      honouring .gitignore, executable bits, top-level and nested paths, and
+ *      deletions (git also treats a nested repo as a submodule gitlink here).
+ *   2. Then, only when the directory is an MVX account, stage the records of
+ *      every MV file canonically (the record-git form, which drops the trailing
+ *      newline the dir-driver file carries — so `status`/`commit`, which read
+ *      records through the driver, agree with what was staged; a git-native
+ *      blob of the same file would show a permanent phantom modification).
+ *      Because step 2 runs last, MV files end up in their canonical form while
+ *      genuinely plain files (README, scripts, submodules) keep the git-native
+ *      blob and executable bit step 1 gave them.
+ *
+ * An MV file is a directory that either has a dictionary (`<name>.DICT`) or is
+ * itself the dictionary of an existing file (`<base>` for `<base>.DICT`); a
+ * plain directory (server/, test/, docs submodule) has neither and is left to
+ * step 1.  LMDB-backed files have no on-disk directory at all and are found via
+ * the file list — but only when an LMDB store already exists, so a directory-
+ * only account is never given a spurious mvxdata.lmdb.
+ */
+static int is_mv_file(const char *acct, const char *n) {
+    struct stat sb;
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/%s.DICT/%%FILE%%", acct, n);   /* dictionary control */
+    return stat(p, &sb) == 0;
+}
+
 static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
-    DIR *d = opendir(acct);
-    if (!d) return NULL;
     char *out = NULL;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        const char *n = e->d_name;
-        if (n[0] == '.') continue;                 /* .mvx .git .gitignore */
-        if (!strcmp(n, "mvxdata.lmdb") || !strcmp(n, "CATALOG") ||
-            !strcmp(n, "LIB") || !strcmp(n, "bin") || !strcmp(n, "PACKAGES"))
-            continue;
-        size_t ln = strlen(n);
-        if (ln > 2 && !strcmp(n + ln - 2, ".O")) continue;
-        char p[PATH_MAX];
-        snprintf(p, sizeof p, "%s/%s", acct, n);
-        struct stat sb;
-        if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
-        char *r;
-        if (is_submodule(acct, n))
-            r = mvx_git_addsub(ctx, repo, n);   /* a gitlink, not records */
-        else
+
+    char *r = mvx_git_adddisk(ctx, repo);          /* 1. git's own add */
+    join(&out, r);
+    free(r);
+
+    if (is_account(acct)) {                          /* 2. MV files, canonical */
+        DIR *d = opendir(acct);
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            const char *n = e->d_name;
+            if (n[0] == '.') continue;
+            char p[PATH_MAX];
+            snprintf(p, sizeof p, "%s/%s", acct, n);
+            struct stat sb;
+            if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
+            if (!is_mv_file(acct, n)) continue;
             r = mvx_git_add(ctx, repo, n, "");
-        join(&out, r);
-        free(r);
+            join(&out, r);
+            free(r);
+        }
+        if (d) closedir(d);
+
+        /* LMDB-backed files (records not on disk), only if the store exists. */
+        char lmdbp[PATH_MAX];
+        snprintf(lmdbp, sizeof lmdbp, "%s/mvxdata.lmdb", acct);
+        struct stat lsb;
+        if (stat(lmdbp, &lsb) == 0) {
+            mv_value fl;
+            mv_init(&fl);
+            mvx_filelist(ctx, &fl);                  /* name<VM>type, @AM-sep */
+            char nb[40];
+            const char *p;
+            int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p);
+            int64_t i = 0;
+            while (i < len) {
+                int64_t s = i;
+                while (i < len && (unsigned char)p[i] != 0xFE &&
+                       (unsigned char)p[i] != 0xFD)
+                    i++;
+                int64_t nl = i - s;
+                if (nl > 0 && nl < 256) {
+                    char name[256];
+                    memcpy(name, p + s, (size_t)nl);
+                    name[nl] = '\0';
+                    char fp[PATH_MAX];
+                    snprintf(fp, sizeof fp, "%s/%s", acct, name);
+                    struct stat ns;
+                    /* on-disk directories were handled above; stage only the
+                       files that have no directory, i.e. the LMDB hash files. */
+                    if (stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) {
+                        r = mvx_git_add(ctx, repo, name, "");
+                        join(&out, r);
+                        free(r);
+                    }
+                }
+                while (i < len && (unsigned char)p[i] != 0xFE) i++;
+                if (i < len) i++;
+            }
+            mv_clear(&fl);
+        }
     }
-    closedir(d);
     return out ? out : strdup("nothing to stage");
 }
 
