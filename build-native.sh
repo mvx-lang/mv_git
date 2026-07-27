@@ -16,7 +16,7 @@ set -e
 PKG="$(cd "$(dirname "$0")" && pwd)"
 # The MVX source root supplies the runtime headers (runtime/include) and
 # libmvxrt (build/lib) that mvx-git links.  As a submodule under an mvx
-# checkout it is two levels up; a standalone ev_git checkout points at an mvx
+# checkout it is two levels up; a standalone mv_git checkout points at an mvx
 # tree via $MVX_ROOT.
 ROOT="${MVX_ROOT:-$(cd "$PKG/../.." && pwd)}"
 

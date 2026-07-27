@@ -1,6 +1,6 @@
-# ev_git — record-git for MultiValue
+# mv_git — record-git for MultiValue
 
-`ev_git` is the **record-git engine**: git for a MultiValue account, where the
+`mv_git` is the **record-git engine**: git for a MultiValue account, where the
 account's hash-file records are read and written directly to/from git objects in
 the account's own `.git`, so the working tree *is* the live records (no export
 copy). It builds a git drop-in that additionally understands MV accounts.
