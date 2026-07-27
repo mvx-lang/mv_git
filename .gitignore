@@ -1,0 +1,13 @@
+# Derived build artifacts (build-native.sh / mkpkg output)
+CATALOG/
+CATALOG.DICT/
+LIB/
+LIB.DICT/
+bin/
+mvxdata.lmdb/
+BP.O/
+BP.O.DICT/
+*.dSYM/
+*.o
+*.dylib
+*.so
