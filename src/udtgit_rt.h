@@ -16,7 +16,7 @@
  * code shape, only the record layer differs.
  *
  * The value type is a plain owned byte buffer.  A "file variable" (the value a
- * successful mvx_open fills and that read/write/select/delete take back) also
+ * successful mv_open fills and that read/write/select/delete take back) also
  * carries the InterCall file handle in `fid`; the engine only ever passes it
  * through opaquely, so overloading the value struct is safe. */
 #ifndef UDTGIT_RT_H
@@ -33,15 +33,15 @@
 typedef struct mv_value {
     char   *data;   /* owned; NULL when unassigned */
     int64_t len;
-    long    fid;    /* InterCall file handle, for values returned by mvx_open */
+    long    fid;    /* InterCall file handle, for values returned by mv_open */
     int     is_file;
 } mv_value;
 
-typedef struct mvx_ctx mvx_ctx;   /* opaque: InterCall session + open files */
+typedef struct mv_ctx mv_ctx;   /* opaque: InterCall session + open files */
 
 /* --- context ----------------------------------------------------------- */
-mvx_ctx *mvx_ctx_create(void);          /* opens the InterCall session */
-void     mvx_ctx_destroy(mvx_ctx *ctx); /* closes files, quits the session */
+mv_ctx *mv_ctx_create(void);          /* opens the InterCall session */
+void     mv_ctx_destroy(mv_ctx *ctx); /* closes files, quits the session */
 
 /* --- value ops --------------------------------------------------------- */
 void    mv_init(mv_value *v);
@@ -55,26 +55,26 @@ int64_t mv_val_chars(const mv_value *v, char *numbuf, size_t cap,
 /* --- record I/O (InterCall) -------------------------------------------- */
 /* Open file `spec` (its dictionary when `dict` is non-NULL) into `fvar`;
    returns non-zero on success. */
-int64_t mvx_open(mvx_ctx *ctx, const mv_value *dict, const mv_value *spec,
+int64_t mv_open(mv_ctx *ctx, const mv_value *dict, const mv_value *spec,
                  mv_value *fvar);
 /* Read record `id` from `fvar` into `rec`; returns non-zero when it exists. */
-int64_t mvx_read(mvx_ctx *ctx, mv_value *rec, const mv_value *fvar,
+int64_t mv_read(mv_ctx *ctx, mv_value *rec, const mv_value *fvar,
                  const mv_value *id, int64_t lock);
-int64_t mvx_write(mvx_ctx *ctx, const mv_value *rec, const mv_value *fvar,
+int64_t mv_write(mv_ctx *ctx, const mv_value *rec, const mv_value *fvar,
                   const mv_value *id, int64_t keep_lock, int64_t onerr);
-int64_t mvx_delete_rec(mvx_ctx *ctx, const mv_value *fvar, const mv_value *id);
-/* Begin a select over `fvar`; ids are then drained with mvx_readnext. */
-void    mvx_select(mvx_ctx *ctx, const mv_value *fvar);
-int64_t mvx_readnext(mvx_ctx *ctx, mv_value *id);   /* 0 when the list is done */
+int64_t mv_delete_rec(mv_ctx *ctx, const mv_value *fvar, const mv_value *id);
+/* Begin a select over `fvar`; ids are then drained with mv_readnext. */
+void    mv_select(mv_ctx *ctx, const mv_value *fvar);
+int64_t mv_readnext(mv_ctx *ctx, mv_value *id);   /* 0 when the list is done */
 /* Create file `spec`; `type` is NULL for the account default (a dynamic hash
    file) or "DIR" for a directory file. */
-int64_t mvx_createfile(mvx_ctx *ctx, const mv_value *spec, const mv_value *type);
+int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type);
 /* Fill `dst` with the account's files as "name<VM>type" rows, @AM-separated. */
-void    mvx_filelist(mvx_ctx *ctx, mv_value *dst);
+void    mv_filelist(mv_ctx *ctx, mv_value *dst);
 
 /* --- misc -------------------------------------------------------------- */
-int  mvx_openaccount(void);   /* open account format on? ($MVX_OPENACCOUNT) */
-void mvx_fatal(const char *fmt, ...)
+int  mv_openaccount(void);   /* open account format on? ($MVX_OPENACCOUNT) */
+void mv_fatal(const char *fmt, ...)
     __attribute__((noreturn, format(printf, 1, 2)));
 
 #endif /* UDTGIT_RT_H */

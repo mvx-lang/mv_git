@@ -62,7 +62,7 @@ static void fail(mv_value *out, const char *what) {
 static char *xlate(const char *p, int64_t n, char from, char to,
                    int64_t *outn) {
     char *b = malloc(n ? (size_t)n : 1);
-    if (!b) mvx_fatal("out of memory in git translate");
+    if (!b) mv_fatal("out of memory in git translate");
     for (int64_t i = 0; i < n; i++) b[i] = p[i] == from ? to : p[i];
     *outn = n;
     return b;
@@ -75,7 +75,7 @@ static void sb_put(sbuf *s, const char *p, size_t n) {
         s->cap = s->cap ? s->cap * 2 : 256;
         while (s->cap < s->len + n + 1) s->cap *= 2;
         s->d = realloc(s->d, s->cap);
-        if (!s->d) mvx_fatal("out of memory in git output");
+        if (!s->d) mv_fatal("out of memory in git output");
     }
     memcpy(s->d + s->len, p, n);
     s->len += n;
@@ -137,7 +137,7 @@ static int ignored(const char *file, const char *path) {
 /* Open an MVX file by its git name: a trailing ".DICT" opens the
    dictionary of the base file, so dictionaries are trackable as
    "<file>.DICT". */
-static int open_named(mvx_ctx *ctx, const char *name, mv_value *fvar) {
+static int open_named(mv_ctx *ctx, const char *name, mv_value *fvar) {
     size_t n = strlen(name);
     mv_value spec;
     mv_init(&spec);
@@ -146,13 +146,13 @@ static int open_named(mvx_ctx *ctx, const char *name, mv_value *fvar) {
         mv_init(&dictv);
         mv_set_str(&dictv, "DICT", 4);
         mv_set_str(&spec, name, (int64_t)(n - 5));
-        int r = mvx_open(ctx, &dictv, &spec, fvar);
+        int r = mv_open(ctx, &dictv, &spec, fvar);
         mv_clear(&dictv);
         mv_clear(&spec);
         return r;
     }
     mv_set_str(&spec, name, (int64_t)n);
-    int r = mvx_open(ctx, NULL, &spec, fvar);
+    int r = mv_open(ctx, NULL, &spec, fvar);
     mv_clear(&spec);
     return r;
 }
@@ -215,7 +215,7 @@ static int record_oid(const char *content, int64_t len, git_oid *oid) {
 }
 
 /* --- GITINIT(repo, out) ------------------------------------------------ */
-void mvx_sub_GITINIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
     ensure_init();
@@ -237,7 +237,7 @@ void mvx_sub_GITINIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 
 /* Stage the current content of one MVX file's records (or one record)
    into the index.  GITADD(repo, file, record-or-empty, out) */
-void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 4) return;
     ensure_init();
     char rp[4096], fn[256], only[256];
@@ -266,14 +266,14 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         int have = 1;
         if (one) {
             mv_set_str(&id, only, (int64_t)strlen(only));
-            have = mvx_read(ctx, &rec, &fvar, &id, 0);
+            have = mv_read(ctx, &rec, &fvar, &id, 0);
         } else {
-            mvx_select(ctx, &fvar);
+            mv_select(ctx, &fvar);
         }
         while (have) {
             if (!one) {
-                if (!mvx_readnext(ctx, &id)) break;
-                if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
+                if (!mv_readnext(ctx, &id)) break;
+                if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
             }
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
@@ -335,7 +335,7 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     return strncmp(path, "mvxdata.lmdb", 12) == 0 ? 1 : 0;
 }
 
-void mvx_sub_GITADDDISK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
     ensure_init();
@@ -368,7 +368,7 @@ void mvx_sub_GITADDDISK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
    conn`) becomes the portable class `DIR` or `hash`, and the account descriptor
    `.mvx` is stored at path `.mv-account`.  Runs only when the account opts in
    (`mvx.openaccount`).  GITOPENFORM(repo, out) */
-void mvx_sub_GITOPENFORM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
     ensure_init();
@@ -428,7 +428,7 @@ void mvx_sub_GITOPENFORM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         if (nfix == capfix) {
             capfix = capfix ? capfix * 2 : 16;
             fix = realloc(fix, capfix * sizeof *fix);
-            if (!fix) mvx_fatal("out of memory in openform");
+            if (!fix) mv_fatal("out of memory in openform");
         }
         snprintf(fix[nfix].path, sizeof fix[nfix].path, "%s", e->path);
         fix[nfix].id = nb;
@@ -469,7 +469,7 @@ void mvx_sub_GITOPENFORM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
    added with plain `git submodule add` (which writes .gitmodules and clones
    it); this keeps the gitlink current on add/commit.  GITADDSUB(repo, name,
    out) */
-void mvx_sub_GITADDSUB(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITADDSUB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 3) return;
     ensure_init();
@@ -509,7 +509,7 @@ void mvx_sub_GITADDSUB(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* Unstage/remove tracking of a record.  GITRM(repo, file, record, out) */
-void mvx_sub_GITRM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITRM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 4) return;
     ensure_init();
@@ -534,7 +534,7 @@ void mvx_sub_GITRM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITCOMMIT(repo, message, out) — commit the staged index. */
-void mvx_sub_GITCOMMIT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITCOMMIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 3) return;
     ensure_init();
@@ -599,7 +599,7 @@ static void ns_add(nameset *s, const char *name) {
     if (s->c == s->cap) {
         s->cap = s->cap ? s->cap * 2 : 16;
         s->n = realloc(s->n, s->cap * sizeof *s->n);
-        if (!s->n) mvx_fatal("out of memory in git status");
+        if (!s->n) mv_fatal("out of memory in git status");
     }
     snprintf(s->n[s->c++], 256, "%s", name);
 }
@@ -663,7 +663,7 @@ static int is_file_control(const char *path) {
 }
 
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
-void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -704,9 +704,9 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         if (open_named(ctx, fn, &fvar)) {
-            mvx_select(ctx, &fvar);
-            while (mvx_readnext(ctx, &id)) {
-                if (!mvx_read(ctx, &rec, &fvar, &id, 0)) continue;
+            mv_select(ctx, &fvar);
+            while (mv_readnext(ctx, &id)) {
+                if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
                 char idb[256], nb[40], path[600];
                 arg_str(&id, idb, sizeof idb);
                 snprintf(path, sizeof path, "%s/%s", fn, idb);
@@ -717,7 +717,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
                 git_oid woid;
                 char ofb[16];
                 int ofl;
-                if (mvx_openaccount() && strcmp(idb, "%FILE%") == 0 &&
+                if (mv_openaccount() && strcmp(idb, "%FILE%") == 0 &&
                     (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0)
                     record_oid(ofb, ofl, &woid);   /* compare in open-space */
                 else
@@ -751,7 +751,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         if (open_named(ctx, top, &fvar)) {
             isrec = 1;                      /* a real MV file; the entry is a record */
             mv_set_str(&id, recid, (int64_t)strlen(recid));
-            gone = !mvx_read(ctx, &rec, &fvar, &id, 0);
+            gone = !mv_read(ctx, &rec, &fvar, &id, 0);
         }
         mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
         /* only a record of an MV file can be reported deleted; a plain file
@@ -781,7 +781,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             /* the descriptor is committed at `.mv-account` but on disk is native
                `.mvx` (identical content) — compare the two and report a real
                edit as a modification of `.mv-account`, else skip. */
-            if (mvx_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
+            if (mv_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
                 FILE *df = fopen(".mvx", "rb");
                 int clean = 0;
                 if (df) {
@@ -801,7 +801,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             /* an open account's on-disk %FILE% is native (FILE<VM>type) while
                the committed blob is the open form (DIR/hash); compare in
                open-space and skip when they match. */
-            if (mvx_openaccount() && is_file_control(d->new_file.path)) {
+            if (mv_openaccount() && is_file_control(d->new_file.path)) {
                 FILE *cf = fopen(d->new_file.path, "rb");
                 if (cf) {
                     char nat[256];
@@ -832,7 +832,7 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITLOG(repo, count, out) */
-void mvx_sub_GITLOG(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITLOG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 3) return;
     ensure_init();
@@ -897,7 +897,7 @@ static int diff_line_cb(const git_diff_delta *d, const git_diff_hunk *h,
 
 /* GITDIFF(repo, file, out) — unstaged record changes (working vs index)
    as a unified diff.  file "" diffs all tracked files. */
-void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], only[256];
@@ -922,7 +922,7 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         int have = 0;
         if (open_named(ctx, top, &fvar)) {
             mv_set_str(&id, recid, (int64_t)strlen(recid));
-            have = mvx_read(ctx, &rec, &fvar, &id, 0);
+            have = mv_read(ctx, &rec, &fvar, &id, 0);
         }
         git_blob *old = NULL;
         if (git_blob_lookup(&old, repo, &e->id) == 0) {
@@ -930,7 +930,7 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             const char *cp = "";
             int64_t clen = 0, bl = 0;
             char *buf = NULL;
-            int open = mvx_openaccount();
+            int open = mv_openaccount();
             if (open && strcmp(e->path, ".mv-account") == 0) {
                 /* descriptor: on disk it is native `.mvx`, whose content is the
                    open blob verbatim (only the path differs) — diff against it */
@@ -977,7 +977,7 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITSHOW(repo, file, record, out) — committed content of a record. */
-void mvx_sub_GITSHOW(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITSHOW(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 4) return;
     ensure_init();
@@ -1047,7 +1047,7 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
     git_tree_entry_free(te);
 }
 
-static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
+static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
                              git_tree *subtree, const char *fn,
                              int64_t *nw, int64_t *nd) {
     mv_value fvar, id, rec;
@@ -1078,10 +1078,10 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
             mv_value tv;
             mv_init(&tv);
             mv_set_str(&tv, type, (int64_t)strlen(type));
-            mvx_createfile(ctx, &spec, &tv);
+            mv_createfile(ctx, &spec, &tv);
             mv_clear(&tv);
         } else {
-            mvx_createfile(ctx, &spec, NULL);
+            mv_createfile(ctx, &spec, NULL);
         }
         mv_clear(&spec);
     }
@@ -1101,7 +1101,7 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
         if (is_dict && strcmp(name, "%FILE%") == 0) {
             if (ns == cap) { cap = cap ? cap * 2 : 64;
                 seen = realloc(seen, cap * sizeof *seen);
-                if (!seen) mvx_fatal("out of memory in checkout"); }
+                if (!seen) mv_fatal("out of memory in checkout"); }
             snprintf(seen[ns++], 256, "%s", name);
             continue;
         }
@@ -1115,24 +1115,24 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
         mv_set_str(&rec, r, rl);
         free(r);
         mv_set_str(&id, name, (int64_t)strlen(name));
-        mvx_write(ctx, &rec, &fvar, &id, 0, 0);
+        mv_write(ctx, &rec, &fvar, &id, 0, 0);
         (*nw)++;
         if (ns == cap) { cap = cap ? cap * 2 : 64;
             seen = realloc(seen, cap * sizeof *seen);
-            if (!seen) mvx_fatal("out of memory in checkout"); }
+            if (!seen) mv_fatal("out of memory in checkout"); }
         snprintf(seen[ns++], 256, "%s", name);
         git_blob_free(blob);
     }
-    mvx_select(ctx, &fvar);
+    mv_select(ctx, &fvar);
     mv_value dl;
     mv_init(&dl);
-    while (mvx_readnext(ctx, &dl)) {
+    while (mv_readnext(ctx, &dl)) {
         char idb[256];
         arg_str(&dl, idb, sizeof idb);
         int found = 0;
         for (size_t i = 0; i < ns; i++)
             if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-        if (!found) { mvx_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+        if (!found) { mv_delete_rec(ctx, &fvar, &dl); (*nd)++; }
     }
     mv_clear(&dl);
     free(seen);
@@ -1165,7 +1165,7 @@ static int tree_is_mv_file(git_tree *head, const char *name) {
    git.  Without it (a branch switch on an existing account) every top-level tree
    is materialised, as before — a file added without its dictionary still
    round-trips. */
-static void materialize_tree_x(mvx_ctx *ctx, git_repository *repo,
+static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
                                git_tree *tree, int strict,
                                int64_t *nw, int64_t *nd) {
     size_t n = git_tree_entrycount(tree);
@@ -1182,7 +1182,7 @@ static void materialize_tree_x(mvx_ctx *ctx, git_repository *repo,
     }
 }
 
-static void materialize_tree(mvx_ctx *ctx, git_repository *repo,
+static void materialize_tree(mv_ctx *ctx, git_repository *repo,
                              git_tree *tree, int64_t *nw, int64_t *nd) {
     materialize_tree_x(ctx, repo, tree, 0, nw, nd);   /* branch ops: all trees */
 }
@@ -1242,7 +1242,7 @@ static void checkout_plain_tree(git_repository *repo, git_tree *tree,
    native form; the account descriptor `.mv-account`/`.mvx` becomes `.mvx`; plain
    files land on disk.  The open form never touches disk, and no external adopt
    is run.  GITMATERIALIZE(repo, out) */
-void mvx_sub_GITMATERIALIZE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -1306,7 +1306,7 @@ void mvx_sub_GITMATERIALIZE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITBRANCH(repo, name, out) — list branches, or create one at HEAD. */
-void mvx_sub_GITBRANCH(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITBRANCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 3) return;
     ensure_init();
@@ -1363,7 +1363,7 @@ void mvx_sub_GITBRANCH(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 
 /* GITCHECKOUT(repo, name, out) — switch to a branch and write its
    records into the hash files (our working tree). */
-void mvx_sub_GITCHECKOUT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITCHECKOUT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], name[256];
@@ -1395,7 +1395,7 @@ void mvx_sub_GITCHECKOUT(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* Commit a merged/cherry-picked index and materialize it. */
-static void finish_merge(mvx_ctx *ctx, git_repository *repo,
+static void finish_merge(mv_ctx *ctx, git_repository *repo,
                          const char *rp, git_index *mindex,
                          git_commit *ours, git_commit *theirs,
                          const char *msg, mv_value *out) {
@@ -1448,7 +1448,7 @@ static void finish_merge(mvx_ctx *ctx, git_repository *repo,
 }
 
 /* GITMERGE(repo, branch, out) — 3-way merge a branch into HEAD. */
-void mvx_sub_GITMERGE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], name[256];
@@ -1484,7 +1484,7 @@ void mvx_sub_GITMERGE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITCHERRYPICK(repo, commitish, out) — apply one commit onto HEAD. */
-void mvx_sub_GITCHERRYPICK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITCHERRYPICK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], rev[256];
@@ -1519,7 +1519,7 @@ void mvx_sub_GITCHERRYPICK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 
 /* GITRESTORE(repo, file, out) — write records back from HEAD, deleting
    records absent from the commit (git restore / checkout of the file). */
-void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+void mvx_sub_GITRESTORE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], fn[256];
@@ -1557,24 +1557,24 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             mv_set_str(&rec, r, rl);
             free(r);
             mv_set_str(&id, name, (int64_t)strlen(name));
-            mvx_write(ctx, &rec, &fvar, &id, 0, 0);
+            mv_write(ctx, &rec, &fvar, &id, 0, 0);
             nw++;
             if (ns == cap) { cap = cap ? cap * 2 : 64;
                 seen = realloc(seen, cap * sizeof *seen);
-                if (!seen) mvx_fatal("out of memory in restore"); }
+                if (!seen) mv_fatal("out of memory in restore"); }
             snprintf(seen[ns++], 256, "%s", name);
             git_blob_free(blob);
         }
-        mvx_select(ctx, &fvar);
+        mv_select(ctx, &fvar);
         mv_value dl;
         mv_init(&dl);
-        while (mvx_readnext(ctx, &dl)) {
+        while (mv_readnext(ctx, &dl)) {
             char idb[256];
             arg_str(&dl, idb, sizeof idb);
             int found = 0;
             for (size_t i = 0; i < ns; i++)
                 if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-            if (!found) { mvx_delete_rec(ctx, &fvar, &dl); nd++; }
+            if (!found) { mv_delete_rec(ctx, &fvar, &dl); nd++; }
         }
         mv_clear(&dl);
     }
@@ -1598,9 +1598,9 @@ void mvx_sub_GITRESTORE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
    objects, no export copy. */
 #include "mvxgit.h"
 
-typedef void (*sub_fn)(mvx_ctx *, int32_t, mv_value **);
+typedef void (*sub_fn)(mv_ctx *, int32_t, mv_value **);
 
-static char *run_sub(sub_fn fn, mvx_ctx *ctx, const char **args, int n) {
+static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
     mv_value vals[8];
     mv_value *argv[8];
     for (int i = 0; i < n; i++) {
@@ -1615,81 +1615,81 @@ static char *run_sub(sub_fn fn, mvx_ctx *ctx, const char **args, int n) {
     const char *p;
     int64_t len = mv_val_chars(&vals[n], nb, sizeof nb, &p);
     char *r = malloc((size_t)len + 1);
-    if (!r) mvx_fatal("out of memory in git");
+    if (!r) mv_fatal("out of memory in git");
     memcpy(r, p, (size_t)len);
     r[len] = '\0';
     for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
     return r;
 }
 
-char *mvx_git_init(mvx_ctx *ctx, const char *repo) {
+char *mv_git_init(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITINIT, ctx, a, 1);
 }
-char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
                   const char *id) {
     const char *a[] = {repo, file, id};
     return run_sub(mvx_sub_GITADD, ctx, a, 3);
 }
-char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name) {
+char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
 }
-char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo) {
+char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITADDDISK, ctx, a, 1);
 }
-char *mvx_git_openform(mvx_ctx *ctx, const char *repo) {
+char *mv_git_openform(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITOPENFORM, ctx, a, 1);
 }
-char *mvx_git_materialize(mvx_ctx *ctx, const char *repo) {
+char *mv_git_materialize(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
 }
-char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id) {
     const char *a[] = {repo, file, id};
     return run_sub(mvx_sub_GITRM, ctx, a, 3);
 }
-char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg) {
+char *mv_git_commit(mv_ctx *ctx, const char *repo, const char *msg) {
     const char *a[] = {repo, msg};
     return run_sub(mvx_sub_GITCOMMIT, ctx, a, 2);
 }
-char *mvx_git_status(mvx_ctx *ctx, const char *repo) {
+char *mv_git_status(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITSTATUS, ctx, a, 1);
 }
-char *mvx_git_log(mvx_ctx *ctx, const char *repo, const char *count) {
+char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count) {
     const char *a[] = {repo, count};
     return run_sub(mvx_sub_GITLOG, ctx, a, 2);
 }
-char *mvx_git_diff(mvx_ctx *ctx, const char *repo, const char *file) {
+char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file) {
     const char *a[] = {repo, file};
     return run_sub(mvx_sub_GITDIFF, ctx, a, 2);
 }
-char *mvx_git_show(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,
                    const char *id) {
     const char *a[] = {repo, file, id};
     return run_sub(mvx_sub_GITSHOW, ctx, a, 3);
 }
-char *mvx_git_branch(mvx_ctx *ctx, const char *repo, const char *name) {
+char *mv_git_branch(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITBRANCH, ctx, a, 2);
 }
-char *mvx_git_checkout(mvx_ctx *ctx, const char *repo, const char *name) {
+char *mv_git_checkout(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITCHECKOUT, ctx, a, 2);
 }
-char *mvx_git_merge(mvx_ctx *ctx, const char *repo, const char *branch) {
+char *mv_git_merge(mv_ctx *ctx, const char *repo, const char *branch) {
     const char *a[] = {repo, branch};
     return run_sub(mvx_sub_GITMERGE, ctx, a, 2);
 }
-char *mvx_git_cherrypick(mvx_ctx *ctx, const char *repo, const char *commit) {
+char *mv_git_cherrypick(mv_ctx *ctx, const char *repo, const char *commit) {
     const char *a[] = {repo, commit};
     return run_sub(mvx_sub_GITCHERRYPICK, ctx, a, 2);
 }
-char *mvx_git_restore(mvx_ctx *ctx, const char *repo, const char *file) {
+char *mv_git_restore(mv_ctx *ctx, const char *repo, const char *file) {
     const char *a[] = {repo, file};
     return run_sub(mvx_sub_GITRESTORE, ctx, a, 2);
 }

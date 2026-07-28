@@ -226,10 +226,10 @@ static void materialize_clone(const char *acct) {
         return;
     }
     setenv("MVXACCOUNT", ".", 1);
-    mvx_ctx *ctx = mvx_ctx_create();
-    char *r = mvx_git_materialize(ctx, ".git");
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_materialize(ctx, ".git");
     free(r);
-    mvx_ctx_destroy(ctx);
+    mv_ctx_destroy(ctx);
     const char *mvx = getenv("MVX");
     if (!mvx || !mvx[0]) mvx = "mvx";
     setenv("MVXPRIV", "developer", 1);          /* BUILD catalogs BP */
@@ -360,10 +360,10 @@ static int is_mv_file(const char *acct, const char *n) {
     return stat(p, &sb) == 0;
 }
 
-static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
+static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
     char *out = NULL;
 
-    char *r = mvx_git_adddisk(ctx, repo);          /* 1. git's own add */
+    char *r = mv_git_adddisk(ctx, repo);          /* 1. git's own add */
     join(&out, r);
     free(r);
 
@@ -378,7 +378,7 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
             struct stat sb;
             if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
             if (!is_mv_file(acct, n)) continue;
-            r = mvx_git_add(ctx, repo, n, "");
+            r = mv_git_add(ctx, repo, n, "");
             join(&out, r);
             free(r);
         }
@@ -391,7 +391,7 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
         if (stat(lmdbp, &lsb) == 0) {
             mv_value fl;
             mv_init(&fl);
-            mvx_filelist(ctx, &fl);                  /* name<VM>type, @AM-sep */
+            mv_filelist(ctx, &fl);                  /* name<VM>type, @AM-sep */
             char nb[40];
             const char *p;
             int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p);
@@ -412,7 +412,7 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
                     /* on-disk directories were handled above; stage only the
                        files that have no directory, i.e. the LMDB hash files. */
                     if (stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) {
-                        r = mvx_git_add(ctx, repo, name, "");
+                        r = mv_git_add(ctx, repo, name, "");
                         join(&out, r);
                         free(r);
                         /* Its dictionary lives in LMDB too (no on-disk .DICT
@@ -421,7 +421,7 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
                            dictionary for a name ending in .DICT. */
                         char dictname[300];
                         snprintf(dictname, sizeof dictname, "%s.DICT", name);
-                        r = mvx_git_add(ctx, repo, dictname, "");
+                        r = mv_git_add(ctx, repo, dictname, "");
                         join(&out, r);
                         free(r);
                     }
@@ -436,8 +436,8 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
            native account, but the git objects carry the portable open form —
            normalise the staged %FILE% controls to DIR/hash and store .mvx at
            .mv-account. */
-        if (mvx_openaccount()) {
-            r = mvx_git_openform(ctx, repo);
+        if (mv_openaccount()) {
+            r = mv_git_openform(ctx, repo);
             join(&out, r);
             free(r);
         }
@@ -472,16 +472,16 @@ static int engine_run(const char *acct, const char *sub,
         fprintf(stderr, "mvx-git: cannot enter %s\n", acct);
         return 1;
     }
-    mvx_ctx *ctx = mvx_ctx_create();
+    mv_ctx *ctx = mv_ctx_create();
     const char *repo = ".git";
     const char *p0 = positional(argc, argv, subidx, 0);
     const char *p1 = positional(argc, argv, subidx, 1);
     char *out = NULL;
 
     if (!strcmp(sub, "init")) {
-        out = mvx_git_init(ctx, repo);
+        out = mv_git_init(ctx, repo);
     } else if (!strcmp(sub, "status")) {
-        out = mvx_git_status(ctx, repo);
+        out = mv_git_status(ctx, repo);
     } else if (!strcmp(sub, "add")) {
         int all = 0;
         for (int i = subidx + 1; i < argc; i++)
@@ -489,14 +489,14 @@ static int engine_run(const char *acct, const char *sub,
                 !strcmp(argv[i], "."))
                 all = 1;
         if (all) out = add_all(ctx, repo, acct);
-        else if (p0) out = mvx_git_add(ctx, repo, p0, p1 ? p1 : "");
+        else if (p0) out = mv_git_add(ctx, repo, p0, p1 ? p1 : "");
         else out = strdup("usage: mvx-git add <file> [id] | -A");
     } else if (!strcmp(sub, "rm")) {
-        if (p0) out = mvx_git_rm(ctx, repo, p0, p1 ? p1 : "");
+        if (p0) out = mv_git_rm(ctx, repo, p0, p1 ? p1 : "");
         else out = strdup("usage: mvx-git rm <file> [id]");
     } else if (!strcmp(sub, "commit")) {
         const char *msg = opt_value(argc, argv, subidx + 1, "-m");
-        out = mvx_git_commit(ctx, repo, msg ? msg : "");
+        out = mv_git_commit(ctx, repo, msg ? msg : "");
     } else if (!strcmp(sub, "log")) {
         const char *n = opt_value(argc, argv, subidx + 1, "-n");
         if (!n && p0) n = p0;                       /* `log 5` */
@@ -504,30 +504,30 @@ static int engine_run(const char *acct, const char *sub,
             for (int i = subidx + 1; i < argc; i++)
                 if (argv[i][0] == '-' && argv[i][1] >= '1' && argv[i][1] <= '9')
                     n = argv[i] + 1;
-        out = mvx_git_log(ctx, repo, n ? n : "20");
+        out = mv_git_log(ctx, repo, n ? n : "20");
     } else if (!strcmp(sub, "diff")) {
-        out = mvx_git_diff(ctx, repo, p0 ? p0 : "");
+        out = mv_git_diff(ctx, repo, p0 ? p0 : "");
     } else if (!strcmp(sub, "show")) {
-        if (p0 && p1) out = mvx_git_show(ctx, repo, p0, p1);
+        if (p0 && p1) out = mv_git_show(ctx, repo, p0, p1);
         else out = strdup("usage: mvx-git show <file> <id>");
     } else if (!strcmp(sub, "branch")) {
-        out = mvx_git_branch(ctx, repo, p0 ? p0 : "");
+        out = mv_git_branch(ctx, repo, p0 ? p0 : "");
     } else if (!strcmp(sub, "checkout")) {
-        if (p0) out = mvx_git_checkout(ctx, repo, p0);
+        if (p0) out = mv_git_checkout(ctx, repo, p0);
         else out = strdup("usage: mvx-git checkout <branch>");
     } else if (!strcmp(sub, "merge")) {
-        if (p0) out = mvx_git_merge(ctx, repo, p0);
+        if (p0) out = mv_git_merge(ctx, repo, p0);
         else out = strdup("usage: mvx-git merge <branch>");
     } else if (!strcmp(sub, "cherry-pick")) {
-        if (p0) out = mvx_git_cherrypick(ctx, repo, p0);
+        if (p0) out = mv_git_cherrypick(ctx, repo, p0);
         else out = strdup("usage: mvx-git cherry-pick <commit>");
     } else if (!strcmp(sub, "restore")) {
-        if (p0) out = mvx_git_restore(ctx, repo, p0);
+        if (p0) out = mv_git_restore(ctx, repo, p0);
         else out = strdup("usage: mvx-git restore <file>");
     }
 
     print_out(out);
-    mvx_ctx_destroy(ctx);
+    mv_ctx_destroy(ctx);
     return 0;
 }
 

@@ -24,8 +24,8 @@
 
 /* The record-git engine is one codebase compiled per platform.  It depends on a
    fixed, narrow set of record primitives (the value type mv_value, the context
-   mvx_ctx, and open/read/write/select/readnext/delete/createfile/filelist plus
-   mv_init/clear/set_str/val_chars, mvx_openaccount and mvx_fatal) and never
+   mv_ctx, and open/read/write/select/readnext/delete/createfile/filelist plus
+   mv_init/clear/set_str/val_chars, mv_openaccount and mv_fatal) and never
    touches mv_value's internals.  The concrete implementation of those names is
    chosen at compile time — no runtime indirection:
 
@@ -40,36 +40,53 @@
 #  include "udtgit_rt.h"
 #else
 #  include "mvx_runtime.h"
+/* The shared engine speaks a platform-neutral record API (mv_*); on MVX those
+   names map to the runtime's mvx_* symbols at compile time — direct calls, no
+   indirection.  (The value ops mv_init/mv_clear/mv_set_str/mv_val_chars and the
+   type mv_value are already the runtime's own mv_* names.) */
+#  define mv_ctx          mvx_ctx
+#  define mv_ctx_create   mvx_ctx_create
+#  define mv_ctx_destroy  mvx_ctx_destroy
+#  define mv_open         mvx_open
+#  define mv_read         mvx_read
+#  define mv_readnext     mvx_readnext
+#  define mv_write        mvx_write
+#  define mv_delete_rec   mvx_delete_rec
+#  define mv_select       mvx_select
+#  define mv_createfile   mvx_createfile
+#  define mv_filelist     mvx_filelist
+#  define mv_openaccount  mvx_openaccount
+#  define mv_fatal        mvx_fatal
 #endif
 
-char *mvx_git_init(mvx_ctx *ctx, const char *repo);
-char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_init(mv_ctx *ctx, const char *repo);
+char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
                   const char *id);
 /* Stage a git submodule directory `name` as a gitlink (not as records). */
-char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name);
+char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
-char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo);
+char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
 /* Normalise the staged index to the open account format (%FILE% -> DIR/hash,
    .mvx -> .mv-account) — the git objects carry the open form; disk stays
    native.  Run after `add` when `mvx.openaccount` is set. */
-char *mvx_git_openform(mvx_ctx *ctx, const char *repo);
+char *mv_git_openform(mv_ctx *ctx, const char *repo);
 /* Materialise a native account directly from the repo's HEAD tree (the clone
    path): MV files -> backend, .mv-account/.mvx -> .mvx, plain files -> disk.
    The open form never touches disk; no external adopt tool is run. */
-char *mvx_git_materialize(mvx_ctx *ctx, const char *repo);
-char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_materialize(mv_ctx *ctx, const char *repo);
+char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id);
-char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg);
-char *mvx_git_status(mvx_ctx *ctx, const char *repo);
-char *mvx_git_log(mvx_ctx *ctx, const char *repo, const char *count);
-char *mvx_git_diff(mvx_ctx *ctx, const char *repo, const char *file);
-char *mvx_git_show(mvx_ctx *ctx, const char *repo, const char *file,
+char *mv_git_commit(mv_ctx *ctx, const char *repo, const char *msg);
+char *mv_git_status(mv_ctx *ctx, const char *repo);
+char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count);
+char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file);
+char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,
                    const char *id);
-char *mvx_git_branch(mvx_ctx *ctx, const char *repo, const char *name);
-char *mvx_git_checkout(mvx_ctx *ctx, const char *repo, const char *name);
-char *mvx_git_merge(mvx_ctx *ctx, const char *repo, const char *branch);
-char *mvx_git_cherrypick(mvx_ctx *ctx, const char *repo, const char *commit);
-char *mvx_git_restore(mvx_ctx *ctx, const char *repo, const char *file);
+char *mv_git_branch(mv_ctx *ctx, const char *repo, const char *name);
+char *mv_git_checkout(mv_ctx *ctx, const char *repo, const char *name);
+char *mv_git_merge(mv_ctx *ctx, const char *repo, const char *branch);
+char *mv_git_cherrypick(mv_ctx *ctx, const char *repo, const char *commit);
+char *mv_git_restore(mv_ctx *ctx, const char *repo, const char *file);
 
 #endif /* MVXGIT_H */
