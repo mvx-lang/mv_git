@@ -64,12 +64,30 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record) {
     return "";
 }
 
-/* GITSTAGEBLOB(repo, path, content) — stage a raw blob verbatim (the open-
-   account controls: <file>.DICT/%FILE%, .mv-account). */
+/* GITSTAGEBLOB(repo, path, content) — stage a raw blob (the open-account
+   controls: <file>.DICT/%FILE%, .mv-account).  For a hash file's %FILE% control,
+   a modulo is only a suggested default: keep an already-committed one STICKY so
+   this account's resize does not overwrite the shipped default and ripple out to
+   other clones — so preserve HEAD's control and only take the fresh (live)
+   modulo for a file with none committed yet. */
 char *GITSTAGEBLOB(char *repo, char *path, char *content) {
+    const char *p = path ? path : "";
+    const char *use = content ? content : "";
+    char committed[128];
+    size_t plen = strlen(p);
+    const char *suf = ".DICT/%FILE%";
+    size_t sl = strlen(suf);
+    if (plen > sl && strcmp(p + plen - sl, suf) == 0 &&
+        strncmp(use, "hash", 4) == 0) {
+        char base[512];
+        snprintf(base, sizeof base, "%.*s", (int)(plen - sl), p);
+        if (mv_git_committed_control(rp(repo), base, committed,
+                                     sizeof committed) >= 0 &&
+            strncmp(committed, "hash", 4) == 0)
+            use = committed;
+    }
     mv_git_batch_begin(rp(repo));
-    mv_git_batch_add(path ? path : "", content ? content : "",
-                     content ? (int64_t)strlen(content) : 0, 0);
+    mv_git_batch_add(p, use, (int64_t)strlen(use), 0);
     return "";
 }
 

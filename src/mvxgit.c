@@ -205,6 +205,32 @@ static git_tree *head_tree(git_repository *repo) {
     return t;
 }
 
+/* Copy the open-form %FILE% control committed for `base` (HEAD's
+   <base>.DICT/%FILE%) into out[cap]; returns its length, or -1 if `base` has no
+   committed control in `head`.  Reads from an already-open repo/tree. */
+static int head_control(git_repository *repo, git_tree *head, const char *base,
+                        char *out, size_t cap) {
+    if (!head) return -1;
+    char path[600];
+    snprintf(path, sizeof path, "%s.DICT/%%FILE%%", base);
+    git_tree_entry *te = NULL;
+    if (git_tree_entry_bypath(&te, head, path) != 0) return -1;
+    int n = -1;
+    git_blob *b = NULL;
+    if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+        const char *c = git_blob_rawcontent(b);
+        int64_t cl = (int64_t)git_blob_rawsize(b);
+        if (cl >= 0 && (size_t)cl < cap) {
+            memcpy(out, c, (size_t)cl);
+            out[cl] = '\0';
+            n = (int)cl;
+        }
+        git_blob_free(b);
+    }
+    git_tree_entry_free(te);
+    return n;
+}
+
 /* Blob oid of a record's current content (translated, not stored). */
 static int record_oid(const char *content, int64_t len, git_oid *oid) {
     int64_t bl;
@@ -445,6 +471,7 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
+    git_tree *ht = head_tree(repo);   /* for the sticky committed modulo */
 
     /* Collect changes first — adding to the index mid-scan invalidates the
        entry pointers git_index_get_byindex returns. */
@@ -490,18 +517,27 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         }
         git_blob_free(b);
         if (!cls) continue;
-        /* For a hashed file, carry a guessed modulo (from the staged record
-           count) as the size hint: "hash <modulo> DYNAMIC".  A bare "hash"
-           when the file has no records yet. */
-        char spec[64];
+        /* For a hashed file the control carries a modulo the target sizes to.
+           Keep an already-committed modulo STICKY — the shipped default must not
+           track this working copy's current size, or one customer's growth/resize
+           would become everyone's — so preserve HEAD's control and only guess for
+           a file with none committed yet. */
+        char spec[128];
         const char *cont = cls;
         if (strcmp(cls, "hash") == 0) {
             char base[600];
             snprintf(base, sizeof base, "%.*s", (int)(pl - sl), e->path);
-            long mod = guess_modulo(index, base);
-            if (mod > 0) {
-                snprintf(spec, sizeof spec, "hash %ld DYNAMIC", mod);
+            char committed[128];
+            if (head_control(repo, ht, base, committed, sizeof committed) >= 0 &&
+                strncmp(committed, "hash", 4) == 0) {
+                snprintf(spec, sizeof spec, "%s", committed);   /* sticky default */
                 cont = spec;
+            } else {
+                long mod = guess_modulo(index, base);           /* new file: seed */
+                if (mod > 0) {
+                    snprintf(spec, sizeof spec, "hash %ld DYNAMIC", mod);
+                    cont = spec;
+                }
             }
         }
         git_oid nb;
@@ -536,6 +572,7 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     free(fix);
     int rc = git_index_write(index);
+    if (ht) git_tree_free(ht);
     git_index_free(index);
     git_repository_free(repo);
     if (rc != 0) { fail(argv[1], "openform"); return; }
@@ -1892,6 +1929,19 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content) {
     const char *a[] = {repo, path, content};
     return run_sub(mvx_sub_GITSTAGEBLOB, ctx, a, 3);
+}
+
+int mv_git_committed_control(const char *repo, const char *base,
+                             char *out, size_t cap) {
+    if (cap) out[0] = '\0';
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, repo) != 0) return -1;   /* never create here */
+    git_tree *t = head_tree(r);
+    int n = head_control(r, t, base, out, cap);
+    if (t) git_tree_free(t);
+    git_repository_free(r);
+    return n;
 }
 char *mv_git_headfiles(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};

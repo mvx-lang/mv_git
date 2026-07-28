@@ -70,6 +70,14 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content);
 
+/* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
+   in `out`; returns its length, or -1 if `base` has no committed control yet.
+   Generators use it to keep a shipped hash modulo sticky: a re-add preserves the
+   committed default instead of overwriting it with the live file's current size,
+   so one customer's resize never becomes another's. */
+int mv_git_committed_control(const char *repo, const char *base,
+                             char *out, size_t cap);
+
 /* Batched staging (bulk in-session use): open once, accumulate blobs across many
    mv_git_batch_add calls, write the index once at mv_git_batch_end.  O(n) — for
    staging a whole account without re-opening the repo per record. */

@@ -105,10 +105,20 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                 /* open-form control: probe the live file for its class and, for
                    a hash file, its real modulo (so a clone recreates it at true
                    size, keeping a static file static) — "DIR" or
-                   "hash <modulo> DYNAMIC|STATIC". */
-                char type[64];
+                   "hash <modulo> DYNAMIC|STATIC".  But a hash modulo is only a
+                   suggested default: keep an already-committed one STICKY so this
+                   account's resize does not overwrite the shipped default and
+                   ripple out to other clones — only seed it for a new file. */
+                char type[128];
                 if (!mv_fileclass(ctx, name, type, sizeof type))
                     snprintf(type, sizeof type, "hash");
+                if (strncmp(type, "hash", 4) == 0) {
+                    char committed[128];
+                    if (mv_git_committed_control(repo, name, committed,
+                                                 sizeof committed) >= 0 &&
+                        strncmp(committed, "hash", 4) == 0)
+                        snprintf(type, sizeof type, "%s", committed);
+                }
                 snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
                 free(mv_git_stageblob(ctx, repo, ctrl, type));
             }
