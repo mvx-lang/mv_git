@@ -61,7 +61,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "udt-git: cannot enter account %s\n", account);
         return 1;
     }
-    setenv("MVXACCOUNT", account, 1);
+    /* The InterCall session binds to the account by absolute path (UniData
+       LOGTO does not resolve "." or a relative path), so record on the cwd. */
+    char acctpath[4096];
+    if (getcwd(acctpath, sizeof acctpath))
+        setenv("MVXACCOUNT", acctpath, 1);
+    else
+        setenv("MVXACCOUNT", account, 1);
 
     mv_ctx *ctx = mv_ctx_create();
     const char *repo = ".git";
