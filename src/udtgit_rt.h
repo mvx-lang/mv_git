@@ -71,6 +71,10 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id);   /* 0 when the list is done */
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type);
 /* Fill `dst` with the account's files as "name<VM>type" rows, @AM-separated. */
 void    mv_filelist(mv_ctx *ctx, mv_value *dst);
+/* Report a live file's open-form class into `out`: "DIR", or the extended hash
+   form "hash <modulo> DYNAMIC|STATIC" carrying its real geometry so a clone can
+   recreate it at true size.  Returns 0 if the file cannot be opened. */
+int64_t mv_fileclass(mv_ctx *ctx, const char *name, char *out, size_t cap);
 
 /* --- misc -------------------------------------------------------------- */
 int  mv_openaccount(void);   /* open account format on? ($MVX_OPENACCOUNT) */

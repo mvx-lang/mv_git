@@ -392,13 +392,50 @@ void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[1], "staged working tree", 19);
 }
 
+/* Smallest prime >= max(n, 2). */
+static long next_prime(long n) {
+    if (n < 2) return 2;
+    for (;; n++) {
+        int prime = 1;
+        for (long d = 2; d * d <= n; d++)
+            if (n % d == 0) { prime = 0; break; }
+        if (prime) return n;
+    }
+}
+
+/* Records the open form aims to place per hash group when guessing a modulo. */
+#define OPENFORM_RECS_PER_GROUP 7
+
+/* Guess a hash-file modulo from the number of data records staged for `base`
+   (index entries under "<base>/").  MVX/LMDB has no modulo of its own, so the
+   open form carries this as a size hint for a materialise onto a modulo-based
+   platform (UniData/UV); a dynamic target refines it under load.  Returns 0 for
+   an empty file (leave the control a bare "hash").  The index is sorted, so the
+   records for a file are contiguous from the prefix match. */
+static long guess_modulo(git_index *index, const char *base) {
+    char prefix[600];
+    snprintf(prefix, sizeof prefix, "%s/", base);
+    size_t pos = 0;
+    if (git_index_find_prefix(&pos, index, prefix) != 0) return 0;
+    size_t plen = strlen(prefix), ic = git_index_entrycount(index), n = 0;
+    for (size_t i = pos; i < ic; i++) {
+        const git_index_entry *e = git_index_get_byindex(index, i);
+        if (strncmp(e->path, prefix, plen) != 0) break;
+        n++;
+    }
+    if (n == 0) return 0;
+    return next_prime((long)(n / OPENFORM_RECS_PER_GROUP));
+}
+
 /* Normalise the staged index to the open account format — the record-git
    cross-platform interchange (mvx#73).  The working tree stays a native account
    on disk; only the git objects carry the open form, so this rewrites staged
    blobs after `add`: a dictionary's `%FILE%` control (`FILE <VM> type <VM>
-   conn`) becomes the portable class `DIR` or `hash`, and the account descriptor
-   `.mvx` is stored at path `.mv-account`.  Runs only when the account opts in
-   (`mvx.openaccount`).  GITOPENFORM(repo, out) */
+   conn`) becomes the portable class `DIR` or `hash` (a hashed file carries a
+   guessed modulo, "hash <modulo> DYNAMIC", so a clone onto a modulo-based
+   platform sizes the file instead of always making a tiny default), and the
+   account descriptor `.mvx` is stored at path `.mv-account`.  Runs only when the
+   account opts in (`mvx.openaccount`).  GITOPENFORM(repo, out) */
 void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
@@ -453,8 +490,22 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         }
         git_blob_free(b);
         if (!cls) continue;
+        /* For a hashed file, carry a guessed modulo (from the staged record
+           count) as the size hint: "hash <modulo> DYNAMIC".  A bare "hash"
+           when the file has no records yet. */
+        char spec[64];
+        const char *cont = cls;
+        if (strcmp(cls, "hash") == 0) {
+            char base[600];
+            snprintf(base, sizeof base, "%.*s", (int)(pl - sl), e->path);
+            long mod = guess_modulo(index, base);
+            if (mod > 0) {
+                snprintf(spec, sizeof spec, "hash %ld DYNAMIC", mod);
+                cont = spec;
+            }
+        }
         git_oid nb;
-        if (git_blob_create_from_buffer(&nb, repo, cls, strlen(cls)) != 0)
+        if (git_blob_create_from_buffer(&nb, repo, cont, strlen(cont)) != 0)
             continue;
         if (nfix == capfix) {
             capfix = capfix ? capfix * 2 : 16;
@@ -1102,8 +1153,13 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 /* Write one tracked subtree's records back into its MVX file, deleting
    records absent from the tree. */
 /* Map a %FILE% control's content — the open form DIR/hash, or a native
-   FILE<VM>type — to a CREATE-FILE type: "DIR" for a directory file, "" for the
-   account's default hash backend. */
+   FILE<VM>type — to a CREATE-FILE type spec: "DIR" for a directory file, "" for
+   the account's default hash backend, or the extended hash form
+   "hash <modulo> DYNAMIC|STATIC" when the open control records a modulo.  The
+   modulo spec lets a materialise recreate a hash file at its real size (and keep
+   a static file static) instead of always creating a default dynamic file; a
+   backend that has no notion of modulo (MVX/LMDB) sees a leading "hash" and
+   treats it as the default hash, ignoring the size hint. */
 static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
     out[0] = '\0';
     if (!c) return;
@@ -1111,7 +1167,21 @@ static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
     if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return; }
-    if (cl == 4 && strncasecmp(c, "hash", 4) == 0) return;   /* default hash */
+    if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) {
+        /* "hash" alone -> default hash (""); "hash <modulo> <DYNAMIC|STATIC>"
+           -> pass the validated modulo spec through for the backend to honour. */
+        const char *p = c + 4, *end = c + cl;
+        while (p < end && (*p == ' ' || *p == '\t')) p++;
+        if (p >= end) return;                            /* bare hash */
+        long mod = 0; const char *mp = p;
+        while (mp < end && *mp >= '0' && *mp <= '9') { mod = mod * 10 + (*mp - '0'); mp++; }
+        if (mp == p || mod <= 0) return;                 /* no valid modulo */
+        while (mp < end && (*mp == ' ' || *mp == '\t')) mp++;
+        const char *dyn = "DYNAMIC";
+        if (end - mp >= 6 && strncasecmp(mp, "STATIC", 6) == 0) dyn = "STATIC";
+        snprintf(out, cap, "hash %ld %s", mod, dyn);
+        return;
+    }
     if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
         const char *t = c + 5, *end = c + cl;
         const char *m2 = memchr(t, 0xFD, (size_t)(end - t));

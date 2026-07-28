@@ -102,11 +102,13 @@ static void add_all(mv_ctx *ctx, const char *repo) {
             emit(mv_git_add(ctx, repo, name, ""));   /* data records */
             emit(mv_git_add(ctx, repo, dict, ""));   /* dictionary   */
             if (open) {
-                /* open-form control: a UniData directory file is an OS
-                   directory, a hashed file is a regular file. */
-                struct stat sb;
-                const char *type = (stat(name, &sb) == 0 &&
-                                    S_ISDIR(sb.st_mode)) ? "DIR" : "hash";
+                /* open-form control: probe the live file for its class and, for
+                   a hash file, its real modulo (so a clone recreates it at true
+                   size, keeping a static file static) — "DIR" or
+                   "hash <modulo> DYNAMIC|STATIC". */
+                char type[64];
+                if (!mv_fileclass(ctx, name, type, sizeof type))
+                    snprintf(type, sizeof type, "hash");
                 snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
                 free(mv_git_stageblob(ctx, repo, ctrl, type));
             }

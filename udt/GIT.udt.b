@@ -80,7 +80,7 @@
          GOSUB STAGEDATA
          GOSUB STAGEDICT
          IF OPENFMT THEN
-            IF FTYPE = "DIR" THEN CTL = "DIR" ELSE CTL = "hash"
+            GOSUB FILECLASS       ;* CTL = DIR | hash <modulo> DYNAMIC|STATIC
             R = CALLC GITSTAGEBLOB(REPO, FILE:".DICT/%FILE%", CTL)
          END
          NFILES += 1
@@ -89,6 +89,26 @@
          NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
          DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
          R = CALLC GITSTAGEBLOB(REPO, ".mv-account", DESC)
+      END
+      RETURN
+*
+*  Open-form class of FILE for its %FILE% control: "DIR" for a directory file,
+*  else "hash <modulo> DYNAMIC|STATIC" carrying the live file's real geometry so
+*  a clone recreates it at true size (and keeps a static file static).  FILEINFO
+*  in-session is reliable: key 3 = type (2 static hash, 3 dynamic, else dir), key
+*  5 = current modulus.  A directory file has no modulus (0); a dynamic hashed
+*  file (also a directory on disk) has a positive one — the modulus separates
+*  them, mirroring udt-git's mv_fileclass.
+   FILECLASS:
+      CTL = "hash"
+      OPEN FILE TO FCVAR THEN
+         FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
+         IF MODL <= 0 THEN
+            CTL = "DIR"
+         END ELSE
+            IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+            CTL = "hash " : MODL : " " : DS
+         END
       END
       RETURN
 *

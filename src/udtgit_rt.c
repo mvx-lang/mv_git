@@ -32,6 +32,7 @@
 #include <string.h>
 #include <strings.h>      /* strncasecmp */
 #include <stdarg.h>
+#include <sys/stat.h>
 
 /* UniData InterCall.  intcall.h uses LPSTR (char*) / LPLONG (long*) and passes
    everything by address; status `code` is 0 on success. */
@@ -344,14 +345,75 @@ int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     int is_dir = strncasecmp(ts, "DIR", 3) == 0 &&
                  (ts[3] == '\0' || ts[3] == ' ');
     /* UniData ECL: a directory file is `CREATE.FILE DIR <name>`; a hash file is
-       `CREATE.FILE <name> <modulo> <sep> DYNAMIC` (a bare DYNAMIC prompts for
-       the modulo, so a modulo is always supplied — a modest default here). */
+       `CREATE.FILE <name> <modulo> <sep> [DYNAMIC]`.  The open %FILE% control may
+       carry the source file's real geometry as "hash <modulo> DYNAMIC|STATIC";
+       honour it so a clone recreates the file at its true size (and keeps a
+       static file static) rather than always making a default dynamic file.  A
+       bare DYNAMIC prompts for the modulo, so a modulo is always supplied. */
     char cmd[1024];
-    if (is_dir)
+    if (is_dir) {
         snprintf(cmd, sizeof cmd, "CREATE.FILE DIR %s", name);
-    else
-        snprintf(cmd, sizeof cmd, "CREATE.FILE %s 101 1 DYNAMIC", name);
+    } else {
+        long mod = 0;
+        int is_static = 0;
+        if (strncasecmp(ts, "hash", 4) == 0) {
+            const char *p = ts + 4;
+            while (*p == ' ' || *p == '\t') p++;
+            while (*p >= '0' && *p <= '9') { mod = mod * 10 + (*p - '0'); p++; }
+            while (*p == ' ' || *p == '\t') p++;
+            if (strncasecmp(p, "STATIC", 6) == 0) is_static = 1;
+        }
+        if (mod <= 0) mod = 101;                     /* no hint: modest default */
+        /* A single modulo names the DATA file's modulus (a second number would
+           be the dictionary's); a static file is fixed at it, a dynamic file
+           starts there and auto-resizes. */
+        if (is_static)
+            snprintf(cmd, sizeof cmd, "CREATE.FILE %s %ld", name, mod);
+        else
+            snprintf(cmd, sizeof cmd, "CREATE.FILE %s %ld 1 DYNAMIC", name, mod);
+    }
     return udt_run_ecl(cmd) == 0 ? 1 : 0;
+}
+
+/* Report the open-form class of a live account file into `out`: "DIR" for a
+   directory (Type 1) file, else "hash <modulo> DYNAMIC|STATIC" carrying the
+   file's real geometry (current modulus + whether it is a dynamic or static
+   hash file) so a materialise can recreate it at true size rather than always
+   making a default dynamic file.  Falls back to a bare "hash" if the file
+   cannot be probed.  Returns 1 on success, 0 if the file could not be opened. */
+int64_t mv_fileclass(mv_ctx *ctx, const char *name, char *out, size_t cap) {
+    udt_ensure_session(ctx);
+    snprintf(out, cap, "hash");
+    /* Classify from two reliable signals: whether the file is an OS directory
+       (the process has chdir'd to the account, so a bare name resolves), and its
+       current modulus via FILEINFO.  On UniData a static hashed file (Type 2) is
+       a plain OS file, while both a directory file (Type 1/19) AND a dynamic
+       hashed file (Type 3) are OS directories on disk — so a directory alone is
+       ambiguous.  The modulus separates them: a directory file has no modulus
+       (0), a dynamic hashed file has a positive one.  (FILEINFO's TYPE key is
+       unreliable over InterCall here, but MODULUS is dependable.) */
+    struct stat sb;
+    int isdir = (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode));
+    long modulo = 0;
+    long kind = IK_DATA, namelen = (long)strlen(name);
+    long fid = 0, status = 0, code = 0;
+    ic_open(&fid, &kind, (char *)name, &namelen, &status, &code);
+    if (code == 0) {
+        char sbuf[64];
+        long slen = 0, fcode = 0, key = FINFO_MODULUS;
+        ic_fileinfo(&fid, &key, &modulo, sbuf, &slen, &fcode);
+        long cstat = 0;
+        ic_close(&fid, &cstat);
+    } else if (!isdir) {
+        return 0;                                /* not a file we can describe */
+    }
+    if (isdir) {
+        if (modulo > 0) snprintf(out, cap, "hash %ld DYNAMIC", modulo);
+        else            snprintf(out, cap, "DIR");
+    } else if (modulo > 0) {
+        snprintf(out, cap, "hash %ld STATIC", modulo);
+    }
+    return 1;
 }
 
 /* A VOC pointer field (data or dict path) is local to this account when it is a
