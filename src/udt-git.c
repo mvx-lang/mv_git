@@ -110,18 +110,26 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     }
     mv_clear(&fl);
 
+    const char *acctpath = getenv("MVXACCOUNT");
+    const char *base = acctpath ? acctpath : "account";
+    const char *slash = strrchr(base, '/');
+    if (slash && slash[1]) base = slash + 1;
+    char desc[512];
     if (open) {
         /* the portable account descriptor (UniData has no .mvx on disk) */
-        const char *acctpath = getenv("MVXACCOUNT");
-        const char *base = acctpath ? acctpath : "account";
-        const char *slash = strrchr(base, '/');
-        if (slash && slash[1]) base = slash + 1;
-        char desc[512];
         snprintf(desc, sizeof desc,
                  "# MV account descriptor\nname = %s\nversion = 1\n"
                  "hash = lmdb\n", base);
         free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
         printf(".mv-account + %%FILE%% controls written (open format)\n");
+    } else {
+        /* native UniData account marker: UniData has no on-disk descriptor, so
+           record that this is a UniData account (and carry account-specific
+           info) for a checkout back into another UniData instance. */
+        snprintf(desc, sizeof desc,
+                 "# UniData account descriptor\nname = %s\nversion = 1\n", base);
+        free(mv_git_stageblob(ctx, repo, ".udt", desc));
+        printf(".udt account marker written (native)\n");
     }
 }
 

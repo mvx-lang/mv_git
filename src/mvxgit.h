@@ -57,6 +57,7 @@
 #  define mv_filelist     mvx_filelist
 #  define mv_openaccount  mvx_openaccount
 #  define mv_fatal        mvx_fatal
+#  define mv_voc_class    mvx_voc_class
 #endif
 
 char *mv_git_init(mv_ctx *ctx, const char *repo);

@@ -245,15 +245,18 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[1], fn, sizeof fn);
     arg_str(argv[2], only, sizeof only);
 
-    /* An open-account commit of the master VOC keeps the user's own items —
-       paragraphs, sentences, menus, phrases (portable PROCs that must run on
-       the other platform) — but drops what a fresh account auto-creates and
-       that does not port: verbs (V, a native binary pointer), keywords (K), and
-       file/Q/remote pointers (F/LF/DF/DIR/Q/X/R — platform-specific paths; the
-       portable file type travels as the synthesised <file>.DICT/%FILE%).  So a
-       default VOC commit may be empty, yet a user's local procs still travel. */
-    int skip_sysvoc = mv_openaccount() &&
-                      (strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0);
+    /* Committing the master VOC keeps the user's own items — paragraphs,
+       sentences, menus, phrases (portable PROCs that must run on the other
+       platform) — but never the system entries a fresh account auto-creates.
+       Verbs (V, a native binary pointer) and keywords (K) are ALWAYS dropped,
+       open format or not: they belong to the source system and the destination
+       supplies its own — true even between two UniData versions.  The open
+       interchange additionally drops the platform-specific file/Q/remote
+       pointers (F/LF/DF/DIR/Q/X/R), since the portable file type travels as the
+       synthesised <file>.DICT/%FILE%; a native commit keeps those so it can be
+       checked out into another instance of the same platform. */
+    int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
+    int voc_open = is_voc && mv_openaccount();
 
     git_repository *repo = NULL;
     git_index *index = NULL;
@@ -285,21 +288,19 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 if (!mv_readnext(ctx, &id)) break;
                 if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
             }
-            if (skip_sysvoc) {          /* drop auto-created system VOC items */
+            if (is_voc) {               /* drop auto-created system VOC items */
                 const char *vp;
                 char vnb[40];
                 int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
                 int64_t f1 = 0;
                 while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
-                static const char *sys[] = {"V", "K", "F", "LF", "DF",
-                                            "DIR", "Q", "X", "R", NULL};
-                int drop = 0;
-                for (int k = 0; sys[k]; k++) {
-                    size_t sl = strlen(sys[k]);
-                    if ((size_t)f1 == sl &&
-                        strncasecmp(vp, sys[k], sl) == 0) { drop = 1; break; }
-                }
-                if (drop) {
+                /* The platform classifies its own VOC type codes (they differ
+                   across UniData / MVX / UniVerse): 1 = always drop (system
+                   verb/keyword the target supplies), 2 = drop in the open
+                   interchange only (platform file/pointer — %FILE% carries the
+                   portable form), 0 = keep (the user's own procs). */
+                int cls = mv_voc_class(vp, f1);
+                if (cls == 1 || (cls == 2 && voc_open)) {
                     skipped++;
                     if (one) break;
                     continue;

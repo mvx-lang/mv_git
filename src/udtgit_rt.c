@@ -380,6 +380,25 @@ int mv_openaccount(void) {
     return v && *v && strcmp(v, "0") != 0;
 }
 
+int mv_voc_class(const char *type, int64_t len) {
+    /* UniData VOC type codes.  Verbs and keywords belong to the source system;
+       file/Q/remote pointers are platform-specific.  Everything else — PA
+       (paragraph), S (sentence), M (menu), PH (phrase), … — is the user's own
+       and travels. */
+    static const struct { const char *t; int c; } tbl[] = {
+        {"V", 1}, {"K", 1},                              /* verb, keyword */
+        {"F", 2}, {"LF", 2}, {"DF", 2}, {"DIR", 2},      /* file definitions */
+        {"Q", 2}, {"X", 2}, {"R", 2},                    /* account/remote ptrs */
+        {NULL, 0}
+    };
+    for (int i = 0; tbl[i].t; i++) {
+        size_t sl = strlen(tbl[i].t);
+        if ((size_t)len == sl && strncasecmp(type, tbl[i].t, sl) == 0)
+            return tbl[i].c;
+    }
+    return 0;
+}
+
 void mv_fatal(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

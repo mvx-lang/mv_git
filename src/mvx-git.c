@@ -163,10 +163,9 @@ static void convert_import(const char *acct) {
         fprintf(stderr, "mvx-git: account rebuild failed\n");
 }
 
-/* True if the freshly-cloned repo's HEAD tree carries an account descriptor
-   (.mv-account in the open form, or .mvx natively) — checked in the git objects,
-   since a --no-checkout clone has an empty working tree. */
-static int head_is_account(const char *acct) {
+/* True if the cloned HEAD tree carries the descriptor `name` — checked in the
+   git objects, since a --no-checkout clone has an empty working tree. */
+static int head_has(const char *acct, const char *name) {
     char rp[PATH_MAX];
     snprintf(rp, sizeof rp, "%s/.git", acct);
     git_libgit2_init();
@@ -175,10 +174,8 @@ static int head_is_account(const char *acct) {
     if (git_repository_open(&repo, rp) == 0) {
         git_object *obj = NULL;
         if (git_revparse_single(&obj, repo, "HEAD^{tree}") == 0) {
-            git_tree *t = (git_tree *)obj;
             git_tree_entry *te = NULL;
-            if (git_tree_entry_bypath(&te, t, ".mv-account") == 0 ||
-                git_tree_entry_bypath(&te, t, ".mvx") == 0) {
+            if (git_tree_entry_bypath(&te, (git_tree *)obj, name) == 0) {
                 yes = 1;
                 git_tree_entry_free(te);
             }
@@ -189,29 +186,20 @@ static int head_is_account(const char *acct) {
     return yes;
 }
 
+/* An MV account descriptor is present: `.mv-account` (open form), `.mvx` (native
+   MVX) or `.udt` (native UniData).  A native foreign form still materialises —
+   best effort — but the account may not be fully functional here. */
+static int head_is_account(const char *acct) {
+    return head_has(acct, ".mv-account") || head_has(acct, ".mvx") ||
+           head_has(acct, ".udt");
+}
+
 /* True if the cloned HEAD carries the *open* descriptor `.mv-account` — the repo
    was committed in the open account format, so the materialised native account
    is an open account and status/diff must translate to open-space.  Cloning such
    a repo turns the opt-in on automatically, without needing --open-account. */
 static int head_is_open(const char *acct) {
-    char rp[PATH_MAX];
-    snprintf(rp, sizeof rp, "%s/.git", acct);
-    git_libgit2_init();
-    git_repository *repo = NULL;
-    int yes = 0;
-    if (git_repository_open(&repo, rp) == 0) {
-        git_object *obj = NULL;
-        if (git_revparse_single(&obj, repo, "HEAD^{tree}") == 0) {
-            git_tree_entry *te = NULL;
-            if (git_tree_entry_bypath(&te, (git_tree *)obj, ".mv-account") == 0) {
-                yes = 1;
-                git_tree_entry_free(te);
-            }
-            git_object_free(obj);
-        }
-        git_repository_free(repo);
-    }
-    return yes;
+    return head_has(acct, ".mv-account");
 }
 
 /* Materialise a cloned account directly from its git objects into the backend —
@@ -588,6 +576,17 @@ int main(int argc, char **argv) {
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
             return code;
         if (head_is_account(acct)) {
+            /* A native foreign account (.udt = native UniData) is not the open
+               interchange form: materialise it best-effort so the files and
+               records are restored, but warn that the account may not be fully
+               functional here (its %FILE% controls and system verbs are in the
+               source platform's form). */
+            if (head_has(acct, ".udt") && !head_is_open(acct))
+                fprintf(stderr,
+                        "mvx-git: warning: '%s' is a native UniData account "
+                        "(.udt); restoring files and records, but the account "
+                        "may not be fully functional on MVX — commit it with "
+                        "mvx.openaccount set for a portable checkout\n", acct);
             /* persist the opt-in when asked, or when HEAD is itself open-form */
             if (want_open || head_is_open(acct)) open_config_set(acct);
             materialize_clone(acct);              /* direct: git objects -> backend */

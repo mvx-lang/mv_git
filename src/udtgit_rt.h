@@ -74,6 +74,12 @@ void    mv_filelist(mv_ctx *ctx, mv_value *dst);
 
 /* --- misc -------------------------------------------------------------- */
 int  mv_openaccount(void);   /* open account format on? ($MVX_OPENACCOUNT) */
+/* Classify a master-VOC record by its (platform) type code for the record-git
+   filter: 0 = keep (the user's own procs), 1 = always drop (a system
+   verb/keyword the destination supplies — dropped even native, e.g. between two
+   UniData versions), 2 = drop in the open interchange only (a platform
+   file/Q/remote pointer; the portable form travels as <file>.DICT/%FILE%). */
+int  mv_voc_class(const char *type, int64_t len);
 void mv_fatal(const char *fmt, ...)
     __attribute__((noreturn, format(printf, 1, 2)));
 
