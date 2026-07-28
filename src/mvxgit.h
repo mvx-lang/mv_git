@@ -22,7 +22,25 @@
 #ifndef MVXGIT_H
 #define MVXGIT_H
 
-#include "mvx_runtime.h"
+/* The record-git engine is one codebase compiled per platform.  It depends on a
+   fixed, narrow set of record primitives (the value type mv_value, the context
+   mvx_ctx, and open/read/write/select/readnext/delete/createfile/filelist plus
+   mv_init/clear/set_str/val_chars, mvx_openaccount and mvx_fatal) and never
+   touches mv_value's internals.  The concrete implementation of those names is
+   chosen at compile time — no runtime indirection:
+
+     - default (mvx-git): the MVX runtime, libmvxrt (mvx_runtime.h).
+     - MVXGIT_UDT (udt-git): the same names over Rocket UniData's InterCall API
+       (udtgit_rt.h / udtgit_rt.c).
+
+   The engine body is identical either way; only genuine behavioural
+   differences (UniData has no on-disk descriptor, generates %INDEXES%
+   virtually) are guarded inline with #ifdef MVXGIT_UDT. */
+#if defined(MVXGIT_UDT)
+#  include "udtgit_rt.h"
+#else
+#  include "mvx_runtime.h"
+#endif
 
 char *mvx_git_init(mvx_ctx *ctx, const char *repo);
 char *mvx_git_add(mvx_ctx *ctx, const char *repo, const char *file,

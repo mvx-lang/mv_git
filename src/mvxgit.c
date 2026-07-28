@@ -25,7 +25,7 @@
  * touches a filesystem working tree.  Library calls, not exec: any
  * privilege tier.
  */
-#include "mvx_runtime.h"
+#include "mvxgit.h"      /* selects the record backend at compile time */
 
 #include <fnmatch.h>
 #include <git2.h>
