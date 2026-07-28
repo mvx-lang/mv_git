@@ -25,11 +25,15 @@
 
 #include "mvxgit.h"
 
+#include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>      /* strncasecmp */
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Render the engine's output (lines separated by @AM = 0xFE) to stdout. */
@@ -134,6 +138,124 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     }
 }
 
+/* Fork/exec argv[0] with argv, wait, and return its exit status (127 on
+   spawn failure).  Used to shell out to git and newacct during clone. */
+static int runcmd(const char *const cmd[]) {
+    pid_t pid = fork();
+    if (pid < 0) return 127;
+    if (pid == 0) {
+        execvp(cmd[0], (char *const *)cmd);
+        _exit(127);
+    }
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) { /* retry on EINTR */ }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+/* Provision a fresh, registered UniData account in the current directory with
+   UniData's own newacct.  This restores every standard system file (VOC and its
+   dictionary, _HOLD_, SAVEDLISTS, BP/CTLG, MENUFILE, ...) that the open-account
+   commit deliberately drops — so clone only has to materialise the user's files
+   and records on top.  newacct is interactive (continue? / owner login / group
+   name), so feed those three answers on its stdin.  Its own exit status is not
+   a reliable success signal (it returns 0 even when a login is rejected), so the
+   caller confirms VOC exists afterwards. */
+static int run_newacct(const char *owner, const char *group) {
+    const char *udthome = getenv("UDTHOME");
+    if (!udthome || !udthome[0]) udthome = "/usr/ud83";
+    char prog[4200];
+    snprintf(prog, sizeof prog, "%s/bin/newacct", udthome);
+
+    int fd[2];
+    if (pipe(fd) != 0) return 1;
+    pid_t pid = fork();
+    if (pid < 0) { close(fd[0]); close(fd[1]); return 1; }
+    if (pid == 0) {
+        dup2(fd[0], 0);
+        close(fd[0]);
+        close(fd[1]);
+        int nul = open("/dev/null", O_WRONLY);   /* mute the user/group lists */
+        if (nul >= 0) { dup2(nul, 1); close(nul); }
+        execl(prog, "newacct", (char *)NULL);
+        _exit(127);
+    }
+    close(fd[0]);
+    dprintf(fd[1], "y\n%s\n%s\n", owner, group);
+    close(fd[1]);
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) { /* retry on EINTR */ }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+/* udt-git clone <repo> [<dir>] — provision a UniData account from a record-git
+   repository.  Clone the repo without a working tree, create a fresh registered
+   account in place with newacct, then materialise HEAD's files and records into
+   it over InterCall.  The account owner/group default to the current login and
+   can be overridden with UDT_ACCT_OWNER / UDT_ACCT_GROUP. */
+static int do_clone(const char *repo, const char *dir) {
+    if (!repo || !repo[0]) {
+        fprintf(stderr, "usage: udt-git clone <repo> [<dir>]\n");
+        return 2;
+    }
+    char dbuf[4096];
+    if (!dir || !dir[0]) {
+        const char *b = strrchr(repo, '/');
+        b = b ? b + 1 : repo;
+        snprintf(dbuf, sizeof dbuf, "%s", b);
+        char *dot = strstr(dbuf, ".git");    if (dot) *dot = 0;
+        dot = strstr(dbuf, ".bundle");       if (dot) *dot = 0;
+        if (!dbuf[0]) {
+            fprintf(stderr, "udt-git: cannot derive a target name from '%s'\n", repo);
+            return 1;
+        }
+        dir = dbuf;
+    }
+
+    /* 1. clone without a working tree — materialise reads HEAD's tree directly
+          through libgit2, so a git checkout would only be wasted disk writes. */
+    const char *ga[] = { "git", "clone", "--no-checkout", repo, dir, NULL };
+    if (runcmd(ga) != 0) {
+        fprintf(stderr, "udt-git: git clone failed\n");
+        return 1;
+    }
+
+    /* 2. make the target a real UniData account (VOC + all the system files). */
+    if (chdir(dir) != 0) {
+        fprintf(stderr, "udt-git: cannot enter %s\n", dir);
+        return 1;
+    }
+    const char *owner = getenv("UDT_ACCT_OWNER");
+    const char *group = getenv("UDT_ACCT_GROUP");
+    if (!owner || !owner[0]) {
+        struct passwd *pw = getpwuid(getuid());
+        owner = pw ? pw->pw_name : "root";
+    }
+    if (!group || !group[0]) {
+        struct group *gr = getgrgid(getgid());
+        group = gr ? gr->gr_name : owner;
+    }
+    run_newacct(owner, group);
+    if (access("VOC", F_OK) != 0) {
+        fprintf(stderr,
+                "udt-git: newacct did not provision the account "
+                "(owner=%s group=%s); check the login/group are valid\n",
+                owner, group);
+        return 1;
+    }
+
+    /* 3. materialise the user's files and records on top, over InterCall. */
+    char acctpath[4096];
+    if (getcwd(acctpath, sizeof acctpath))
+        setenv("MVXACCOUNT", acctpath, 1);
+    if (open_account_on())
+        setenv("MVX_OPENACCOUNT", "1", 1);
+
+    mv_ctx *ctx = mv_ctx_create();
+    emit(mv_git_materialize(ctx, ".git"));
+    mv_ctx_destroy(ctx);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     /* optional "-a <account>" before the subcommand */
     int i = 1;
@@ -147,6 +269,11 @@ int main(int argc, char **argv) {
         return 2;
     }
     const char *sub = argv[i++];
+
+    /* clone provisions a NEW account, so it runs before the chdir-into-an-
+       existing-account path below (it creates the directory itself). */
+    if (!strcmp(sub, "clone"))
+        return do_clone(arg(argc, argv, i), arg(argc, argv, i + 1));
 
     if (chdir(account) != 0) {
         fprintf(stderr, "udt-git: cannot enter account %s\n", account);

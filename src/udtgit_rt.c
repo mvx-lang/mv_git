@@ -293,24 +293,65 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id) {
     return 1;
 }
 
+/* Run an ECL command over InterCall and leave the session ready for the next
+   one.  ic_execute streams the command's screen output; drain every
+   continuation, and if the command blocks on a terminal prompt (IE_AT_INPUT) or
+   the drain never reaches the end, cancel it so the execute is not left active
+   (a stuck execute makes every later ic_execute fail with IE_EXECUTEISACTIVE).
+   Returns the final error code (0 on success). */
+static long udt_run_ecl(const char *cmd) {
+    char obuf[8192];
+    long cmdlen = (long)strlen(cmd);
+    long status = 0, code = 0, outlen = 0, outmax = (long)sizeof obuf, atend = 0;
+    ic_execute((char *)cmd, &cmdlen, obuf, &outmax, &outlen, &atend,
+               &status, &code);
+    int guard = 0;
+    while (code == 0 && atend == 0 && guard++ < 100000) {
+        long clen = (long)sizeof obuf;
+        ic_executecontinue(obuf, &clen, &outlen, &atend, &status, &code);
+    }
+    if (getenv("UDTGIT_DEBUG"))
+        fprintf(stderr, "udt-git: %s -> status=%ld code=%ld out=%.*s\n",
+                cmd, status, code, (int)(outlen > 200 ? 200 : outlen), obuf);
+    if (code != 0 || atend == 0) {          /* prompt, or still mid-output */
+        long ccode = 0;
+        ic_cancel(&ccode);                  /* clear the active execute */
+    }
+    return code;
+}
+
+/* True if `name`'s data file already exists in the account (it opens). */
+static int udt_file_exists(const char *name) {
+    long kind = IK_DATA, namelen = (long)strlen(name);
+    long fid = 0, status = 0, code = 0;
+    ic_open(&fid, &kind, (char *)name, &namelen, &status, &code);
+    if (code != 0) return 0;
+    long cstat = 0;
+    ic_close(&fid, &cstat);
+    return 1;
+}
+
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     udt_ensure_session(ctx);
-    /* UniData CREATE.FILE via ECL.  A directory file for "DIR"; otherwise a
-       dynamic hash file (the account default).  Verified/refined against the
-       demo account when materialize is exercised. */
     const char *name = spec->data ? spec->data : "";
-    int is_dir = type && type->data && type->len == 3 &&
-                 strncasecmp(type->data, "DIR", 3) == 0;
+    if (!*name) return 0;
+    /* Skip if it already exists — a fresh clone creates the data file and its
+       dictionary in one CREATE.FILE, so the later dictionary pass (and any
+       branch-switch re-materialise) would otherwise hit the "recreate?" prompt
+       and stall the session. */
+    if (udt_file_exists(name)) return 1;
+    const char *ts = (type && type->data) ? type->data : "";
+    int is_dir = strncasecmp(ts, "DIR", 3) == 0 &&
+                 (ts[3] == '\0' || ts[3] == ' ');
+    /* UniData ECL: a directory file is `CREATE.FILE DIR <name>`; a hash file is
+       `CREATE.FILE <name> <modulo> <sep> DYNAMIC` (a bare DYNAMIC prompts for
+       the modulo, so a modulo is always supplied — a modest default here). */
     char cmd[1024];
     if (is_dir)
-        snprintf(cmd, sizeof cmd, "CREATE.FILE %s 1 DIR", name);
+        snprintf(cmd, sizeof cmd, "CREATE.FILE DIR %s", name);
     else
-        snprintf(cmd, sizeof cmd, "CREATE.FILE %s DYNAMIC", name);
-    long cmdlen = (long)strlen(cmd);
-    long status = 0, code = 0, out = 0, outmax = 0, r1 = 0, r2 = 0;
-    ic_execute(cmd, &cmdlen, NULL, &outmax, &out, &r1, &status, &code);
-    (void)r2;
-    return code == 0 ? 1 : 0;
+        snprintf(cmd, sizeof cmd, "CREATE.FILE %s 101 1 DYNAMIC", name);
+    return udt_run_ecl(cmd) == 0 ? 1 : 0;
 }
 
 /* A VOC pointer field (data or dict path) is local to this account when it is a

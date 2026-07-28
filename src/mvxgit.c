@@ -1140,7 +1140,7 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
 
 static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
                              git_tree *subtree, const char *fn,
-                             int64_t *nw, int64_t *nd) {
+                             int keep_extra, int64_t *nw, int64_t *nd) {
     mv_value fvar, id, rec;
     mv_init(&fvar); mv_init(&id); mv_init(&rec);
     size_t ln = strlen(fn);
@@ -1214,18 +1214,25 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         snprintf(seen[ns++], 256, "%s", name);
         git_blob_free(blob);
     }
-    mv_select(ctx, &fvar);
-    mv_value dl;
-    mv_init(&dl);
-    while (mv_readnext(ctx, &dl)) {
-        char idb[256];
-        arg_str(&dl, idb, sizeof idb);
-        int found = 0;
-        for (size_t i = 0; i < ns; i++)
-            if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-        if (!found) { mv_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+    /* Reconcile: drop records the commit no longer has — but only on a branch
+       switch.  On a fresh clone (keep_extra) the destination is a just-created
+       account whose files carry system records the open-account commit
+       deliberately omits (VOC verbs/keywords, catalog pointers such as CTLGTB);
+       deleting those would break the account.  Clone only adds. */
+    if (!keep_extra) {
+        mv_select(ctx, &fvar);
+        mv_value dl;
+        mv_init(&dl);
+        while (mv_readnext(ctx, &dl)) {
+            char idb[256];
+            arg_str(&dl, idb, sizeof idb);
+            int found = 0;
+            for (size_t i = 0; i < ns; i++)
+                if (strcmp(seen[i], idb) == 0) { found = 1; break; }
+            if (!found) { mv_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+        }
+        mv_clear(&dl);
     }
-    mv_clear(&dl);
     free(seen);
     mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 }
@@ -1268,7 +1275,9 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
         git_tree *sub = NULL;
         if (git_tree_lookup(&sub, repo, git_tree_entry_id(te)) != 0)
             continue;
-        materialize_file(ctx, repo, tree, sub, name, nw, nd);
+        /* strict == a fresh clone: keep the account's own system records
+           (see materialize_file) rather than reconcile-deleting them. */
+        materialize_file(ctx, repo, tree, sub, name, strict, nw, nd);
         git_tree_free(sub);
     }
 }
