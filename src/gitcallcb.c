@@ -70,7 +70,7 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record, char *out) {
     snprintf(path, sizeof path, "%s/%s", file ? file : "", id ? id : "");
     size_t n = record ? strlen(record) : 0;
     char *blob = malloc(n + 1);
-    if (!blob) { put_out(out, NULL); return out; }
+    if (!blob) return out;
     for (size_t i = 0; i < n; i++)
         blob[i] = (unsigned char)record[i] == 0xFE ? '\n' : record[i];
     blob[n] = '\0';
