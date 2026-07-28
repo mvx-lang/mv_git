@@ -120,8 +120,11 @@ static int clone_target(int argc, char **argv, int subidx,
 
 static int is_account(const char *dir) {
     char p[PATH_MAX];
-    snprintf(p, sizeof p, "%s/.mvx", dir);
     struct stat sb;
+    /* `.mvx` natively, `.mv-account` in the open account format. */
+    snprintf(p, sizeof p, "%s/.mvx", dir);
+    if (stat(p, &sb) == 0) return 1;
+    snprintf(p, sizeof p, "%s/.mv-account", dir);
     return stat(p, &sb) == 0;
 }
 
