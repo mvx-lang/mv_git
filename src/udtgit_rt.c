@@ -170,7 +170,7 @@ int64_t mv_read(mv_ctx *ctx, mv_value *rec, const mv_value *fvar,
     if (!buf) mv_fatal("udt-git: out of memory");
     ic_read(&fid, &lk, id->data ? id->data : "", &idlen, buf, &maxlen,
             &reclen, &status, &code);
-    if (code != 0 || status != 0) {   /* not found or error */
+    if (code != 0) {   /* code 30001 = record not found; any code != 0 = absent */
         free(buf);
         return 0;
     }
@@ -214,12 +214,13 @@ void mv_select(mv_ctx *ctx, const mv_value *fvar) {
 int64_t mv_readnext(mv_ctx *ctx, mv_value *id) {
     udt_ensure_session(ctx);
     long list = UDT_SELECT_LIST;
-    long idlen = IC_MAX_RECID_LENGTH;
-    long status = 0, code = 0;
+    long maxlen = IC_MAX_RECID_LENGTH;   /* buffer size (input) */
+    long actlen = 0;                     /* actual id length (output) */
+    long endflag = 0;                    /* 0 = got a record, non-zero = end */
     char idbuf[IC_MAX_RECID_LENGTH + 1];
-    ic_readnext(&list, idbuf, &idlen, &status, &code);
-    if (code != 0 || status != 0) return 0;   /* end of list */
-    mv_set_str(id, idbuf, idlen);
+    ic_readnext(&list, idbuf, &maxlen, &actlen, &endflag);
+    if (endflag != 0) return 0;          /* end of the select list */
+    mv_set_str(id, idbuf, actlen);
     return 1;
 }
 
