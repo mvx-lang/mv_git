@@ -33,6 +33,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <git2.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -157,6 +158,39 @@ static void convert_import(const char *acct) {
     char *rargv[3] = {(char *)tool, (char *)acct, NULL};
     if (run(rargv) != 0)
         fprintf(stderr, "mvx-git: account rebuild failed\n");
+}
+
+/* The open account format is opt-in per account via the git config flag
+   `mvx.openaccount` (the core.autocrlf analogue).  These read/set it in the
+   account's .git/config and surface it to the runtime as $MVX_OPENACCOUNT, so
+   both the in-process engine and the mvx-convert-acct subprocess honour it. */
+static int open_config_on(const char *acct) {
+    char cfgpath[PATH_MAX + 16];
+    snprintf(cfgpath, sizeof cfgpath, "%s/.git/config", acct);
+    git_libgit2_init();
+    git_config *cfg = NULL;
+    int on = 0, b = 0;
+    if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
+        if (git_config_get_bool(&b, cfg, "mvx.openaccount") == 0) on = b;
+        git_config_free(cfg);
+    }
+    return on;
+}
+
+static void open_config_set(const char *acct) {
+    char cfgpath[PATH_MAX + 16];
+    snprintf(cfgpath, sizeof cfgpath, "%s/.git/config", acct);
+    git_libgit2_init();
+    git_config *cfg = NULL;
+    if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
+        git_config_set_bool(cfg, "mvx.openaccount", 1);
+        git_config_free(cfg);
+    }
+}
+
+/* Surface the account's open-account flag to the runtime through the env. */
+static void apply_open_env(const char *acct) {
+    if (open_config_on(acct)) setenv("MVX_OPENACCOUNT", "1", 1);
 }
 
 static int ask_create_account(const char *acct) {
@@ -387,6 +421,20 @@ static int engine_run(const char *acct, const char *sub,
 }
 
 int main(int argc, char **argv) {
+    /* --open-account is an mvx-git-only clone flag (git never sees it): check
+       the checkout out with the open account format turned on.  Strip it from
+       the args before anything parses or forwards them. */
+    int want_open = 0;
+    {
+        int w = 1;
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--open-account") == 0) { want_open = 1; continue; }
+            argv[w++] = argv[i];
+        }
+        argc = w;
+        argv[argc] = NULL;
+    }
+
     /* The subcommand is the first non-option argument. */
     const char *sub = NULL;
     int subidx = 0;
@@ -402,8 +450,10 @@ int main(int argc, char **argv) {
      * enclosing repo, so it falls through to plain git below. */
     char acct[PATH_MAX];
     if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct) &&
-        (has_own_git(acct) || !strcmp(sub, "init")))
+        (has_own_git(acct) || !strcmp(sub, "init"))) {
+        apply_open_env(acct);          /* mvx.openaccount -> $MVX_OPENACCOUNT */
         return engine_run(acct, sub, argc, argv, subidx);
+    }
 
     /* Otherwise forward verbatim to real git. */
     char **gargv = malloc((size_t)(argc + 1) * sizeof *gargv);
@@ -421,6 +471,8 @@ int main(int argc, char **argv) {
     if (strcmp(sub, "clone") == 0) {
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
             return code;
+        if (want_open) open_config_set(acct);   /* persist the opt-in */
+        apply_open_env(acct);                    /* -> $MVX_OPENACCOUNT */
         if (is_account(acct) || ask_create_account(acct))
             convert_import(acct);
         return code;
@@ -429,8 +481,10 @@ int main(int argc, char **argv) {
     /* Any other tree-changing command forwarded to plain git (pull, rebase,
      * reset, …) leaves the account's working tree as checked-out record files;
      * rebuild the live hash files from that directory form. */
-    if (account_from_cwd(acct, sizeof acct) && is_account(acct))
+    if (account_from_cwd(acct, sizeof acct) && is_account(acct)) {
+        apply_open_env(acct);
         convert_import(acct);
+    }
 
     return code;
 }
