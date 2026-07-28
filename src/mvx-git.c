@@ -168,15 +168,29 @@ static void convert_import(const char *acct) {
    account's .git/config and surface it to the runtime as $MVX_OPENACCOUNT, so
    both the in-process engine and the mvx-convert-acct subprocess honour it. */
 static int open_config_on(const char *acct) {
+    /* Read `mvx.openaccount` straight from the account's .git/config.  A plain
+       text scan (not libgit2) so the result is identical across libgit2
+       versions — get_bool behaved differently on the CI toolchain. */
     char cfgpath[PATH_MAX + 16];
     snprintf(cfgpath, sizeof cfgpath, "%s/.git/config", acct);
-    git_libgit2_init();
-    git_config *cfg = NULL;
-    int on = 0, b = 0;
-    if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
-        if (git_config_get_bool(&b, cfg, "mvx.openaccount") == 0) on = b;
-        git_config_free(cfg);
+    FILE *f = fopen(cfgpath, "r");
+    if (!f) return 0;
+    char line[512];
+    int in_mvx = 0, on = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
+        if (!in_mvx || strncasecmp(s, "openaccount", 11) != 0) continue;
+        char *v = strchr(s, '=');
+        if (!v) continue;
+        v++;
+        while (*v == ' ' || *v == '\t') v++;
+        on = strncasecmp(v, "true", 4) == 0 || *v == '1' ||
+             strncasecmp(v, "yes", 3) == 0 || strncasecmp(v, "on", 2) == 0;
+        break;
     }
+    fclose(f);
     return on;
 }
 
@@ -332,6 +346,16 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
                 if (i < len) i++;
             }
             mv_clear(&fl);
+        }
+
+        /* 3. Open account format (mvx.openaccount): the working tree stays a
+           native account, but the git objects carry the portable open form —
+           normalise the staged %FILE% controls to DIR/hash and store .mvx at
+           .mv-account. */
+        if (mvx_openaccount()) {
+            r = mvx_git_openform(ctx, repo);
+            join(&out, r);
+            free(r);
         }
     }
     return out ? out : strdup("nothing to stage");
