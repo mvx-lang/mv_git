@@ -32,6 +32,10 @@ char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo);
+/* Normalise the staged index to the open account format (%FILE% -> DIR/hash,
+   .mvx -> .mv-account) — the git objects carry the open form; disk stays
+   native.  Run after `add` when `mvx.openaccount` is set. */
+char *mvx_git_openform(mvx_ctx *ctx, const char *repo);
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg);

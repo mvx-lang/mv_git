@@ -325,6 +325,15 @@ void mvx_sub_GITADD(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
    records of VOC files that are not plain on-disk files, e.g. LMDB hash files).
    Uses the repository-owned index so libgit2 can stat the working tree and
    apply the ignore rules.  GITADDDISK(repo, out) */
+/* The record-git model tracks records as git blobs, never the binary LMDB
+   store — so the account's mvxdata.lmdb must never be staged, even when no
+   .gitignore lists it.  Returns >0 to skip the path. */
+static int addall_skip(const char *path, const char *matched, void *payload) {
+    (void)matched;
+    (void)payload;
+    return strncmp(path, "mvxdata.lmdb", 12) == 0 ? 1 : 0;
+}
+
 void mvx_sub_GITADDDISK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
@@ -341,13 +350,116 @@ void mvx_sub_GITADDDISK(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
         return;
     }
     git_strarray all = {NULL, 0};              /* empty pathspec ⇒ everything */
-    int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT, NULL, NULL);
+    int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT,
+                               addall_skip, NULL);
     if (rc == 0) rc = git_index_update_all(index, &all, NULL, NULL);
     if (rc == 0) rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
     if (rc != 0) { fail(argv[1], "add"); return; }
     mv_set_str(argv[1], "staged working tree", 19);
+}
+
+/* Normalise the staged index to the open account format — the record-git
+   cross-platform interchange (mvx#73).  The working tree stays a native account
+   on disk; only the git objects carry the open form, so this rewrites staged
+   blobs after `add`: a dictionary's `%FILE%` control (`FILE <VM> type <VM>
+   conn`) becomes the portable class `DIR` or `hash`, and the account descriptor
+   `.mvx` is stored at path `.mv-account`.  Runs only when the account opts in
+   (`mvx.openaccount`).  GITOPENFORM(repo, out) */
+void mvx_sub_GITOPENFORM(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
+
+    /* Collect changes first — adding to the index mid-scan invalidates the
+       entry pointers git_index_get_byindex returns. */
+    struct fix { char path[600]; git_oid id; } *fix = NULL;
+    size_t nfix = 0, capfix = 0;
+    int have_mvx = 0;
+    git_oid mvx_blob;
+    const char *suffix = ".DICT/%FILE%";
+    size_t sl = strlen(suffix);
+
+    size_t ic = git_index_entrycount(index);
+    for (size_t i = 0; i < ic; i++) {
+        const git_index_entry *e = git_index_get_byindex(index, i);
+        if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
+        size_t pl = strlen(e->path);
+
+        if (strcmp(e->path, ".mvx") == 0) {             /* .mvx -> .mv-account */
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, &e->id) == 0) {
+                if (git_blob_create_from_buffer(&mvx_blob, repo,
+                        git_blob_rawcontent(b),
+                        (size_t)git_blob_rawsize(b)) == 0)
+                    have_mvx = 1;
+                git_blob_free(b);
+            }
+            continue;
+        }
+        if (pl < sl || strcmp(e->path + pl - sl, suffix) != 0)
+            continue;                                   /* not a %FILE% control */
+        git_blob *b = NULL;
+        if (git_blob_lookup(&b, repo, &e->id) != 0) continue;
+        const char *c = git_blob_rawcontent(b);
+        int64_t cl = (int64_t)git_blob_rawsize(b);
+        const char *cls = NULL;                         /* native -> DIR/hash */
+        if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
+            const char *t = c + 5, *end = c + cl;
+            const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
+            const char *te = m2 ? m2 : end;
+            while (te > t && (te[-1] == '\n' || te[-1] == '\r' ||
+                              te[-1] == ' ' || te[-1] == '\t'))
+                te--;                                   /* trim trailing ws */
+            cls = (te - t == 3 && strncasecmp(t, "dir", 3) == 0) ? "DIR" : "hash";
+        }
+        git_blob_free(b);
+        if (!cls) continue;
+        git_oid nb;
+        if (git_blob_create_from_buffer(&nb, repo, cls, strlen(cls)) != 0)
+            continue;
+        if (nfix == capfix) {
+            capfix = capfix ? capfix * 2 : 16;
+            fix = realloc(fix, capfix * sizeof *fix);
+            if (!fix) mvx_fatal("out of memory in openform");
+        }
+        snprintf(fix[nfix].path, sizeof fix[nfix].path, "%s", e->path);
+        fix[nfix].id = nb;
+        nfix++;
+    }
+
+    for (size_t i = 0; i < nfix; i++) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = fix[i].path;
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = fix[i].id;
+        git_index_add(index, &e);
+    }
+    if (have_mvx) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = ".mv-account";
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = mvx_blob;
+        git_index_add(index, &e);
+        git_index_remove_bypath(index, ".mvx");
+    }
+    free(fix);
+    int rc = git_index_write(index);
+    git_index_free(index);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[1], "openform"); return; }
+    char out[80];
+    snprintf(out, sizeof out, "open form: %zu file(s) normalised",
+             nfix + (size_t)have_mvx);
+    mv_set_str(argv[1], out, (int64_t)strlen(out));
 }
 
 /* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
@@ -1222,6 +1334,10 @@ char *mvx_git_addsub(mvx_ctx *ctx, const char *repo, const char *name) {
 char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITADDDISK, ctx, a, 1);
+}
+char *mvx_git_openform(mvx_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITOPENFORM, ctx, a, 1);
 }
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id) {
