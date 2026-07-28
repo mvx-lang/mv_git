@@ -54,30 +54,23 @@ static void emit(const char *repo, char *out, char *r) {
 
 /* GITINIT(repo, out) — create the repository. */
 char *GITINIT(char *repo, char *out) {
+    mv_git_batch_end();                 /* discard any stale open batch */
     mv_ctx *ctx = mv_ctx_create();
     emit(repo, out, mv_git_init(ctx, rp(repo)));
     mv_ctx_destroy(ctx);
     return out;
 }
 
-/* GITSTAGE(repo, file, id, record, out) — stage one record's blob at file/id.
-   The blob is the record with attribute marks (@AM = 0xFE) turned into newlines,
-   exactly as the engine stores records, so the git history is line-oriented and
-   an mvx-git checkout round-trips.  The UniBasic verb has already READ the
-   record on the current session and passes it here. */
+/* GITSTAGE(repo, file, id, record, out) — stage one record's blob at file/id
+   into the batched index (@AM = 0xFE marks -> newlines).  The UniBasic verb has
+   already READ the record on the current session and passes it here; the index
+   is held open across calls and written by GITCOMMIT. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record, char *out) {
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", file ? file : "", id ? id : "");
-    size_t n = record ? strlen(record) : 0;
-    char *blob = malloc(n + 1);
-    if (!blob) return out;
-    for (size_t i = 0; i < n; i++)
-        blob[i] = (unsigned char)record[i] == 0xFE ? '\n' : record[i];
-    blob[n] = '\0';
-    mv_ctx *ctx = mv_ctx_create();
-    free(mv_git_stageblob(ctx, rp(repo), path, blob));  /* per-record: no msg */
-    mv_ctx_destroy(ctx);
-    free(blob);
+    mv_git_batch_begin(rp(repo));       /* idempotent */
+    mv_git_batch_add(path, record ? record : "",
+                     record ? (int64_t)strlen(record) : 0, 1);
     (void)out;
     return out;
 }
@@ -85,16 +78,16 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record, char *out) {
 /* GITSTAGEBLOB(repo, path, content, out) — stage a raw blob verbatim at `path`
    (the synthesised open-account controls: <file>.DICT/%FILE%, .mv-account). */
 char *GITSTAGEBLOB(char *repo, char *path, char *content, char *out) {
-    mv_ctx *ctx = mv_ctx_create();
-    free(mv_git_stageblob(ctx, rp(repo), path ? path : "",
-                          content ? content : ""));
-    mv_ctx_destroy(ctx);
+    mv_git_batch_begin(rp(repo));
+    mv_git_batch_add(path ? path : "", content ? content : "",
+                     content ? (int64_t)strlen(content) : 0, 0);
     (void)out;
     return out;
 }
 
-/* GITCOMMIT(repo, msg, out) — commit the staged index. */
+/* GITCOMMIT(repo, msg, out) — flush the batched index, then commit. */
 char *GITCOMMIT(char *repo, char *msg, char *out) {
+    mv_git_batch_end();                 /* write the accumulated index to disk */
     mv_ctx *ctx = mv_ctx_create();
     emit(repo, out, mv_git_commit(ctx, rp(repo), msg ? msg : ""));
     mv_ctx_destroy(ctx);

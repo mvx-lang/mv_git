@@ -1665,6 +1665,55 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
+/* Batched staging for bulk in-session use (the UniData GIT verb via CallC):
+   open the repository and index once, accumulate blobs in memory across many
+   mv_git_batch_add calls, and write the index once at mv_git_batch_end — O(n),
+   avoiding the per-record repo/index re-open + re-write (and the resulting
+   resource churn / crash) of calling mv_git_stageblob thousands of times.
+   Reuses the same repo_open / xlate as the rest of the engine, so the layout
+   and blob form match a normal commit. */
+static git_repository *g_brepo;
+static git_index *g_bindex;
+
+int mv_git_batch_begin(const char *repo) {
+    ensure_init();
+    if (g_bindex) return 1;                     /* already open in this session */
+    if (repo_open(repo, &g_brepo, &g_bindex) != 0) return 0;
+    return 1;
+}
+
+/* Stage one blob at git `path`.  translate != 0 turns attribute marks
+   (@AM = 0xFE) into newlines (records); 0 stores `content` verbatim (the
+   open-account controls, .mv-account). */
+void mv_git_batch_add(const char *path, const char *content, int64_t len,
+                      int translate) {
+    if (!g_bindex) return;
+    const char *buf = content;
+    char *tmp = NULL;
+    int64_t bl = len;
+    if (translate) { tmp = xlate(content, len, (char)0xFE, '\n', &bl); buf = tmp; }
+    git_oid boid;
+    if (git_blob_create_from_buffer(&boid, g_brepo, buf, (size_t)bl) == 0) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = path;
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = boid;
+        git_index_add(g_bindex, &e);
+    }
+    free(tmp);
+}
+
+/* Write the accumulated index to disk and close the batch. */
+void mv_git_batch_end(void) {
+    if (g_bindex) {
+        git_index_write(g_bindex);
+        git_index_free(g_bindex);
+        g_bindex = NULL;
+    }
+    if (g_brepo) { git_repository_free(g_brepo); g_brepo = NULL; }
+}
+
 static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
     mv_value vals[8];
     mv_value *argv[8];

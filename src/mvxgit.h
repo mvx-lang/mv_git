@@ -69,6 +69,14 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
    controls (.mv-account, <file>.DICT/%FILE%) that have no backing record. */
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content);
+
+/* Batched staging (bulk in-session use): open once, accumulate blobs across many
+   mv_git_batch_add calls, write the index once at mv_git_batch_end.  O(n) — for
+   staging a whole account without re-opening the repo per record. */
+int  mv_git_batch_begin(const char *repo);
+void mv_git_batch_add(const char *path, const char *content, int64_t len,
+                      int translate);
+void mv_git_batch_end(void);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
