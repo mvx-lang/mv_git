@@ -313,11 +313,22 @@ int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     return code == 0 ? 1 : 0;
 }
 
+/* A VOC pointer field (data or dict path) is local to this account when it is a
+   bare name: non-empty and free of a directory path ('/') or an environment
+   prefix ('@…' such as @UDTHOME).  Anything else points outside the account. */
+static int udt_field_local(const char *s, long a, long b) {
+    if (b <= a) return 1;                 /* empty — resolved within the account */
+    if (s[a] == '@') return 0;
+    for (long k = a; k < b; k++)
+        if (s[k] == '/') return 0;
+    return 1;
+}
+
 void mv_filelist(mv_ctx *ctx, mv_value *dst) {
     udt_ensure_session(ctx);
     /* Enumerate the account's own files from VOC: an F-type record (field 1 ==
-       "F"/"DIR") whose data path (field 2) is a bare name — no '/' and no
-       leading '@' — is a local file, as opposed to a Q/F pointer into another
+       "F"/"DIR") whose data path (field 2) AND dict path (field 3) are both
+       bare local names is a local file — never a Q/F pointer into another
        account or the system.  Emit the file names @AM-separated. */
     long fid = 0, dflag = IK_DATA, nlen = 3, st = 0, code = 0;
     char voc[] = "VOC";
@@ -340,19 +351,21 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         long lk = IK_READ, ilen = act, rmax = UDT_MAX_REC, rl = 0, rs = 0, rc = 0;
         ic_read(&fid, &lk, id, &ilen, rec, &rmax, &rl, &rs, &rc);
         if (rc != 0) continue;
-        /* field 1 = up to first @AM; field 2 = next @AM-delimited segment */
+        /* field 1 = type; field 2 = data path; field 3 = dict path */
         long f1e = 0;
         while (f1e < rl && (unsigned char)rec[f1e] != 0xFE) f1e++;
         long f2s = f1e < rl ? f1e + 1 : rl, f2e = f2s;
         while (f2e < rl && (unsigned char)rec[f2e] != 0xFE) f2e++;
+        long f3s = f2e < rl ? f2e + 1 : rl, f3e = f3s;
+        while (f3e < rl && (unsigned char)rec[f3e] != 0xFE) f3e++;
         int is_file = (f1e == 1 && rec[0] == 'F') ||
                       (f1e == 3 && strncmp(rec, "DIR", 3) == 0);
         if (!is_file) continue;
-        int local = 1;
-        if (f2e > f2s && rec[f2s] == '@') local = 0;
-        for (long k = f2s; local && k < f2e; k++)
-            if (rec[k] == '/') local = 0;
-        if (!local) continue;
+        /* local only: both the data and dict paths must resolve within this
+           account — never a pointer to another account or the system. */
+        if (!udt_field_local(rec, f2s, f2e) ||
+            !udt_field_local(rec, f3s, f3e))
+            continue;
         /* skip UniData work/system files: _HOLD_ / _PH_ / _EDAMAP_ … (name
            wrapped in underscores) and &SAVEDLISTS& / &PH& … (wrapped in &). */
         if (act >= 2 && ((id[0] == '_' && id[act - 1] == '_') ||
