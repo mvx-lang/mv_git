@@ -1039,6 +1039,66 @@ void mvx_sub_GITSHOW(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* Collect every blob path in a tree walk (records, dict items, open-form
+   controls) into an @AM-separated list — the checkout side iterates it. */
+static int gitfiles_cb(const char *root, const git_tree_entry *e, void *pl) {
+    if (git_tree_entry_type(e) == GIT_OBJECT_BLOB) {
+        char line[900];
+        snprintf(line, sizeof line, "%s%s", root, git_tree_entry_name(e));
+        sb_line((sbuf *)pl, line);
+    }
+    return 0;
+}
+
+/* GITFILES(repo, out) — every blob path in HEAD, @AM-separated. */
+void mvx_sub_GITFILES(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[1], "open"); return; }
+    git_tree *t = head_tree(repo);
+    sbuf s = {0, 0, 0};
+    if (t) {
+        git_tree_walk(t, GIT_TREEWALK_PRE, gitfiles_cb, &s);
+        git_tree_free(t);
+    }
+    git_repository_free(repo);
+    sb_out(&s, argv[1], "");
+}
+
+/* GITCAT(repo, path, out) — the committed content of blob `path` with attribute
+   marks restored (newlines -> @AM), ready for the checkout side to WRITE. */
+void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], path[700];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_tree *t = head_tree(repo);
+    git_tree_entry *te = NULL;
+    git_blob *blob = NULL;
+    if (t && git_tree_entry_bypath(&te, t, path) == 0 &&
+        git_blob_lookup(&blob, repo, git_tree_entry_id(te)) == 0) {
+        const char *cp = git_blob_rawcontent(blob);
+        int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        mv_set_str(argv[2], r, rl);
+        free(r);
+        git_blob_free(blob);
+    } else {
+        mv_set_str(argv[2], "", 0);
+    }
+    if (te) git_tree_entry_free(te);
+    if (t) git_tree_free(t);
+    git_repository_free(repo);
+}
+
 /* Write one tracked subtree's records back into its MVX file, deleting
    records absent from the tree. */
 /* Map a %FILE% control's content — the open form DIR/hash, or a native
@@ -1753,6 +1813,14 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content) {
     const char *a[] = {repo, path, content};
     return run_sub(mvx_sub_GITSTAGEBLOB, ctx, a, 3);
+}
+char *mv_git_headfiles(mv_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITFILES, ctx, a, 1);
+}
+char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path) {
+    const char *a[] = {repo, path};
+    return run_sub(mvx_sub_GITCAT, ctx, a, 2);
 }
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};

@@ -89,3 +89,29 @@ char *GITLOG(char *repo, char *count) {
     mv_ctx_destroy(ctx);
     return emit(repo, r);
 }
+
+/* --- checkout side (git -> UniData account) -------------------------------- */
+
+/* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
+   (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
+char *GITFILES(char *repo) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_headfiles(ctx, rp(repo));
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
+/* GITCAT(repo, path) — the committed record at `path` (attribute marks
+   restored) written to <repo>/gitcat, which the verb OSREADs and WRITEs.  A
+   separate file from gitmsg since the content is a raw record (marks/binary). */
+char *GITCAT(char *repo, char *path) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_catpath(ctx, rp(repo), path ? path : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}

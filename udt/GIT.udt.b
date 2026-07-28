@@ -42,8 +42,11 @@
          R = CALLC GITCOMMIT(REPO, MSG) ; GOSUB SHOW
       CASE SUB = "LOG"
          R = CALLC GITLOG(REPO, "20") ; GOSUB SHOW
+      CASE SUB = "CHECKOUT" OR SUB = "MATERIALIZE"
+         GOSUB CHECKOUT
+         PRINT NREST : " record(s) restored across " : NFC : " file(s)"
       CASE 1
-         PRINT "usage: GIT <init | add file | add -A [-o] | commit -m msg | log>"
+         PRINT "usage: GIT <init | add file | add -A [-o] | commit -m msg | log | checkout>"
       END CASE
       STOP
 *
@@ -123,6 +126,53 @@
             NSTAGED += 1
          END
       REPEAT
+      RETURN
+*
+*  Materialise the git HEAD into this UniData account: CREATE.FILE each file
+*  from its open-form %FILE% control (DIR/hash), then WRITE every record back on
+*  the current session.  C (GITFILES/GITCAT) reads the git objects; the writes
+*  are native, so no InterCall and no extra licence.
+   CHECKOUT:
+      NREST = 0 ; NFC = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
+      R = CALLC GITFILES(REPO)
+      OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+      NP = DCOUNT(PATHS, AM)
+*     pass 1 - create each file from its %FILE% control (open format)
+      FOR I = 1 TO NP
+         P = PATHS<I> ; LP = LEN(P)
+         IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN
+            BASE = P[1, LP-LC]
+            R = CALLC GITCAT(REPO, P)
+            OSREAD TY FROM REPO : "/gitcat" ELSE TY = ""
+            TY = TRIM(TY)
+            IF TY = "DIR" THEN
+               EXECUTE "CREATE.FILE ":BASE:" DIRECTORY" CAPTURING JUNK
+            END ELSE
+               EXECUTE "CREATE.FILE ":BASE:" DYNAMIC" CAPTURING JUNK
+            END
+            NFC += 1
+         END
+      NEXT I
+*     pass 2 - WRITE every record (skip the descriptor and the %FILE% controls)
+      FOR I = 1 TO NP
+         P = PATHS<I> ; LP = LEN(P)
+         IF P = ".mv-account" OR P = ".udt" OR P = ".mvx" THEN GOTO NEXTREC
+         IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN GOTO NEXTREC
+         SL = INDEX(P, "/", 1)
+         IF SL = 0 THEN GOTO NEXTREC
+         FN = P[1, SL-1] ; ID = P[SL+1, LP]
+         R = CALLC GITCAT(REPO, P)
+         OSREAD REC FROM REPO : "/gitcat" ELSE REC = ""
+         LFN = LEN(FN)
+         IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
+            OPEN "DICT", FN[1, LFN-5] TO FV ELSE GOTO NEXTREC
+         END ELSE
+            OPEN FN TO FV ELSE GOTO NEXTREC
+         END
+         WRITE REC ON FV, ID
+         NREST += 1
+   NEXTREC:
+      NEXT I
       RETURN
 *
 *  The git-object output comes back through <repo>/gitmsg (CallC's string

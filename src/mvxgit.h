@@ -77,6 +77,12 @@ int  mv_git_batch_begin(const char *repo);
 void mv_git_batch_add(const char *path, const char *content, int64_t len,
                       int translate);
 void mv_git_batch_end(void);
+
+/* Checkout side (git -> account): list every blob path in HEAD, and fetch one
+   blob's content with attribute marks restored, so a driver can create files
+   and WRITE records on its own platform (the UniData in-session GIT verb). */
+char *mv_git_headfiles(mv_ctx *ctx, const char *repo);
+char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
