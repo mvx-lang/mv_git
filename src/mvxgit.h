@@ -12,7 +12,7 @@
  * live records, so there is no export copy.  The BASIC GIT verb reaches it
  * through the subroutine ABI (mvx_sub_GIT*); this header exposes the same
  * operations as ordinary C functions so the mvx-git executable can drive the
- * identical engine instead of shelling out to git and mvx-convert-acct.
+ * identical engine instead of shelling out to git and mvx-git-adopt.
  *
  * Each call returns a malloc'd output string the caller frees.  Lines are
  * separated by the attribute mark 0xFE (@AM) — the mvx-git executable renders

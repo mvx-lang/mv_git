@@ -25,7 +25,7 @@
  * Everything else is forwarded verbatim to the real git: commands the engine
  * does not implement, and any command run outside a record-git account (so
  * `alias git=mvx-git` still works, and a legible account tracked by ordinary
- * git behaves normally).  mvx-convert-acct is used only to *adopt* a checkout
+ * git behaves normally).  mvx-git-adopt is used only to *adopt* a checkout
  * made by plain git — turning a cloned legible directory into a live account.
  */
 
@@ -131,7 +131,7 @@ static int is_account(const char *dir) {
 /* True if the account carries its own git repository (a .git directly in the
  * account root).  A standalone account does; an account that is a subdirectory
  * of a larger repo does not — it is tracked by that repo, so mvx-git forwards
- * to it and the account is rebuilt with mvx-convert-acct (or an mvx-git clone). */
+ * to it and the account is rebuilt with mvx-git-adopt (or an mvx-git clone). */
 static int has_own_git(const char *dir) {
     char p[PATH_MAX];
     snprintf(p, sizeof p, "%s/.git", dir);
@@ -150,14 +150,14 @@ static int account_from_cwd(char *out, size_t cap) {
     }
 }
 
-/* Adopt a plain-git checkout: mvx-convert-acct (import) builds the live hash
+/* Adopt a plain-git checkout: mvx-git-adopt (import) builds the live hash
  * files from a cloned/checked-out legible directory.  Found via $MVXCONVERT or
  * PATH.  This is the only place mvx-git needs convert — never on its own
  * record-git add/commit/checkout. */
 static void convert_import(const char *acct) {
     fprintf(stderr, "mvx-git: rebuilding account %s\n", acct);
     const char *tool = getenv("MVXCONVERT");
-    if (!tool || !tool[0]) tool = "mvx-convert-acct";
+    if (!tool || !tool[0]) tool = "mvx-git-adopt";
     char *rargv[3] = {(char *)tool, (char *)acct, NULL};
     if (run(rargv) != 0)
         fprintf(stderr, "mvx-git: account rebuild failed\n");
@@ -216,7 +216,7 @@ static void materialize_clone(const char *acct) {
 /* The open account format is opt-in per account via the git config flag
    `mvx.openaccount` (the core.autocrlf analogue).  These read/set it in the
    account's .git/config and surface it to the runtime as $MVX_OPENACCOUNT, so
-   both the in-process engine and the mvx-convert-acct subprocess honour it. */
+   both the in-process engine and the mvx-git-adopt subprocess honour it. */
 static int open_config_on(const char *acct) {
     /* Read `mvx.openaccount` straight from the account's .git/config.  A plain
        text scan (not libgit2) so the result is identical across libgit2
