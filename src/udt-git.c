@@ -44,6 +44,32 @@ static const char *arg(int argc, char **argv, int n) {
     return n < argc ? argv[n] : "";
 }
 
+/* True if the account (cwd) opts into the open interchange format via git config
+   `mvx.openaccount = true` — the same flag mvx-git honours.  Plain text scan of
+   .git/config so the result matches across libgit2 versions. */
+static int open_account_on(void) {
+    FILE *f = fopen(".git/config", "r");
+    if (!f) return 0;
+    char line[512];
+    int in_mvx = 0, on = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
+        if (in_mvx && strncasecmp(s, "openaccount", 11) == 0) {
+            char *eq = strchr(s, '=');
+            if (eq) {
+                eq++;
+                while (*eq == ' ' || *eq == '\t') eq++;
+                on = strncasecmp(eq, "true", 4) == 0 || *eq == '1' ||
+                     strncasecmp(eq, "yes", 3) == 0;
+            }
+        }
+    }
+    fclose(f);
+    return on;
+}
+
 /* Stage the whole account in the open (portable) form: every local file (from
    mv_filelist) — its data records, its dictionary, and a synthesised
    `<file>.DICT/%FILE%` control (DIR for a UniData directory file, else hash) —
@@ -51,6 +77,7 @@ static const char *arg(int argc, char **argv, int n) {
    descriptor, so udt-git writes the open form directly; the git tree is then
    portable and mvx-git can materialise a live MVX account from it. */
 static void add_all(mv_ctx *ctx, const char *repo) {
+    int open = open_account_on();   /* open interchange vs native udt->udt */
     mv_value fl;
     mv_init(&fl);
     mv_filelist(ctx, &fl);
@@ -69,29 +96,33 @@ static void add_all(mv_ctx *ctx, const char *repo) {
             snprintf(dict, sizeof dict, "%s.DICT", name);
             emit(mv_git_add(ctx, repo, name, ""));   /* data records */
             emit(mv_git_add(ctx, repo, dict, ""));   /* dictionary   */
-            /* open-form control: a UniData directory file is an OS directory,
-               a hashed file is a regular file. */
-            struct stat sb;
-            const char *type =
-                (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) ? "DIR" : "hash";
-            snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
-            free(mv_git_stageblob(ctx, repo, ctrl, type));
+            if (open) {
+                /* open-form control: a UniData directory file is an OS
+                   directory, a hashed file is a regular file. */
+                struct stat sb;
+                const char *type = (stat(name, &sb) == 0 &&
+                                    S_ISDIR(sb.st_mode)) ? "DIR" : "hash";
+                snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
+                free(mv_git_stageblob(ctx, repo, ctrl, type));
+            }
         }
         i++;
     }
     mv_clear(&fl);
 
-    /* the portable account descriptor (UniData has no .mvx on disk) */
-    const char *acctpath = getenv("MVXACCOUNT");
-    const char *base = acctpath ? acctpath : "account";
-    const char *slash = strrchr(base, '/');
-    if (slash && slash[1]) base = slash + 1;
-    char desc[512];
-    snprintf(desc, sizeof desc,
-             "# MV account descriptor\nname = %s\nversion = 1\nhash = lmdb\n",
-             base);
-    free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
-    printf(".mv-account + %%FILE%% controls written (open format)\n");
+    if (open) {
+        /* the portable account descriptor (UniData has no .mvx on disk) */
+        const char *acctpath = getenv("MVXACCOUNT");
+        const char *base = acctpath ? acctpath : "account";
+        const char *slash = strrchr(base, '/');
+        if (slash && slash[1]) base = slash + 1;
+        char desc[512];
+        snprintf(desc, sizeof desc,
+                 "# MV account descriptor\nname = %s\nversion = 1\n"
+                 "hash = lmdb\n", base);
+        free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
+        printf(".mv-account + %%FILE%% controls written (open format)\n");
+    }
 }
 
 int main(int argc, char **argv) {
@@ -119,6 +150,13 @@ int main(int argc, char **argv) {
         setenv("MVXACCOUNT", acctpath, 1);
     else
         setenv("MVXACCOUNT", account, 1);
+    /* Open interchange format is opt-in, exactly as on mvx-git: only when the
+       account's git config sets mvx.openaccount does the engine drop the
+       platform's system VOC items and synthesise the portable %FILE% /
+       .mv-account form.  A plain commit keeps everything native, so it can be
+       checked out into another UniData instance unchanged. */
+    if (open_account_on())
+        setenv("MVX_OPENACCOUNT", "1", 1);
 
     mv_ctx *ctx = mv_ctx_create();
     const char *repo = ".git";
