@@ -43,6 +43,33 @@ static const char *arg(int argc, char **argv, int n) {
     return n < argc ? argv[n] : "";
 }
 
+/* Stage the whole account: every local file (from mv_filelist) — its data
+   records and its dictionary.  This is udt-git's `add -A` / bare `add`. */
+static void add_all(mv_ctx *ctx, const char *repo) {
+    mv_value fl;
+    mv_init(&fl);
+    mv_filelist(ctx, &fl);
+    char nb[40];
+    const char *p;
+    int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p);
+    int64_t i = 0;
+    while (i <= len) {
+        int64_t s = i;
+        while (i < len && (unsigned char)p[i] != 0xFE) i++;
+        int64_t nl = i - s;
+        if (nl > 0 && nl < 240) {
+            char name[256], dict[300];
+            memcpy(name, p + s, (size_t)nl);
+            name[nl] = '\0';
+            snprintf(dict, sizeof dict, "%s.DICT", name);
+            emit(mv_git_add(ctx, repo, name, ""));   /* data records */
+            emit(mv_git_add(ctx, repo, dict, ""));   /* dictionary   */
+        }
+        i++;
+    }
+    mv_clear(&fl);
+}
+
 int main(int argc, char **argv) {
     /* optional "-a <account>" before the subcommand */
     int i = 1;
@@ -78,7 +105,12 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "init")) {
         emit(mv_git_init(ctx, repo));
     } else if (!strcmp(sub, "add")) {
-        emit(mv_git_add(ctx, repo, p0, p1));
+        /* bare `add`, `add -A`, or `add .` stages the whole account */
+        if (!p0[0] || !strcmp(p0, "-A") || !strcmp(p0, "--all") ||
+            !strcmp(p0, "."))
+            add_all(ctx, repo);
+        else
+            emit(mv_git_add(ctx, repo, p0, p1));
     } else if (!strcmp(sub, "rm")) {
         emit(mv_git_rm(ctx, repo, p0, p1));
     } else if (!strcmp(sub, "status")) {

@@ -315,10 +315,62 @@ int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
 
 void mv_filelist(mv_ctx *ctx, mv_value *dst) {
     udt_ensure_session(ctx);
-    /* TODO: enumerate the account's files (LISTF / VOC F-pointers) as
-       "name<VM>type" @AM rows.  Not needed for INIT/ADD/COMMIT/STATUS; filled
-       in when the clone/materialize path is exercised on UniData. */
-    mv_set_str(dst, "", 0);
+    /* Enumerate the account's own files from VOC: an F-type record (field 1 ==
+       "F"/"DIR") whose data path (field 2) is a bare name — no '/' and no
+       leading '@' — is a local file, as opposed to a Q/F pointer into another
+       account or the system.  Emit the file names @AM-separated. */
+    long fid = 0, dflag = IK_DATA, nlen = 3, st = 0, code = 0;
+    char voc[] = "VOC";
+    ic_open(&fid, &dflag, voc, &nlen, &st, &code);
+    if (code != 0) { mv_set_str(dst, "", 0); return; }
+    long list = 0, c2 = 0;
+    ic_select(&fid, &list, &c2);
+
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    if (!buf) mv_fatal("out of memory");
+    char *rec = malloc(UDT_MAX_REC);
+    if (!rec) mv_fatal("out of memory");
+
+    for (;;) {
+        char id[IC_MAX_RECID_LENGTH + 1];
+        long mx = IC_MAX_RECID_LENGTH, act = 0, endflag = 0, lst = 0;
+        ic_readnext(&lst, id, &mx, &act, &endflag);
+        if (endflag != 0) break;
+        long lk = IK_READ, ilen = act, rmax = UDT_MAX_REC, rl = 0, rs = 0, rc = 0;
+        ic_read(&fid, &lk, id, &ilen, rec, &rmax, &rl, &rs, &rc);
+        if (rc != 0) continue;
+        /* field 1 = up to first @AM; field 2 = next @AM-delimited segment */
+        long f1e = 0;
+        while (f1e < rl && (unsigned char)rec[f1e] != 0xFE) f1e++;
+        long f2s = f1e < rl ? f1e + 1 : rl, f2e = f2s;
+        while (f2e < rl && (unsigned char)rec[f2e] != 0xFE) f2e++;
+        int is_file = (f1e == 1 && rec[0] == 'F') ||
+                      (f1e == 3 && strncmp(rec, "DIR", 3) == 0);
+        if (!is_file) continue;
+        int local = 1;
+        if (f2e > f2s && rec[f2s] == '@') local = 0;
+        for (long k = f2s; local && k < f2e; k++)
+            if (rec[k] == '/') local = 0;
+        if (!local) continue;
+        /* skip UniData work/system files: _HOLD_ / _PH_ / _EDAMAP_ … (name
+           wrapped in underscores) and &SAVEDLISTS& / &PH& … (wrapped in &). */
+        if (act >= 2 && ((id[0] == '_' && id[act - 1] == '_') ||
+                         (id[0] == '&' && id[act - 1] == '&')))
+            continue;
+        if (len + (size_t)act + 1 > cap) {
+            while (len + (size_t)act + 1 > cap) cap *= 2;
+            buf = realloc(buf, cap);
+            if (!buf) mv_fatal("out of memory");
+        }
+        if (len) buf[len++] = (char)0xFE;
+        memcpy(buf + len, id, (size_t)act);
+        len += (size_t)act;
+    }
+    ic_close(&fid, &code);
+    mv_set_str(dst, buf, (int64_t)len);
+    free(buf);
+    free(rec);
 }
 
 /* --- misc -------------------------------------------------------------- */
