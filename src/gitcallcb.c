@@ -28,24 +28,34 @@
 
 #define GITCB_OUTCAP (1024 * 1024)
 
-static void put_out(char *out, char *r) {
-    if (out) {
-        size_t n = r ? strlen(r) : 0;
-        if (n > GITCB_OUTCAP - 1) n = GITCB_OUTCAP - 1;
-        if (r) memcpy(out, r, n);
-        out[n] = '\0';
-    }
-    free(r);
-}
-
 static const char *rp(const char *repo) {
     return repo && repo[0] ? repo : ".git";
+}
+
+/* Surface the engine's @AM-separated output `r` to the UniBasic verb.  CallC's
+   string return / OUT-argument copy-back does not marshal reliably (genfunc
+   emits `U_retbuf = fn(...)`, and a plain memcpy into the OUT buffer does not
+   update the UniData string length), so the reliable channel is a small file
+   `<repo>/gitmsg` that the verb OSREADs — input args (repo, records) marshal
+   fine, only the C->BASIC text does not.  Frees `r`. */
+static void emit(const char *repo, char *out, char *r) {
+    size_t n = r ? strlen(r) : 0;
+    if (out) {                          /* also fill OUT, harmless if unused */
+        size_t m = n > GITCB_OUTCAP - 1 ? GITCB_OUTCAP - 1 : n;
+        if (r) memcpy(out, r, m);
+        out[m] = '\0';
+    }
+    char path[1300];
+    snprintf(path, sizeof path, "%s/gitmsg", rp(repo));
+    FILE *f = fopen(path, "wb");
+    if (f) { if (r) fwrite(r, 1, n, f); fclose(f); }
+    free(r);
 }
 
 /* GITINIT(repo, out) — create the repository. */
 char *GITINIT(char *repo, char *out) {
     mv_ctx *ctx = mv_ctx_create();
-    put_out(out, mv_git_init(ctx, rp(repo)));
+    emit(repo, out, mv_git_init(ctx, rp(repo)));
     mv_ctx_destroy(ctx);
     return out;
 }
@@ -65,9 +75,10 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record, char *out) {
         blob[i] = (unsigned char)record[i] == 0xFE ? '\n' : record[i];
     blob[n] = '\0';
     mv_ctx *ctx = mv_ctx_create();
-    put_out(out, mv_git_stageblob(ctx, rp(repo), path, blob));
+    free(mv_git_stageblob(ctx, rp(repo), path, blob));  /* per-record: no msg */
     mv_ctx_destroy(ctx);
     free(blob);
+    (void)out;
     return out;
 }
 
@@ -75,16 +86,17 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record, char *out) {
    (the synthesised open-account controls: <file>.DICT/%FILE%, .mv-account). */
 char *GITSTAGEBLOB(char *repo, char *path, char *content, char *out) {
     mv_ctx *ctx = mv_ctx_create();
-    put_out(out, mv_git_stageblob(ctx, rp(repo), path ? path : "",
-                                  content ? content : ""));
+    free(mv_git_stageblob(ctx, rp(repo), path ? path : "",
+                          content ? content : ""));
     mv_ctx_destroy(ctx);
+    (void)out;
     return out;
 }
 
 /* GITCOMMIT(repo, msg, out) — commit the staged index. */
 char *GITCOMMIT(char *repo, char *msg, char *out) {
     mv_ctx *ctx = mv_ctx_create();
-    put_out(out, mv_git_commit(ctx, rp(repo), msg ? msg : ""));
+    emit(repo, out, mv_git_commit(ctx, rp(repo), msg ? msg : ""));
     mv_ctx_destroy(ctx);
     return out;
 }
@@ -92,7 +104,7 @@ char *GITCOMMIT(char *repo, char *msg, char *out) {
 /* GITLOG(repo, count, out) — commit history. */
 char *GITLOG(char *repo, char *count, char *out) {
     mv_ctx *ctx = mv_ctx_create();
-    put_out(out, mv_git_log(ctx, rp(repo), count && count[0] ? count : "20"));
+    emit(repo, out, mv_git_log(ctx, rp(repo), count && count[0] ? count : "20"));
     mv_ctx_destroy(ctx);
     return out;
 }

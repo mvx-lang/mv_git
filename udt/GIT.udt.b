@@ -49,7 +49,12 @@
       REPEAT
       RETURN
 *
+*  The git-object output comes back through <repo>/gitmsg (CallC's string
+*  return does not marshal reliably), so OSREAD it and print the @AM lines.
    SHOW:
-      R = TRIMB(R) ; NL = DCOUNT(R, @AM)
-      FOR I = 1 TO NL ; PRINT R<I> ; NEXT I
+      OSREAD MSG FROM REPO : "/gitmsg" ELSE MSG = ""
+      IF MSG # "" THEN
+         NL = DCOUNT(MSG, @AM)
+         FOR I = 1 TO NL ; PRINT MSG<I> ; NEXT I
+      END
       RETURN
