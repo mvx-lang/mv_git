@@ -915,17 +915,69 @@ void mvx_sub_GITSHOW(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
 
 /* Write one tracked subtree's records back into its MVX file, deleting
    records absent from the tree. */
-static void materialize_file(mvx_ctx *ctx, git_repository *repo,
+/* Map a %FILE% control's content — the open form DIR/hash, or a native
+   FILE<VM>type — to a CREATE-FILE type: "DIR" for a directory file, "" for the
+   account's default hash backend. */
+static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
+    out[0] = '\0';
+    if (!c) return;
+    while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
+                      c[cl - 1] == ' ' || c[cl - 1] == '\t'))
+        cl--;
+    if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return; }
+    if (cl == 4 && strncasecmp(c, "hash", 4) == 0) return;   /* default hash */
+    if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
+        const char *t = c + 5, *end = c + cl;
+        const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
+        const char *te = m2 ? m2 : end;
+        if (te - t == 3 && strncasecmp(t, "dir", 3) == 0) snprintf(out, cap, "DIR");
+    }
+}
+
+/* The CREATE-FILE type of the file whose dictionary control lives at
+   `<base>.DICT/%FILE%` in `head` (DIR, or "" for the default hash backend). */
+static void file_type_of(git_repository *repo, git_tree *head, const char *base,
+                         char *out, size_t cap) {
+    out[0] = '\0';
+    char path[600];
+    snprintf(path, sizeof path, "%s.DICT/%%FILE%%", base);
+    git_tree_entry *te = NULL;
+    if (git_tree_entry_bypath(&te, head, path) != 0) return;
+    git_blob *b = NULL;
+    if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+        control_type(git_blob_rawcontent(b), (int64_t)git_blob_rawsize(b),
+                     out, cap);
+        git_blob_free(b);
+    }
+    git_tree_entry_free(te);
+}
+
+static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
                              git_tree *subtree, const char *fn,
                              int64_t *nw, int64_t *nd) {
     mv_value fvar, id, rec;
     mv_init(&fvar); mv_init(&id); mv_init(&rec);
+    size_t ln = strlen(fn);
+    int is_dict = ln > 5 && strcmp(fn + ln - 5, ".DICT") == 0;
     if (fn[0]) {
+        /* Create the file with the backend its %FILE% names (a fresh clone);
+           a no-op when it already exists (a branch switch).  The dictionary
+           tree names the same base file, so an empty file that has only a
+           dictionary in git still gets created. */
+        char base[300], type[64];
+        if (is_dict) snprintf(base, sizeof base, "%.*s", (int)(ln - 5), fn);
+        else         snprintf(base, sizeof base, "%s", fn);
+        file_type_of(repo, head, base, type, sizeof type);
         mv_value spec;
         mv_init(&spec);
-        size_t ln = strlen(fn);
-        if (!(ln > 5 && strcmp(fn + ln - 5, ".DICT") == 0)) {
-            mv_set_str(&spec, fn, (int64_t)ln);
+        mv_set_str(&spec, base, (int64_t)strlen(base));
+        if (type[0]) {
+            mv_value tv;
+            mv_init(&tv);
+            mv_set_str(&tv, type, (int64_t)strlen(type));
+            mvx_createfile(ctx, &spec, &tv);
+            mv_clear(&tv);
+        } else {
             mvx_createfile(ctx, &spec, NULL);
         }
         mv_clear(&spec);
@@ -940,6 +992,16 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo,
     for (size_t i = 0; i < cnt; i++) {
         const git_tree_entry *te = git_tree_entry_byindex(subtree, i);
         const char *name = git_tree_entry_name(te);
+        /* The %FILE% control was written natively by createfile; keep it (and
+           mark it seen so the reconcile pass below does not delete it) rather
+           than overwrite with the open DIR/hash form. */
+        if (is_dict && strcmp(name, "%FILE%") == 0) {
+            if (ns == cap) { cap = cap ? cap * 2 : 64;
+                seen = realloc(seen, cap * sizeof *seen);
+                if (!seen) mvx_fatal("out of memory in checkout"); }
+            snprintf(seen[ns++], 256, "%s", name);
+            continue;
+        }
         git_blob *blob = NULL;
         if (git_blob_lookup(&blob, repo, git_tree_entry_id(te)) != 0)
             continue;
@@ -973,19 +1035,52 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo,
     mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 }
 
-/* Materialize every tracked file in a commit tree into the hash files. */
-static void materialize_tree(mvx_ctx *ctx, git_repository *repo,
-                             git_tree *tree, int64_t *nw, int64_t *nd) {
+/* Whether a top-level tree name is an MV file (its records go to the backend)
+   rather than a plain directory git tracks verbatim: a data file `<name>` has a
+   `<name>.DICT/%FILE%` control; a dictionary `<name>.DICT` has its own
+   `%FILE%`. */
+static int tree_is_mv_file(git_tree *head, const char *name) {
+    char path[600];
+    size_t ln = strlen(name);
+    if (ln > 5 && strcmp(name + ln - 5, ".DICT") == 0)
+        snprintf(path, sizeof path, "%s/%%FILE%%", name);
+    else
+        snprintf(path, sizeof path, "%s.DICT/%%FILE%%", name);
+    git_tree_entry *te = NULL;
+    if (git_tree_entry_bypath(&te, head, path) == 0) {
+        git_tree_entry_free(te);
+        return 1;
+    }
+    return 0;
+}
+
+/* Materialize the tracked MV files in a commit tree into their backends.  With
+   `strict` (a fresh clone, where the files cannot be opened to tell an MV file
+   from a plain directory) only trees that carry a dictionary control are
+   materialised, so a plain directory (server/, test/, a submodule) is left to
+   git.  Without it (a branch switch on an existing account) every top-level tree
+   is materialised, as before — a file added without its dictionary still
+   round-trips. */
+static void materialize_tree_x(mvx_ctx *ctx, git_repository *repo,
+                               git_tree *tree, int strict,
+                               int64_t *nw, int64_t *nd) {
     size_t n = git_tree_entrycount(tree);
     for (size_t i = 0; i < n; i++) {
         const git_tree_entry *te = git_tree_entry_byindex(tree, i);
         if (git_tree_entry_type(te) != GIT_OBJECT_TREE) continue;
+        const char *name = git_tree_entry_name(te);
+        if (strict && !tree_is_mv_file(tree, name)) continue;
         git_tree *sub = NULL;
         if (git_tree_lookup(&sub, repo, git_tree_entry_id(te)) != 0)
             continue;
-        materialize_file(ctx, repo, sub, git_tree_entry_name(te), nw, nd);
+        materialize_file(ctx, repo, tree, sub, name, nw, nd);
         git_tree_free(sub);
     }
+}
+
+static void materialize_tree(mvx_ctx *ctx, git_repository *repo,
+                             git_tree *tree, int64_t *nw, int64_t *nd) {
+    materialize_tree_x(ctx, repo, tree, 0, nw, nd);   /* branch ops: all trees */
 }
 
 /* Reset the persistent index to a commit tree (so status is clean). */
@@ -999,6 +1094,111 @@ static void sync_index(git_repository *repo, const char *rp,
         git_index_write(idx);
         git_index_free(idx);
     }
+}
+
+/* Write a tree's blobs to disk under `prefix` (recursively): the plain files a
+   checkout leaves on disk — README, scripts, a plain subdirectory, a submodule
+   is skipped.  MV files never come here (they go to the backend). */
+static void checkout_plain_tree(git_repository *repo, git_tree *tree,
+                                const char *prefix) {
+    size_t n = git_tree_entrycount(tree);
+    for (size_t i = 0; i < n; i++) {
+        const git_tree_entry *te = git_tree_entry_byindex(tree, i);
+        const char *name = git_tree_entry_name(te);
+        char path[4096];
+        snprintf(path, sizeof path, "%s%s%s", prefix, prefix[0] ? "/" : "", name);
+        git_object_t ty = git_tree_entry_type(te);
+        if (ty == GIT_OBJECT_TREE) {
+            git_tree *sub = NULL;
+            if (git_tree_lookup(&sub, repo, git_tree_entry_id(te)) == 0) {
+                mkdir(path, 0755);
+                checkout_plain_tree(repo, sub, path);
+                git_tree_free(sub);
+            }
+        } else if (ty == GIT_OBJECT_BLOB) {
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+                FILE *f = fopen(path, "wb");
+                if (f) {
+                    fwrite(git_blob_rawcontent(b), 1,
+                           (size_t)git_blob_rawsize(b), f);
+                    fclose(f);
+                    if (git_tree_entry_filemode(te) ==
+                        GIT_FILEMODE_BLOB_EXECUTABLE)
+                        chmod(path, 0755);
+                }
+                git_blob_free(b);
+            }
+        }
+    }
+}
+
+/* Materialise a native account directly from the repo's HEAD tree — the clone
+   path.  MV files (records + dictionaries) go straight to the backend in the
+   native form; the account descriptor `.mv-account`/`.mvx` becomes `.mvx`; plain
+   files land on disk.  The open form never touches disk, and no external adopt
+   is run.  GITMATERIALIZE(repo, out) */
+void mvx_sub_GITMATERIALIZE(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[1], "open"); return; }
+    git_tree *tree = head_tree(repo);
+    if (!tree) { git_repository_free(repo); mv_set_str(argv[1], "empty", 5); return; }
+
+    int64_t nw = 0, nd = 0;
+    materialize_tree_x(ctx, repo, tree, 1, &nw, &nd);   /* strict: MV files only */
+
+    /* Everything that is not an MV file: the descriptor, and plain files. */
+    size_t n = git_tree_entrycount(tree);
+    for (size_t i = 0; i < n; i++) {
+        const git_tree_entry *te = git_tree_entry_byindex(tree, i);
+        const char *name = git_tree_entry_name(te);
+        git_object_t ty = git_tree_entry_type(te);
+        if (ty == GIT_OBJECT_TREE && tree_is_mv_file(tree, name)) continue;
+        if (ty == GIT_OBJECT_BLOB &&
+            (strcmp(name, ".mv-account") == 0 || strcmp(name, ".mvx") == 0)) {
+            git_blob *b = NULL;                          /* descriptor -> .mvx */
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+                FILE *f = fopen(".mvx", "wb");
+                if (f) { fwrite(git_blob_rawcontent(b), 1,
+                                (size_t)git_blob_rawsize(b), f); fclose(f); }
+                git_blob_free(b);
+            }
+            continue;
+        }
+        if (ty == GIT_OBJECT_TREE) {
+            git_tree *sub = NULL;
+            if (git_tree_lookup(&sub, repo, git_tree_entry_id(te)) == 0) {
+                mkdir(name, 0755);
+                checkout_plain_tree(repo, sub, name);
+                git_tree_free(sub);
+            }
+        } else if (ty == GIT_OBJECT_BLOB) {
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+                FILE *f = fopen(name, "wb");
+                if (f) {
+                    fwrite(git_blob_rawcontent(b), 1,
+                           (size_t)git_blob_rawsize(b), f);
+                    fclose(f);
+                    if (git_tree_entry_filemode(te) ==
+                        GIT_FILEMODE_BLOB_EXECUTABLE)
+                        chmod(name, 0755);
+                }
+                git_blob_free(b);
+            }
+        }
+    }
+
+    sync_index(repo, rp, tree);
+    git_tree_free(tree);
+    git_repository_free(repo);
+    char out[80];
+    snprintf(out, sizeof out, "materialised %lld record(s)", (long long)nw);
+    mv_set_str(argv[1], out, (int64_t)strlen(out));
 }
 
 /* GITBRANCH(repo, name, out) — list branches, or create one at HEAD. */
@@ -1338,6 +1538,10 @@ char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo) {
 char *mvx_git_openform(mvx_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITOPENFORM, ctx, a, 1);
+}
+char *mvx_git_materialize(mvx_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
 }
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id) {

@@ -36,6 +36,10 @@ char *mvx_git_adddisk(mvx_ctx *ctx, const char *repo);
    .mvx -> .mv-account) — the git objects carry the open form; disk stays
    native.  Run after `add` when `mvx.openaccount` is set. */
 char *mvx_git_openform(mvx_ctx *ctx, const char *repo);
+/* Materialise a native account directly from the repo's HEAD tree (the clone
+   path): MV files -> backend, .mv-account/.mvx -> .mvx, plain files -> disk.
+   The open form never touches disk; no external adopt tool is run. */
+char *mvx_git_materialize(mvx_ctx *ctx, const char *repo);
 char *mvx_git_rm(mvx_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mvx_git_commit(mvx_ctx *ctx, const char *repo, const char *msg);

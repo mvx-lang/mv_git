@@ -163,6 +163,56 @@ static void convert_import(const char *acct) {
         fprintf(stderr, "mvx-git: account rebuild failed\n");
 }
 
+/* True if the freshly-cloned repo's HEAD tree carries an account descriptor
+   (.mv-account in the open form, or .mvx natively) — checked in the git objects,
+   since a --no-checkout clone has an empty working tree. */
+static int head_is_account(const char *acct) {
+    char rp[PATH_MAX];
+    snprintf(rp, sizeof rp, "%s/.git", acct);
+    git_libgit2_init();
+    git_repository *repo = NULL;
+    int yes = 0;
+    if (git_repository_open(&repo, rp) == 0) {
+        git_object *obj = NULL;
+        if (git_revparse_single(&obj, repo, "HEAD^{tree}") == 0) {
+            git_tree *t = (git_tree *)obj;
+            git_tree_entry *te = NULL;
+            if (git_tree_entry_bypath(&te, t, ".mv-account") == 0 ||
+                git_tree_entry_bypath(&te, t, ".mvx") == 0) {
+                yes = 1;
+                git_tree_entry_free(te);
+            }
+            git_object_free(obj);
+        }
+        git_repository_free(repo);
+    }
+    return yes;
+}
+
+/* Materialise a cloned account directly from its git objects into the backend —
+   the open form never lands on disk, no adopt tool is run — then provision it
+   (indexes from %INDEXES%, cataloged BP, linked packages) with BUILD. */
+static void materialize_clone(const char *acct) {
+    fprintf(stderr, "mvx-git: materialising account %s\n", acct);
+    char cwd0[PATH_MAX];
+    if (!getcwd(cwd0, sizeof cwd0)) cwd0[0] = '\0';
+    if (chdir(acct) != 0) {
+        fprintf(stderr, "mvx-git: cannot enter %s\n", acct);
+        return;
+    }
+    setenv("MVXACCOUNT", ".", 1);
+    mvx_ctx *ctx = mvx_ctx_create();
+    char *r = mvx_git_materialize(ctx, ".git");
+    free(r);
+    mvx_ctx_destroy(ctx);
+    const char *mvx = getenv("MVX");
+    if (!mvx || !mvx[0]) mvx = "mvx";
+    setenv("MVXPRIV", "developer", 1);          /* BUILD catalogs BP */
+    char *bargv[] = {(char *)mvx, "-a", ".", "-c", "BUILD", NULL};
+    run(bargv);
+    if (cwd0[0] && chdir(cwd0) != 0) { /* best effort */ }
+}
+
 /* The open account format is opt-in per account via the git config flag
    `mvx.openaccount` (the core.autocrlf analogue).  These read/set it in the
    account's .git/config and surface it to the runtime as $MVX_OPENACCOUNT, so
@@ -491,26 +541,37 @@ int main(int argc, char **argv) {
         return engine_run(acct, sub, argc, argv, subidx);
     }
 
-    /* Otherwise forward verbatim to real git. */
-    char **gargv = malloc((size_t)(argc + 1) * sizeof *gargv);
+    /* Otherwise forward to real git.  A clone is cloned `--no-checkout`: the
+     * account is materialised directly from the git objects into its backend,
+     * so the open form never lands on disk and no adopt tool is run. */
+    int is_clone = sub && strcmp(sub, "clone") == 0;
+    char **gargv = malloc((size_t)(argc + 2) * sizeof *gargv);
     if (!gargv) { perror("mvx-git"); return 1; }
     gargv[0] = "git";
-    for (int i = 1; i < argc; i++) gargv[i] = argv[i];
-    gargv[argc] = NULL;
+    int gi = 1;
+    for (int i = 1; i < argc; i++) {
+        gargv[gi++] = argv[i];
+        if (i == subidx && is_clone) gargv[gi++] = "--no-checkout";
+    }
+    gargv[gi] = NULL;
     int code = run(gargv);
     free(gargv);
 
     if (code != 0 || !sub || !tree_changing(sub)) return code;
 
-    /* A clone lands in a brand-new directory: adopt it into hash files if it
-     * carries a .mvx (or the user opts in). */
-    if (strcmp(sub, "clone") == 0) {
+    if (is_clone) {
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
             return code;
-        if (want_open) open_config_set(acct);   /* persist the opt-in */
-        apply_open_env(acct);                    /* -> $MVX_OPENACCOUNT */
-        if (is_account(acct) || ask_create_account(acct))
-            convert_import(acct);
+        if (head_is_account(acct)) {
+            if (want_open) open_config_set(acct); /* persist the opt-in */
+            materialize_clone(acct);              /* direct: git objects -> backend */
+        } else {
+            /* not an MVX account: a plain --no-checkout clone needs its working
+               tree populated the normal way. */
+            char *co[] = {"git", "-C", acct, "checkout", NULL};
+            run(co);
+            if (ask_create_account(acct)) convert_import(acct);
+        }
         return code;
     }
 
