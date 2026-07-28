@@ -340,6 +340,15 @@ static char *add_all(mvx_ctx *ctx, const char *repo, const char *acct) {
                         r = mvx_git_add(ctx, repo, name, "");
                         join(&out, r);
                         free(r);
+                        /* Its dictionary lives in LMDB too (no on-disk .DICT
+                           directory for git's own add to catch), so stage its
+                           records at <name>.DICT/<id> — open_named opens the
+                           dictionary for a name ending in .DICT. */
+                        char dictname[300];
+                        snprintf(dictname, sizeof dictname, "%s.DICT", name);
+                        r = mvx_git_add(ctx, repo, dictname, "");
+                        join(&out, r);
+                        free(r);
                     }
                 }
                 while (i < len && (unsigned char)p[i] != 0xFE) i++;
