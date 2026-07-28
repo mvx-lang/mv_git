@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Render the engine's output (lines separated by @AM = 0xFE) to stdout. */
@@ -43,8 +44,12 @@ static const char *arg(int argc, char **argv, int n) {
     return n < argc ? argv[n] : "";
 }
 
-/* Stage the whole account: every local file (from mv_filelist) — its data
-   records and its dictionary.  This is udt-git's `add -A` / bare `add`. */
+/* Stage the whole account in the open (portable) form: every local file (from
+   mv_filelist) — its data records, its dictionary, and a synthesised
+   `<file>.DICT/%FILE%` control (DIR for a UniData directory file, else hash) —
+   plus the `.mv-account` descriptor.  UniData has no on-disk %FILE% or
+   descriptor, so udt-git writes the open form directly; the git tree is then
+   portable and mvx-git can materialise a live MVX account from it. */
 static void add_all(mv_ctx *ctx, const char *repo) {
     mv_value fl;
     mv_init(&fl);
@@ -58,16 +63,35 @@ static void add_all(mv_ctx *ctx, const char *repo) {
         while (i < len && (unsigned char)p[i] != 0xFE) i++;
         int64_t nl = i - s;
         if (nl > 0 && nl < 240) {
-            char name[256], dict[300];
+            char name[256], dict[300], ctrl[320];
             memcpy(name, p + s, (size_t)nl);
             name[nl] = '\0';
             snprintf(dict, sizeof dict, "%s.DICT", name);
             emit(mv_git_add(ctx, repo, name, ""));   /* data records */
             emit(mv_git_add(ctx, repo, dict, ""));   /* dictionary   */
+            /* open-form control: a UniData directory file is an OS directory,
+               a hashed file is a regular file. */
+            struct stat sb;
+            const char *type =
+                (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) ? "DIR" : "hash";
+            snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
+            free(mv_git_stageblob(ctx, repo, ctrl, type));
         }
         i++;
     }
     mv_clear(&fl);
+
+    /* the portable account descriptor (UniData has no .mvx on disk) */
+    const char *acctpath = getenv("MVXACCOUNT");
+    const char *base = acctpath ? acctpath : "account";
+    const char *slash = strrchr(base, '/');
+    if (slash && slash[1]) base = slash + 1;
+    char desc[512];
+    snprintf(desc, sizeof desc,
+             "# MV account descriptor\nname = %s\nversion = 1\nhash = lmdb\n",
+             base);
+    free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
+    printf(".mv-account + %%FILE%% controls written (open format)\n");
 }
 
 int main(int argc, char **argv) {

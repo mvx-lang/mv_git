@@ -1600,6 +1600,40 @@ void mvx_sub_GITRESTORE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 
 typedef void (*sub_fn)(mv_ctx *, int32_t, mv_value **);
 
+/* GITSTAGEBLOB(repo, path, content, out) — stage a raw blob at git `path` with
+   `content`.  Used to synthesise open-account controls that have no backing
+   record: on UniData there is no on-disk %FILE% descriptor to reduce, so
+   udt-git writes the open `<file>.DICT/%FILE%` (DIR/hash) and `.mv-account`
+   directly. */
+void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    char rp[4096], path[600];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    const char *content;
+    char nb[40];
+    int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
+    git_oid boid;
+    if (git_blob_create_from_buffer(&boid, repo, content, (size_t)clen) == 0) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = path;
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = boid;
+        git_index_add(index, &e);
+        git_index_write(index);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    char out[700];
+    snprintf(out, sizeof out, "staged %s", path);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
+}
+
 static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
     mv_value vals[8];
     mv_value *argv[8];
@@ -1634,6 +1668,11 @@ char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
 char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
+}
+char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
+                       const char *content) {
+    const char *a[] = {repo, path, content};
+    return run_sub(mvx_sub_GITSTAGEBLOB, ctx, a, 3);
 }
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};

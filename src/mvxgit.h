@@ -64,6 +64,10 @@ char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
                   const char *id);
 /* Stage a git submodule directory `name` as a gitlink (not as records). */
 char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
+/* Stage a raw blob at git `path` with `content` — for synthesising open-account
+   controls (.mv-account, <file>.DICT/%FILE%) that have no backing record. */
+char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
+                       const char *content);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
