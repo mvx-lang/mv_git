@@ -58,24 +58,93 @@ struct mv_ctx {
     int  open;
 };
 
+/* Look up `key` in the session config file, copying its value into out[cap].
+   The file lets an admin set the login once so udt-git runs with no credentials
+   in the environment or on the command line ("credential-less" — a git service
+   account for UniData).  Path: $UDTGIT_CONFIG, else ~/.udtgitrc.  Format: plain
+   `key = value` lines (user, password, host, service); '#' begins a comment.
+   Returns 1 when found.  The file is read once and cached. */
+static int udt_cfg(const char *key, char *out, size_t cap) {
+    static char *data = NULL;
+    static int loaded = 0;
+    if (!loaded) {
+        loaded = 1;
+        char pbuf[4096];
+        const char *path = getenv("UDTGIT_CONFIG");
+        if (!path || !*path) {
+            const char *home = getenv("HOME");
+            if (home && *home) {
+                snprintf(pbuf, sizeof pbuf, "%s/.udtgitrc", home);
+                path = pbuf;
+            }
+        }
+        FILE *f = path && *path ? fopen(path, "r") : NULL;
+        if (f) {
+            long n;
+            if (fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) > 0 &&
+                n < (1L << 20) && fseek(f, 0, SEEK_SET) == 0 &&
+                (data = malloc((size_t)n + 1))) {
+                size_t got = fread(data, 1, (size_t)n, f);
+                data[got] = '\0';
+            }
+            fclose(f);
+        }
+    }
+    if (!data) return 0;
+    size_t klen = strlen(key);
+    for (char *p = data; p && *p;) {
+        char *eol = strchr(p, '\n');
+        char *q = p;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q != '#' && strncmp(q, key, klen) == 0) {
+            char *r = q + klen;
+            while (*r == ' ' || *r == '\t') r++;
+            if (*r == '=') {
+                r++;
+                while (*r == ' ' || *r == '\t') r++;
+                char *e = eol ? eol : r + strlen(r);
+                while (e > r && (e[-1] == '\r' || e[-1] == ' ' ||
+                                 e[-1] == '\t' || e[-1] == '\n'))
+                    e--;
+                size_t vl = (size_t)(e - r);
+                if (vl >= cap) vl = cap - 1;
+                memcpy(out, r, vl);
+                out[vl] = '\0';
+                return 1;
+            }
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    return 0;
+}
+
+/* Resolve a session setting: the environment wins, then the config file, then
+   `dflt` (NULL for none). */
+static const char *udt_setting(const char *env, const char *cfgkey,
+                               char *buf, size_t cap, const char *dflt) {
+    const char *v = getenv(env);
+    if (v && *v) return v;
+    if (udt_cfg(cfgkey, buf, cap) && buf[0]) return buf;
+    return dflt;
+}
+
 /* Open the InterCall session lazily, on the first record operation, so
    session-free commands (init, log) work in a directory that is not yet a live
    UniData account. */
 static void udt_ensure_session(mv_ctx *ctx) {
     if (ctx->open) return;
-    char *host = getenv("UDT_HOST");
-    char *user = getenv("UDT_USER");
-    char *pass = getenv("UDT_PASSWORD");
-    char *svc  = getenv("UDT_SERVICE");
-    char *acct = getenv("MVXACCOUNT");
-    if (!host || !*host) host = "localhost";
-    if (!user || !*user) user = getenv("USER");
+    char ub[256], pb[256], hb[256], sb[64];
+    const char *host = udt_setting("UDT_HOST", "host", hb, sizeof hb, "localhost");
+    const char *user = udt_setting("UDT_USER", "user", ub, sizeof ub, getenv("USER"));
+    const char *pass = udt_setting("UDT_PASSWORD", "password", pb, sizeof pb, "");
+    const char *svc  = udt_setting("UDT_SERVICE", "service", sb, sizeof sb, "udcs");
+    const char *acct = getenv("MVXACCOUNT");
     if (!user) user = "";
-    if (!pass) pass = "";
-    if (!svc || !*svc) svc = "udcs";
     if (!acct || !*acct) acct = ".";
     long code = 0;
-    ctx->session = ic_unidata_session(host, user, pass, acct, &code, NULL, svc);
+    ctx->session = ic_unidata_session((char *)host, (char *)user, (char *)pass,
+                                      (char *)acct, &code, NULL, (char *)svc);
     if (code != 0)
         mv_fatal("cannot open UniData session on %s account %s (code %ld)",
                   host, acct, code);
