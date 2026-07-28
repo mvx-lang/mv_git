@@ -189,6 +189,31 @@ static int head_is_account(const char *acct) {
     return yes;
 }
 
+/* True if the cloned HEAD carries the *open* descriptor `.mv-account` — the repo
+   was committed in the open account format, so the materialised native account
+   is an open account and status/diff must translate to open-space.  Cloning such
+   a repo turns the opt-in on automatically, without needing --open-account. */
+static int head_is_open(const char *acct) {
+    char rp[PATH_MAX];
+    snprintf(rp, sizeof rp, "%s/.git", acct);
+    git_libgit2_init();
+    git_repository *repo = NULL;
+    int yes = 0;
+    if (git_repository_open(&repo, rp) == 0) {
+        git_object *obj = NULL;
+        if (git_revparse_single(&obj, repo, "HEAD^{tree}") == 0) {
+            git_tree_entry *te = NULL;
+            if (git_tree_entry_bypath(&te, (git_tree *)obj, ".mv-account") == 0) {
+                yes = 1;
+                git_tree_entry_free(te);
+            }
+            git_object_free(obj);
+        }
+        git_repository_free(repo);
+    }
+    return yes;
+}
+
 /* Materialise a cloned account directly from its git objects into the backend —
    the open form never lands on disk, no adopt tool is run — then provision it
    (indexes from %INDEXES%, cataloged BP, linked packages) with BUILD. */
@@ -563,7 +588,8 @@ int main(int argc, char **argv) {
         if (!clone_target(argc, argv, subidx, acct, sizeof acct))
             return code;
         if (head_is_account(acct)) {
-            if (want_open) open_config_set(acct); /* persist the opt-in */
+            /* persist the opt-in when asked, or when HEAD is itself open-form */
+            if (want_open || head_is_open(acct)) open_config_set(acct);
             materialize_clone(acct);              /* direct: git objects -> backend */
         } else {
             /* not an MVX account: a plain --no-checkout clone needs its working

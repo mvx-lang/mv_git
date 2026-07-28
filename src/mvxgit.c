@@ -630,6 +630,37 @@ static int is_mv_file(const char *name) {
     return 1;   /* no on-disk directory ⇒ LMDB-backed */
 }
 
+/* The open-account form of a %FILE% control's content: the native
+   FILE<VM>type becomes the portable class DIR or hash (an already-open DIR/hash
+   is returned unchanged).  Returns the length written to `out`, or -1 if the
+   content is not a recognisable control.  status/diff use this to compare an
+   open account's on-disk native controls against the open-form git blobs, so a
+   clean account reads clean. */
+static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
+    while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
+                      c[cl - 1] == ' ' || c[cl - 1] == '\t'))
+        cl--;
+    if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return 3; }
+    if (cl == 4 && strncasecmp(c, "hash", 4) == 0) { snprintf(out, cap, "hash"); return 4; }
+    if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
+        const char *t = c + 5, *end = c + cl;
+        const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
+        const char *te = m2 ? m2 : end;
+        if (te - t == 3 && strncasecmp(t, "dir", 3) == 0) { snprintf(out, cap, "DIR"); return 3; }
+        snprintf(out, cap, "hash");
+        return 4;
+    }
+    return -1;
+}
+
+/* True for a path that is a dictionary's %FILE% control (…/…DICT/%FILE%). */
+static int is_file_control(const char *path) {
+    size_t pl = strlen(path);
+    const char *suf = ".DICT/%FILE%";
+    size_t sl = strlen(suf);
+    return pl >= sl && strcmp(path + pl - sl, suf) == 0;
+}
+
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
 void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
@@ -683,7 +714,13 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
                 const char *cp;
                 int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
                 git_oid woid;
-                record_oid(cp, clen, &woid);
+                char ofb[16];
+                int ofl;
+                if (mvx_openaccount() && strcmp(idb, "%FILE%") == 0 &&
+                    (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0)
+                    record_oid(ofb, ofl, &woid);   /* compare in open-space */
+                else
+                    record_oid(cp, clen, &woid);
                 if (!entry) {
                     if (ignored(fn, path)) continue;   /* not untracked */
                     char line[700];
@@ -740,7 +777,45 @@ void mvx_sub_GITSTATUS(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             const git_diff_delta *d = git_diff_get_delta(wd, i);
             char top[256];
             split_top(d->new_file.path, top, sizeof top);
+            /* the descriptor is committed at `.mv-account` but on disk is native
+               `.mvx` (identical content) — compare the two and report a real
+               edit as a modification of `.mv-account`, else skip. */
+            if (mvx_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
+                FILE *df = fopen(".mvx", "rb");
+                int clean = 0;
+                if (df) {
+                    char buf[65536];
+                    size_t bn = fread(buf, 1, sizeof buf, df);
+                    fclose(df);
+                    git_oid woid;
+                    if (git_odb_hash(&woid, buf, bn, GIT_OBJECT_BLOB) == 0 &&
+                        git_oid_equal(&woid, &d->old_file.id))
+                        clean = 1;
+                }
+                if (clean) continue;
+                sb_line(&s, " M .mv-account");
+                continue;
+            }
             if (is_mv_file(top)) continue;
+            /* an open account's on-disk %FILE% is native (FILE<VM>type) while
+               the committed blob is the open form (DIR/hash); compare in
+               open-space and skip when they match. */
+            if (mvx_openaccount() && is_file_control(d->new_file.path)) {
+                FILE *cf = fopen(d->new_file.path, "rb");
+                if (cf) {
+                    char nat[256];
+                    size_t nn = fread(nat, 1, sizeof nat, cf);
+                    fclose(cf);
+                    char ofb[16];
+                    int ofl = control_open(nat, (int64_t)nn, ofb, sizeof ofb);
+                    git_oid woid;
+                    if (ofl >= 0 &&
+                        git_odb_hash(&woid, ofb, (size_t)ofl,
+                                     GIT_OBJECT_BLOB) == 0 &&
+                        git_oid_equal(&woid, &d->old_file.id))
+                        continue;   /* clean in open-space */
+                }
+            }
             char line[700];
             snprintf(line, sizeof line, " %c %s",
                      git_diff_status_char(d->status), d->new_file.path);
@@ -854,9 +929,28 @@ void mvx_sub_GITDIFF(mvx_ctx *ctx, int32_t argc, mv_value **argv) {
             const char *cp = "";
             int64_t clen = 0, bl = 0;
             char *buf = NULL;
-            if (have) {
+            int open = mvx_openaccount();
+            if (open && strcmp(e->path, ".mv-account") == 0) {
+                /* descriptor: on disk it is native `.mvx`, whose content is the
+                   open blob verbatim (only the path differs) — diff against it */
+                FILE *df = fopen(".mvx", "rb");
+                if (df) {
+                    buf = malloc(65536);
+                    if (buf) bl = (int64_t)fread(buf, 1, 65536, df);
+                    fclose(df);
+                }
+            } else if (have) {
                 clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
-                buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+                char ofb[16];
+                int ofl;
+                if (open && strcmp(recid, "%FILE%") == 0 &&
+                    (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0) {
+                    /* native FILE<VM>type control → open form DIR/hash */
+                    buf = malloc((size_t)ofl);
+                    if (buf) { memcpy(buf, ofb, (size_t)ofl); bl = ofl; }
+                } else {
+                    buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+                }
             }
             git_oid woid;
             int changed = 1;
@@ -959,15 +1053,23 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
     mv_init(&fvar); mv_init(&id); mv_init(&rec);
     size_t ln = strlen(fn);
     int is_dict = ln > 5 && strcmp(fn + ln - 5, ".DICT") == 0;
+    char base[300], type[64] = "";
+    if (is_dict) snprintf(base, sizeof base, "%.*s", (int)(ln - 5), fn);
+    else         snprintf(base, sizeof base, "%s", fn);
+    file_type_of(repo, head, base, type, sizeof type);
+    /* A directory-backed file terminates each record with a newline on disk and
+       strips a trailing empty attribute on read, so its git blob carries a
+       trailing terminator mark.  Writing that mark back verbatim would let the
+       backend add a second terminator and the record would grow by one empty
+       attribute on every clone — drop the one trailing mark so the write/read
+       round-trip is stable.  Hash backends store records verbatim, so leave
+       theirs untouched (a genuine trailing empty attribute is preserved). */
+    int is_dir = strcasecmp(type, "DIR") == 0;
     if (fn[0]) {
         /* Create the file with the backend its %FILE% names (a fresh clone);
            a no-op when it already exists (a branch switch).  The dictionary
            tree names the same base file, so an empty file that has only a
            dictionary in git still gets created. */
-        char base[300], type[64];
-        if (is_dict) snprintf(base, sizeof base, "%.*s", (int)(ln - 5), fn);
-        else         snprintf(base, sizeof base, "%s", fn);
-        file_type_of(repo, head, base, type, sizeof type);
         mv_value spec;
         mv_init(&spec);
         mv_set_str(&spec, base, (int64_t)strlen(base));
@@ -1008,6 +1110,7 @@ static void materialize_file(mvx_ctx *ctx, git_repository *repo, git_tree *head,
         const char *cp = git_blob_rawcontent(blob);
         int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
         char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        if (is_dir && rl > 0 && (unsigned char)r[rl - 1] == 0xFE) rl--;
         mv_set_str(&rec, r, rl);
         free(r);
         mv_set_str(&id, name, (int64_t)strlen(name));
