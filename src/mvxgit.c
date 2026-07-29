@@ -750,18 +750,20 @@ static int is_mv_file(const char *name) {
     return 1;   /* no on-disk directory ⇒ LMDB-backed */
 }
 
-/* The open-account form of a %FILE% control's content: the native
-   FILE<VM>type becomes the portable class DIR or hash (an already-open DIR/hash
-   is returned unchanged).  Returns the length written to `out`, or -1 if the
-   content is not a recognisable control.  status/diff use this to compare an
-   open account's on-disk native controls against the open-form git blobs, so a
-   clean account reads clean. */
+/* The open-account CLASS of a %FILE% control's content: the native FILE<VM>type,
+   the bare open "DIR"/"hash", and the extended "hash <modulo> DYNAMIC|STATIC"
+   all reduce to "DIR" or "hash".  Returns the length written to `out`, or -1 if
+   the content is not a recognisable control.  status/diff normalise both the
+   live on-disk control and the committed blob through this and compare classes,
+   so a clean account reads clean — and the modulo, a sticky default (mv_git#8),
+   is never mistaken for a live change. */
 static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
     while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
     if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return 3; }
-    if (cl == 4 && strncasecmp(c, "hash", 4) == 0) { snprintf(out, cap, "hash"); return 4; }
+    /* "hash", or "hash <modulo> DYNAMIC|STATIC" — the class is just "hash". */
+    if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) { snprintf(out, cap, "hash"); return 4; }
     if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
         const char *t = c + 5, *end = c + cl;
         const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
@@ -837,10 +839,27 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 char ofb[16];
                 int ofl;
                 if (mv_openaccount() && strcmp(idb, "%FILE%") == 0 &&
-                    (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0)
-                    record_oid(ofb, ofl, &woid);   /* compare in open-space */
-                else
+                    (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0) {
+                    /* %FILE%: compare the CLASS against the committed blob — the
+                       committed modulo is a sticky default (mv_git#8), not a live
+                       diff, so a matching class (hash/DIR) is clean. */
+                    if (entry) {
+                        char comm[16];
+                        int cml = -1;
+                        git_blob *cb = NULL;
+                        if (git_blob_lookup(&cb, repo, &entry->id) == 0) {
+                            cml = control_open(git_blob_rawcontent(cb),
+                                               (int64_t)git_blob_rawsize(cb),
+                                               comm, sizeof comm);
+                            git_blob_free(cb);
+                        }
+                        if (cml == ofl && memcmp(ofb, comm, (size_t)ofl) == 0)
+                            continue;   /* same class — clean */
+                    }
+                    record_oid(ofb, ofl, &woid);   /* class change / untracked */
+                } else {
                     record_oid(cp, clen, &woid);
+                }
                 if (!entry) {
                     if (ignored(fn, path)) continue;   /* not untracked */
                     char line[700];
@@ -936,14 +955,22 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     char nat[256];
                     size_t nn = fread(nat, 1, sizeof nat, cf);
                     fclose(cf);
-                    char ofb[16];
-                    int ofl = control_open(nat, (int64_t)nn, ofb, sizeof ofb);
-                    git_oid woid;
-                    if (ofl >= 0 &&
-                        git_odb_hash(&woid, ofb, (size_t)ofl,
-                                     GIT_OBJECT_BLOB) == 0 &&
-                        git_oid_equal(&woid, &d->old_file.id))
-                        continue;   /* clean in open-space */
+                    /* Compare CLASS only: the live on-disk control is native
+                       (its class), the committed blob is the open form carrying a
+                       sticky modulo (mv_git#8) — normalise both and skip when the
+                       class matches; only a hash<->DIR change is a real diff. */
+                    char live[16], comm[16];
+                    int ll = control_open(nat, (int64_t)nn, live, sizeof live);
+                    int cml = -1;
+                    git_blob *cb = NULL;
+                    if (git_blob_lookup(&cb, repo, &d->old_file.id) == 0) {
+                        cml = control_open(git_blob_rawcontent(cb),
+                                           (int64_t)git_blob_rawsize(cb),
+                                           comm, sizeof comm);
+                        git_blob_free(cb);
+                    }
+                    if (ll >= 0 && cml == ll && memcmp(live, comm, (size_t)ll) == 0)
+                        continue;   /* same class — clean */
                 }
             }
             char line[700];
@@ -1075,10 +1102,23 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                        (clen = mv_val_chars(&rec, nb, sizeof nb, &cp),
                         (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0)) {
                 /* an open account's on-disk %FILE% is native (FILE<VM>type) while
-                   the committed blob is the open form (DIR/hash) — diff in
-                   open-space, not the raw bytes below. */
-                buf = malloc((size_t)ofl);
-                if (buf) { memcpy(buf, ofb, (size_t)ofl); bl = ofl; }
+                   the committed blob is the open form carrying a sticky modulo
+                   (mv_git#8) — compare CLASS only.  When the class matches, use
+                   the committed bytes so the blob-compare below reports no change
+                   (the modulo is not a live diff); otherwise show the class
+                   change against the live class. */
+                char comm[16];
+                int cml = control_open(git_blob_rawcontent(old),
+                                       (int64_t)git_blob_rawsize(old),
+                                       comm, sizeof comm);
+                if (cml == ofl && memcmp(ofb, comm, (size_t)ofl) == 0) {
+                    bl = (int64_t)git_blob_rawsize(old);
+                    buf = malloc((size_t)bl);
+                    if (buf) memcpy(buf, git_blob_rawcontent(old), (size_t)bl);
+                } else {
+                    buf = malloc((size_t)ofl);
+                    if (buf) { memcpy(buf, ofb, (size_t)ofl); bl = ofl; }
+                }
             } else if (is_mv_file(top) && have) {
                 /* A genuine MV record: `add` staged it as the read form with
                    marks->newlines, so diff that same form. */
