@@ -83,6 +83,10 @@ static int open_account_on(void) {
    portable and mvx-git can materialise a live MVX account from it. */
 static void add_all(mv_ctx *ctx, const char *repo) {
     int open = open_account_on();   /* open interchange vs native udt->udt */
+    /* A blanket add -A never commits compiled BASIC objects (binary records,
+       rebuilt on the target) — the engine honours this flag; an explicit
+       `udt-git add <file>` leaves it unset and stages everything (#9). */
+    setenv("MVX_GIT_SKIP_OBJECTS", "1", 1);
     mv_value fl;
     mv_init(&fl);
     mv_filelist(ctx, &fl);

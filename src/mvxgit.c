@@ -283,6 +283,11 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
     int voc_open = is_voc && mv_openaccount();
+    /* A blanket `add -A` sets $MVX_GIT_SKIP_OBJECTS so compiled BASIC objects
+       (binary records holding a NUL — derived, rebuilt on the target by
+       CATALOG/BUILD) are not committed by default; an explicit `add <file>`
+       does not set it and stages everything (mv_git#9). */
+    int skip_objects = getenv("MVX_GIT_SKIP_OBJECTS") != NULL;
 
     git_repository *repo = NULL;
     git_index *index = NULL;
@@ -342,6 +347,11 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+            if (skip_objects && clen > 0 && memchr(cp, 0, (size_t)clen)) {
+                skipped++;                  /* compiled object — not on add -A */
+                if (one) break;
+                continue;
+            }
             int64_t bl;
             char *blob = xlate(cp, clen, (char)0xFE, '\n', &bl);
             git_oid boid;
