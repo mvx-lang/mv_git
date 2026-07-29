@@ -1,2 +1,7 @@
+# MVX BASIC source uses the .b extension, which GitHub's Linguist
+# otherwise attributes to Brainfuck and Limbo.  Force it to BASIC so the
+# repository's language breakdown is accurate.
+*.b linguist-language=BASIC
+
 # BASIC source held as records without a file extension (BP items).
 BP/* linguist-language=BASIC
