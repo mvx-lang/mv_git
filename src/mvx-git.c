@@ -202,9 +202,80 @@ static int head_is_open(const char *acct) {
     return head_has(acct, ".mv-account");
 }
 
+/* Append n bytes of s to a malloc'd growing buffer (NUL-terminated). */
+static void sb_app(char **buf, size_t *cap, size_t *len, const char *s, size_t n) {
+    if (*len + n + 1 > *cap) {
+        *cap = (*len + n + 1) * 2;
+        *buf = realloc(*buf, *cap);
+        if (!*buf) { perror("mvx-git"); exit(1); }
+    }
+    memcpy(*buf + *len, s, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+}
+
+/* Collect the alternate-key indexes declared in HEAD's <file>.DICT/%INDEXES%
+   controls into a "<file> <field>\n"-per-line list to (re)build (#11), plus a
+   human report "  file (f1 f2)\n".  Returns NULL when none.  Reads HEAD like the
+   checkout does (mv_git_headfiles/mv_git_catpath). */
+static char *collect_index_list(mv_ctx *ctx, const char *repo, int *ncreate,
+                                int *nfiles, char **report) {
+    *ncreate = 0; *nfiles = 0; *report = NULL;
+    char *paths = mv_git_headfiles(ctx, repo);
+    if (!paths) return NULL;
+    const char *suf = ".DICT/%INDEXES%";
+    size_t sl = strlen(suf);
+    char *list = NULL, *rep = NULL;
+    size_t lcap = 0, llen = 0, rcap = 0, rlen = 0;
+    for (char *p = paths; *p;) {
+        char *e = p;
+        while (*e && (unsigned char)*e != 0xFE) e++;
+        size_t pl = (size_t)(e - p);
+        if (pl > sl && memcmp(p + pl - sl, suf, sl) == 0) {
+            char base[256], path[300];
+            snprintf(base, sizeof base, "%.*s", (int)(pl - sl), p);
+            snprintf(path, sizeof path, "%.*s", (int)pl, p);
+            char *ix = mv_git_catpath(ctx, repo, path);   /* @AM field names */
+            if (ix && *ix) {
+                (*nfiles)++;
+                char rl[400];
+                sb_app(&rep, &rcap, &rlen, rl,
+                       (size_t)snprintf(rl, sizeof rl, "  %s (", base));
+                int first = 1;
+                for (char *f = ix; *f;) {
+                    char *fe = f;
+                    while (*fe && (unsigned char)*fe != 0xFE) fe++;
+                    if (fe > f) {
+                        char ll[600];
+                        sb_app(&list, &lcap, &llen, ll,
+                               (size_t)snprintf(ll, sizeof ll, "%s %.*s\n",
+                                   base, (int)(fe - f), f));
+                        (*ncreate)++;
+                        char fl[300];
+                        sb_app(&rep, &rcap, &rlen, fl,
+                               (size_t)snprintf(fl, sizeof fl, "%s%.*s",
+                                   first ? "" : " ", (int)(fe - f), f));
+                        first = 0;
+                    }
+                    f = *fe ? fe + 1 : fe;
+                }
+                sb_app(&rep, &rcap, &rlen, ")\n", 2);
+            }
+            free(ix);
+        }
+        p = *e ? e + 1 : e;
+    }
+    free(paths);
+    if (*ncreate == 0) { free(list); free(rep); return NULL; }
+    *report = rep;
+    return list;
+}
+
 /* Materialise a cloned account directly from its git objects into the backend —
    the open form never lands on disk, no adopt tool is run — then provision it
-   (indexes from %INDEXES%, cataloged BP, linked packages) with BUILD. */
+   (cataloged BP, linked packages) with BUILD.  Alternate-key indexes declared in
+   %INDEXES% are (re)built only after asking (#11): CREATE-INDEX builds the real
+   LMDB index; the store already serves the declared index, so it is optional. */
 static void materialize_clone(const char *acct) {
     fprintf(stderr, "mvx-git: materialising account %s\n", acct);
     char cwd0[PATH_MAX];
@@ -217,12 +288,41 @@ static void materialize_clone(const char *acct) {
     mv_ctx *ctx = mv_ctx_create();
     char *r = mv_git_materialize(ctx, ".git");
     free(r);
+    int ncreate = 0, nfiles = 0;
+    char *report = NULL;
+    char *ixlist = collect_index_list(ctx, ".git", &ncreate, &nfiles, &report);
     mv_ctx_destroy(ctx);
     const char *mvx = getenv("MVX");
     if (!mvx || !mvx[0]) mvx = "mvx";
     setenv("MVXPRIV", "developer", 1);          /* BUILD catalogs BP */
     char *bargv[] = {(char *)mvx, "-a", ".", "-c", "BUILD", NULL};
     run(bargv);
+    if (ixlist) {
+        fflush(stdout);
+        fprintf(stderr, "Indexes have changed for %d file(s):\n%s", nfiles,
+                report ? report : "");
+        fprintf(stderr, "Rebuild them now? [y/N] ");
+        fflush(stderr);
+        char ans[16];
+        int yes = fgets(ans, sizeof ans, stdin) &&
+                  (ans[0] == 'y' || ans[0] == 'Y');
+        if (yes) {
+            for (char *l = ixlist; *l;) {
+                char *le = strchr(l, '\n');
+                size_t n = le ? (size_t)(le - l) : strlen(l);
+                char cmd[700];
+                snprintf(cmd, sizeof cmd, "CREATE-INDEX %.*s", (int)n, l);
+                char *cargv[] = {(char *)mvx, "-a", ".", "-c", cmd, NULL};
+                run(cargv);
+                l = le ? le + 1 : l + n;
+            }
+            printf("%d index(es) rebuilt\n", ncreate);
+        } else {
+            printf("Indexes not rebuilt; re-run the clone to rebuild them.\n");
+        }
+        free(ixlist);
+        free(report);
+    }
     if (cwd0[0] && chdir(cwd0) != 0) { /* best effort */ }
 }
 
