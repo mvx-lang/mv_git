@@ -51,6 +51,7 @@
       CASE SUB = "CHECKOUT" OR SUB = "MATERIALIZE"
          GOSUB CHECKOUT
          PRINT NREST : " record(s) restored across " : NFC : " file(s)"
+         IF NIX > 0 THEN PRINT NIX : " index(es) rebuilt"
       CASE SUB = "STATUS"
          GOSUB STATUS
       CASE SUB = "DIFF"
@@ -95,6 +96,7 @@
          IF OPENFMT THEN
             GOSUB FILECLASS       ;* CTL = DIR | hash <modulo> DYNAMIC|STATIC
             R = CALLC GITSTAGEBLOB(REPO, FILE:".DICT/%FILE%", CTL)
+            GOSUB IXSTAGE         ;* synthesise %INDEXES% from the live indexes
          END
          NFILES += 1
       NEXT K
@@ -121,6 +123,20 @@
          END ELSE
             IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
             CTL = "hash " : MODL : " " : DS
+         END
+      END
+      RETURN
+*
+*  Synthesise <file>.DICT/%INDEXES% from the file's live alternate-key indexes so
+*  they travel (#10).  INDICES() gives the @AM name list — exactly the portable
+*  form MVX keeps as a dict record; fold marks to newlines (as every record blob
+*  is stored) before staging, and only stage when the file has indexes.
+   IXSTAGE:
+      OPEN FILE TO IXVAR THEN
+         IXL = INDICES(IXVAR)
+         IF IXL # "" THEN
+            IXG = IXL ; CONVERT AM TO LF IN IXG
+            R = CALLC GITSTAGEBLOB(REPO, FILE:".DICT/%INDEXES%", IXG)
          END
       END
       RETURN
@@ -173,6 +189,7 @@
 *  are native, so no InterCall and no extra licence.
    CHECKOUT:
       NREST = 0 ; NFC = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
+      IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)
       R = CALLC GITFILES(REPO)
       OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
       NP = DCOUNT(PATHS, AM)
@@ -197,6 +214,7 @@
          P = PATHS<I> ; LP = LEN(P)
          IF P = ".mv-account" OR P = ".udt" OR P = ".mvx" THEN GOTO NEXTREC
          IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN GOTO NEXTREC
+         IF LP > LIC AND P[LP-LIC+1, LIC] = IXCTL THEN GOTO NEXTREC
          SL = INDEX(P, "/", 1)
          IF SL = 0 THEN GOTO NEXTREC
          FN = P[1, SL-1] ; ID = P[SL+1, LP]
@@ -211,6 +229,28 @@
          WRITE REC ON FV, ID
          NREST += 1
    NEXTREC:
+      NEXT I
+*     pass 3 - rebuild alternate-key indexes from each %INDEXES% control (#10).
+*     DATA "" answers CREATE.INDEX's alternate-key-length prompt (accept default);
+*     one CREATE.INDEX per field, then a single BUILD.INDEX populates them.
+      NIX = 0
+      FOR I = 1 TO NP
+         P = PATHS<I> ; LP = LEN(P)
+         IF LP > LIC AND P[LP-LIC+1, LIC] = IXCTL THEN
+            BASE = P[1, LP-LIC]
+            R = CALLC GITCAT(REPO, P)
+            OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+            NF2 = DCOUNT(IXL, AM)
+            FOR J = 1 TO NF2
+               FLD = TRIM(IXL<J>)
+               IF FLD # "" THEN
+                  DATA ""
+                  EXECUTE "CREATE.INDEX ":BASE:" ":FLD CAPTURING JUNK
+                  NIX += 1
+               END
+            NEXT J
+            IF NF2 > 0 THEN EXECUTE "BUILD.INDEX ":BASE:" ALL" CAPTURING JUNK
+         END
       NEXT I
       RETURN
 *
