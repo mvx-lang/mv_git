@@ -1060,6 +1060,8 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             int64_t clen = 0, bl = 0;
             char *buf = NULL;
             int open = mv_openaccount();
+            char ofb[16];
+            int ofl;
             if (open && strcmp(e->path, ".mv-account") == 0) {
                 /* descriptor: on disk it is native `.mvx`, whose content is the
                    open blob verbatim (only the path differs) — diff against it */
@@ -1069,17 +1071,34 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     if (buf) bl = (int64_t)fread(buf, 1, 65536, df);
                     fclose(df);
                 }
-            } else if (have) {
+            } else if (open && strcmp(recid, "%FILE%") == 0 && have &&
+                       (clen = mv_val_chars(&rec, nb, sizeof nb, &cp),
+                        (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0)) {
+                /* an open account's on-disk %FILE% is native (FILE<VM>type) while
+                   the committed blob is the open form (DIR/hash) — diff in
+                   open-space, not the raw bytes below. */
+                buf = malloc((size_t)ofl);
+                if (buf) { memcpy(buf, ofb, (size_t)ofl); bl = ofl; }
+            } else if (is_mv_file(top) && have) {
+                /* A genuine MV record: `add` staged it as the read form with
+                   marks->newlines, so diff that same form. */
                 clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
-                char ofb[16];
-                int ofl;
-                if (open && strcmp(recid, "%FILE%") == 0 &&
-                    (ofl = control_open(cp, clen, ofb, sizeof ofb)) >= 0) {
-                    /* native FILE<VM>type control → open form DIR/hash */
-                    buf = malloc((size_t)ofl);
-                    if (buf) { memcpy(buf, ofb, (size_t)ofl); bl = ofl; }
-                } else {
-                    buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+                buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+            } else {
+                /* Not an MV record — a directory-backed dictionary item (mv_git#6),
+                   a plain file (.mvx, README), or a file under a plain
+                   subdirectory.  `add` staged its blob from the raw on-disk bytes,
+                   which keep the dir driver's trailing terminator that mvx_read
+                   strips; diff those raw bytes so a clean item reads clean.  A
+                   missing file leaves buf empty — a real deletion. */
+                FILE *rf = fopen(e->path, "rb");
+                if (rf) {
+                    fseek(rf, 0, SEEK_END);
+                    long fsz = ftell(rf);
+                    fseek(rf, 0, SEEK_SET);
+                    if (fsz >= 0 && (buf = malloc((size_t)fsz + 1)))
+                        bl = (int64_t)fread(buf, 1, (size_t)fsz, rf);
+                    fclose(rf);
                 }
             }
             git_oid woid;
