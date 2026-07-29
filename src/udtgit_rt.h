@@ -75,6 +75,9 @@ void    mv_filelist(mv_ctx *ctx, mv_value *dst);
    form "hash <modulo> DYNAMIC|STATIC" carrying its real geometry so a clone can
    recreate it at true size.  Returns 0 if the file cannot be opened. */
 int64_t mv_fileclass(mv_ctx *ctx, const char *name, char *out, size_t cap);
+/* Fill `out` with a file's alternate-key index names, @AM-separated (the
+   portable %INDEXES% form), or "" if none.  Returns 0 if it cannot be opened. */
+int64_t mv_indices(mv_ctx *ctx, const char *name, char *out, size_t cap);
 
 /* --- misc -------------------------------------------------------------- */
 int  mv_openaccount(void);   /* open account format on? ($MVX_OPENACCOUNT) */

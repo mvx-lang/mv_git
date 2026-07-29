@@ -416,6 +416,29 @@ int64_t mv_fileclass(mv_ctx *ctx, const char *name, char *out, size_t cap) {
     return 1;
 }
 
+/* Fill `out` with `name`'s alternate-key index names, @AM-separated (the
+   portable %INDEXES% form), or "" if the file has none / can't be opened.
+   ic_indices with an empty index name returns the whole list.  Returns 1 on a
+   successful probe (even when there are no indexes), 0 if the file won't open. */
+int64_t mv_indices(mv_ctx *ctx, const char *name, char *out, size_t cap) {
+    udt_ensure_session(ctx);
+    if (cap) out[0] = '\0';
+    long fid = 0, dflag = IK_DATA, nlen = (long)strlen(name), st = 0, code = 0;
+    ic_open(&fid, &dflag, (char *)name, &nlen, &st, &code);
+    if (code != 0) return 0;
+    char rbuf[8192];
+    char empty[1] = {0};
+    long inlen = 0, rmax = (long)sizeof rbuf, rlen = 0, icode = 0;
+    ic_indices(&fid, empty, &inlen, rbuf, &rmax, &rlen, &icode);
+    if (icode == 0 && rlen > 0 && (size_t)rlen < cap) {
+        memcpy(out, rbuf, (size_t)rlen);
+        out[rlen] = '\0';
+    }
+    long cs = 0;
+    ic_close(&fid, &cs);
+    return 1;
+}
+
 /* A VOC pointer field (data or dict path) is local to this account when it is a
    bare name: non-empty and free of a directory path ('/') or an environment
    prefix ('@…' such as @UDTHOME).  Anything else points outside the account. */

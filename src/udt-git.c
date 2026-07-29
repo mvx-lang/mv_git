@@ -125,6 +125,17 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                 }
                 snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
                 free(mv_git_stageblob(ctx, repo, ctrl, type));
+                /* %INDEXES%: the file's alternate-key index names, so secondary
+                   indexes travel (#10).  Fold @AM to newlines like every record
+                   blob; stage only when the file actually has indexes. */
+                char ix[8192];
+                if (mv_indices(ctx, name, ix, sizeof ix) && ix[0]) {
+                    for (char *q = ix; *q; q++)
+                        if ((unsigned char)*q == 0xFE) *q = '\n';
+                    char ixc[320];
+                    snprintf(ixc, sizeof ixc, "%s.DICT/%%INDEXES%%", name);
+                    free(mv_git_stageblob(ctx, repo, ixc, ix));
+                }
             }
         }
         i++;
@@ -203,6 +214,83 @@ static int run_newacct(const char *owner, const char *group) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 
+/* Build a `udt` input script that recreates every file's alternate-key indexes
+   from its committed <file>.DICT/%INDEXES% control (#10), or return NULL when no
+   file has any.  Per field: `CREATE.INDEX <file> <field>` followed by a BLANK
+   line — UniData always prompts for the alternate-key length and a blank line
+   takes the default (20); there is no inline length syntax.  Then
+   `BUILD.INDEX <file> ALL` populates the file's indexes.  The script is fed to a
+   fresh `udt` (not InterCall — ic_execute cannot answer the length prompt), so
+   it runs only after the InterCall session is closed: no second concurrent
+   session.  Reads HEAD like the checkout does (mv_git_headfiles/mv_git_catpath).
+   *count receives the number of CREATE.INDEX lines. */
+static char *collect_index_script(mv_ctx *ctx, const char *repo, int *count) {
+    *count = 0;
+    char *paths = mv_git_headfiles(ctx, repo);
+    if (!paths) return NULL;
+    const char *suf = ".DICT/%INDEXES%";
+    size_t sl = strlen(suf);
+    char *scr = NULL;
+    size_t cap = 0, len = 0;
+    for (char *p = paths; *p;) {
+        char *e = p;
+        while (*e && (unsigned char)*e != 0xFE) e++;
+        size_t pl = (size_t)(e - p);
+        if (pl > sl && memcmp(p + pl - sl, suf, sl) == 0) {
+            char base[256], path[300];
+            snprintf(base, sizeof base, "%.*s", (int)(pl - sl), p);
+            snprintf(path, sizeof path, "%.*s", (int)pl, p);
+            char *ix = mv_git_catpath(ctx, repo, path);   /* @AM field names */
+            if (ix) {
+                int hasf = 0;
+                for (char *f = ix; *f;) {
+                    char *fe = f;
+                    while (*fe && (unsigned char)*fe != 0xFE) fe++;
+                    if (fe > f) {
+                        char line[600];
+                        int n = snprintf(line, sizeof line,
+                                         "CREATE.INDEX %s %.*s\n\n",
+                                         base, (int)(fe - f), f);
+                        if (len + (size_t)n + 1 > cap) {
+                            cap = (len + (size_t)n + 1) * 2;
+                            scr = realloc(scr, cap);
+                            if (!scr) mv_fatal("out of memory");
+                        }
+                        memcpy(scr + len, line, (size_t)n);
+                        len += (size_t)n;
+                        (*count)++;
+                        hasf = 1;
+                    }
+                    f = *fe ? fe + 1 : fe;
+                }
+                if (hasf) {
+                    char line[300];
+                    int n = snprintf(line, sizeof line,
+                                     "BUILD.INDEX %s ALL\n", base);
+                    if (len + (size_t)n + 1 > cap) {
+                        cap = (len + (size_t)n + 1) * 2;
+                        scr = realloc(scr, cap);
+                        if (!scr) mv_fatal("out of memory");
+                    }
+                    memcpy(scr + len, line, (size_t)n);
+                    len += (size_t)n;
+                }
+                free(ix);
+            }
+        }
+        p = *e ? e + 1 : e;
+    }
+    free(paths);
+    if (*count == 0) { free(scr); return NULL; }
+    const char *q = "QUIT\n";
+    size_t qn = strlen(q);
+    scr = realloc(scr, len + qn + 1);
+    if (!scr) mv_fatal("out of memory");
+    memcpy(scr + len, q, qn);
+    scr[len + qn] = '\0';
+    return scr;
+}
+
 /* udt-git clone <repo> [<dir>] — provision a UniData account from a record-git
    repository.  Clone the repo without a working tree, create a fresh registered
    account in place with newacct, then materialise HEAD's files and records into
@@ -268,7 +356,21 @@ static int do_clone(const char *repo, const char *dir) {
 
     mv_ctx *ctx = mv_ctx_create();
     emit(mv_git_materialize(ctx, ".git"));
+    /* Collect the index-rebuild script while the repo is readable, then close the
+       InterCall session before feeding it to a fresh `udt` — so only one session
+       is ever open at a time. */
+    int nix = 0;
+    char *ixscript = collect_index_script(ctx, ".git", &nix);
     mv_ctx_destroy(ctx);
+    if (ixscript) {
+        FILE *u = popen("udt >/dev/null 2>&1", "w");   /* cwd = the account */
+        if (u) {
+            fwrite(ixscript, 1, strlen(ixscript), u);
+            pclose(u);
+            printf("%d index(es) rebuilt\n", nix);
+        }
+        free(ixscript);
+    }
     return 0;
 }
 
