@@ -37,10 +37,12 @@
       CASE SUB = "INIT"
          R = CALLC GITINIT(REPO) ; GOSUB SHOW
       CASE SUB = "ADD" AND (ARG3 = "-A" OR ARG3 = "." OR ARG3 = "--all")
+         SKIPOBJ = 1                     ;* -A skips compiled objects by default
          GOSUB ADDALL
          PRINT NSTAGED : " record(s) staged across " : NFILES : " file(s)"
       CASE SUB = "ADD"
-         FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; GOSUB STAGEDATA
+         FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0  ;* explicit: all
+         GOSUB STAGEDATA
          PRINT NSTAGED : " record(s) staged"
       CASE SUB = "COMMIT"
          R = CALLC GITCOMMIT(REPO, MSG) ; GOSUB SHOW
@@ -131,6 +133,12 @@
       LOOP WHILE READNEXT RID DO
          READ RREC FROM DF, RID THEN
             DROP = 0
+*           A compiled BASIC object (binary, holds NUL bytes) is derived from its
+*           source and rebuilt on the target by CATALOG/BUILD — never stage one on
+*           a blanket ADD -A; an explicit ADD <file> (SKIPOBJ = 0) still takes it.
+*           (It also cannot survive CallC's strlen marshalling, so this keeps the
+*           commit whole rather than truncated.)
+            IF SKIPOBJ AND INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
             IF OPENFMT AND ISVOC THEN
                RT = RREC<1>
                IF RT="V" OR RT="K" THEN DROP = 1
@@ -300,11 +308,16 @@
       END
       RETURN
 *
-*  SAME = 1 when the live record LV matches the committed record CB.  Compare in
-*  git-space — marks (@AM) folded to newlines on BOTH sides — so a record that
-*  contains a literal newline is not a false positive from GITCAT's newline<->mark
-*  round-trip.
+*  SAME = 1 when the live record LV matches the committed record CB.  A record
+*  holding a NUL byte is binary (a compiled BP object): the CallC staging path
+*  marshals with strlen and cannot carry it whole, so it never round-trips in
+*  session — treat it as unreportable (SAME) rather than a perpetual change; such
+*  objects belong in GITIGNORE and are rebuilt on the target by BUILD.  Otherwise
+*  compare in git-space — marks (@AM) folded to newlines on BOTH sides — so a
+*  record with a literal newline is not a false positive from GITCAT's
+*  newline<->mark round-trip.
    SAMEREC:
+      IF INDEX(LV, CHAR(0), 1) > 0 THEN SAME = 1 ; RETURN
       GLV = LV ; CONVERT AM TO LF IN GLV
       GCB = CB ; CONVERT AM TO LF IN GCB
       SAME = (GLV = GCB)
