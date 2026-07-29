@@ -895,6 +895,16 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         size_t n = git_diff_num_deltas(wd);
         for (size_t i = 0; i < n; i++) {
             const git_diff_delta *d = git_diff_get_delta(wd, i);
+            /* A submodule gitlink is git's to track, not a record: git resolves
+               it against the submodule's own HEAD, but this workdir diff cannot,
+               so a clean (or un-checked-out) submodule surfaces here as ` D name`
+               (mv_git#1).  The other two status loops already skip gitlinks; do
+               the same so a submodule is never reported as a deleted record.
+               A genuinely restaged gitlink still shows via the tree↔index diff
+               above, exactly as git reports it. */
+            if (d->old_file.mode == GIT_FILEMODE_COMMIT ||
+                d->new_file.mode == GIT_FILEMODE_COMMIT)
+                continue;
             char top[256];
             split_top(d->new_file.path, top, sizeof top);
             /* the descriptor is committed at `.mv-account` but on disk is native
