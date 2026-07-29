@@ -51,7 +51,7 @@
       CASE SUB = "CHECKOUT" OR SUB = "MATERIALIZE"
          GOSUB CHECKOUT
          PRINT NREST : " record(s) restored across " : NFC : " file(s)"
-         IF NIX > 0 THEN PRINT NIX : " index(es) rebuilt"
+         GOSUB IXPROMPT
       CASE SUB = "STATUS"
          GOSUB STATUS
       CASE SUB = "DIFF"
@@ -230,28 +230,63 @@
          NREST += 1
    NEXTREC:
       NEXT I
-*     pass 3 - rebuild alternate-key indexes from each %INDEXES% control (#10).
-*     DATA "" answers CREATE.INDEX's alternate-key-length prompt (accept default);
-*     one CREATE.INDEX per field, then a single BUILD.INDEX populates them.
-      NIX = 0
+*     pass 3 - DETECT index changes only (#11): a file's indexes changed when the
+*     set declared in its %INDEXES% control differs from the set live now.  Do not
+*     rebuild here — the caller reports the changes and asks the user first.
+      IXWANT = ""
       FOR I = 1 TO NP
          P = PATHS<I> ; LP = LEN(P)
          IF LP > LIC AND P[LP-LIC+1, LIC] = IXCTL THEN
             BASE = P[1, LP-LIC]
             R = CALLC GITCAT(REPO, P)
             OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
-            NF2 = DCOUNT(IXL, AM)
-            FOR J = 1 TO NF2
-               FLD = TRIM(IXL<J>)
-               IF FLD # "" THEN
-                  DATA ""
-                  EXECUTE "CREATE.INDEX ":BASE:" ":FLD CAPTURING JUNK
-                  NIX += 1
-               END
+            LIVE = "" ; OPEN BASE TO IXOV THEN LIVE = INDICES(IXOV)
+            CHG = 0 ; DW = AM:IXL:AM ; LW = AM:LIVE:AM
+            FOR J = 1 TO DCOUNT(IXL, AM)
+               IF INDEX(LW, AM:TRIM(IXL<J>):AM, 1) = 0 THEN CHG = 1
             NEXT J
-            IF NF2 > 0 THEN EXECUTE "BUILD.INDEX ":BASE:" ALL" CAPTURING JUNK
+            FOR J = 1 TO DCOUNT(LIVE, AM)
+               IF INDEX(DW, AM:TRIM(LIVE<J>):AM, 1) = 0 THEN CHG = 1
+            NEXT J
+            IF CHG THEN IXWANT<-1> = BASE
          END
       NEXT I
+      RETURN
+*
+*  If any file's indexes changed, list them and ask before rebuilding (#11).
+   IXPROMPT:
+      NW2 = DCOUNT(IXWANT, AM)
+      IF NW2 = 0 THEN RETURN
+      PRINT "Indexes have changed for " : NW2 : " file(s):"
+      FOR I = 1 TO NW2
+         BASE = IXWANT<I>
+         R = CALLC GITCAT(REPO, BASE:IXCTL)
+         OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+         PRINT "  " : BASE : " (" : CONVERT(AM, " ", TRIM(IXL)) : ")"
+      NEXT I
+      PRINT "Rebuild them now? (Y/N) " :
+      INPUT ANS
+      IF UPCASE(ANS)[1,1] # "Y" THEN
+         PRINT "Indexes not rebuilt; run GIT CHECKOUT again to rebuild."
+         RETURN
+      END
+      NIX = 0
+      FOR I = 1 TO NW2
+         BASE = IXWANT<I>
+         R = CALLC GITCAT(REPO, BASE:IXCTL)
+         OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+         NF2 = DCOUNT(IXL, AM)
+         FOR J = 1 TO NF2
+            FLD = TRIM(IXL<J>)
+            IF FLD # "" THEN
+               DATA ""
+               EXECUTE "CREATE.INDEX ":BASE:" ":FLD CAPTURING JUNK
+               NIX += 1
+            END
+         NEXT J
+         IF NF2 > 0 THEN EXECUTE "BUILD.INDEX ":BASE:" ALL" CAPTURING JUNK
+      NEXT I
+      PRINT NIX : " index(es) rebuilt"
       RETURN
 *
 *  STATUS — compare the live records against HEAD on the current session.

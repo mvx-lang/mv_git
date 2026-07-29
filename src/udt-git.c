@@ -214,24 +214,63 @@ static int run_newacct(const char *owner, const char *group) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 
-/* Build a `udt` input script that recreates every file's alternate-key indexes
-   from its committed <file>.DICT/%INDEXES% control (#10), or return NULL when no
-   file has any.  Per field: `CREATE.INDEX <file> <field>` followed by a BLANK
-   line — UniData always prompts for the alternate-key length and a blank line
-   takes the default (20); there is no inline length syntax.  Then
-   `BUILD.INDEX <file> ALL` populates the file's indexes.  The script is fed to a
-   fresh `udt` (not InterCall — ic_execute cannot answer the length prompt), so
-   it runs only after the InterCall session is closed: no second concurrent
-   session.  Reads HEAD like the checkout does (mv_git_headfiles/mv_git_catpath).
-   *count receives the number of CREATE.INDEX lines. */
-static char *collect_index_script(mv_ctx *ctx, const char *repo, int *count) {
-    *count = 0;
+/* Append n bytes of s to a malloc'd growing buffer (NUL-terminated). */
+static void sb_app(char **buf, size_t *cap, size_t *len, const char *s, size_t n) {
+    if (*len + n + 1 > *cap) {
+        *cap = (*len + n + 1) * 2;
+        *buf = realloc(*buf, *cap);
+        if (!*buf) mv_fatal("out of memory");
+    }
+    memcpy(*buf + *len, s, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+}
+
+/* 1 if the two @AM (0xFE) field-name lists differ as sets (order-independent) —
+   i.e. the declared indexes differ from the live ones. */
+static int index_set_differs(const char *a, const char *b) {
+    for (int dir = 0; dir < 2; dir++) {
+        const char *x = dir ? b : a, *y = dir ? a : b;
+        for (const char *f = x; *f;) {
+            const char *fe = f;
+            while (*fe && (unsigned char)*fe != 0xFE) fe++;
+            size_t flen = (size_t)(fe - f);
+            if (flen) {
+                int found = 0;
+                for (const char *g = y; *g;) {
+                    const char *ge = g;
+                    while (*ge && (unsigned char)*ge != 0xFE) ge++;
+                    if ((size_t)(ge - g) == flen && memcmp(g, f, flen) == 0) {
+                        found = 1; break;
+                    }
+                    g = *ge ? ge + 1 : ge;
+                }
+                if (!found) return 1;
+            }
+            f = *fe ? fe + 1 : fe;
+        }
+    }
+    return 0;
+}
+
+/* Detect files whose alternate-key indexes CHANGED — the set declared in
+   <file>.DICT/%INDEXES% differs from what is live now — and build a `udt` script
+   that recreates them (#10/#11), plus a human report.  Returns the script (or
+   NULL when nothing changed), sets *ncreate to the CREATE.INDEX count, *nfiles to
+   the changed-file count, and *report to a malloc'd "  file (f1 f2)\n" listing.
+   The script is NOT run here: the caller asks the user first, then feeds it to a
+   fresh `udt` after the InterCall session closes (ic_execute cannot answer
+   CREATE.INDEX's key-length prompt — a blank line in the script does).  Reads
+   HEAD like checkout does; mv_indices gives the live set. */
+static char *collect_index_changes(mv_ctx *ctx, const char *repo, int *ncreate,
+                                   int *nfiles, char **report) {
+    *ncreate = 0; *nfiles = 0; *report = NULL;
     char *paths = mv_git_headfiles(ctx, repo);
     if (!paths) return NULL;
     const char *suf = ".DICT/%INDEXES%";
     size_t sl = strlen(suf);
-    char *scr = NULL;
-    size_t cap = 0, len = 0;
+    char *scr = NULL, *rep = NULL;
+    size_t scap = 0, slen = 0, rcap = 0, rlen = 0;
     for (char *p = paths; *p;) {
         char *e = p;
         while (*e && (unsigned char)*e != 0xFE) e++;
@@ -240,54 +279,49 @@ static char *collect_index_script(mv_ctx *ctx, const char *repo, int *count) {
             char base[256], path[300];
             snprintf(base, sizeof base, "%.*s", (int)(pl - sl), p);
             snprintf(path, sizeof path, "%.*s", (int)pl, p);
-            char *ix = mv_git_catpath(ctx, repo, path);   /* @AM field names */
-            if (ix) {
-                int hasf = 0;
-                for (char *f = ix; *f;) {
-                    char *fe = f;
-                    while (*fe && (unsigned char)*fe != 0xFE) fe++;
-                    if (fe > f) {
-                        char line[600];
-                        int n = snprintf(line, sizeof line,
-                                         "CREATE.INDEX %s %.*s\n\n",
-                                         base, (int)(fe - f), f);
-                        if (len + (size_t)n + 1 > cap) {
-                            cap = (len + (size_t)n + 1) * 2;
-                            scr = realloc(scr, cap);
-                            if (!scr) mv_fatal("out of memory");
+            char *ix = mv_git_catpath(ctx, repo, path);   /* declared, @AM */
+            if (ix && *ix) {
+                char live[8192];
+                if (!mv_indices(ctx, base, live, sizeof live)) live[0] = '\0';
+                if (index_set_differs(ix, live)) {
+                    (*nfiles)++;
+                    char rl[400];
+                    sb_app(&rep, &rcap, &rlen, rl,
+                           (size_t)snprintf(rl, sizeof rl, "  %s (", base));
+                    int first = 1;
+                    for (char *f = ix; *f;) {
+                        char *fe = f;
+                        while (*fe && (unsigned char)*fe != 0xFE) fe++;
+                        if (fe > f) {
+                            char cl[600];
+                            sb_app(&scr, &scap, &slen, cl,
+                                   (size_t)snprintf(cl, sizeof cl,
+                                       "CREATE.INDEX %s %.*s\n\n",
+                                       base, (int)(fe - f), f));
+                            (*ncreate)++;
+                            char fl[300];
+                            sb_app(&rep, &rcap, &rlen, fl,
+                                   (size_t)snprintf(fl, sizeof fl, "%s%.*s",
+                                       first ? "" : " ", (int)(fe - f), f));
+                            first = 0;
                         }
-                        memcpy(scr + len, line, (size_t)n);
-                        len += (size_t)n;
-                        (*count)++;
-                        hasf = 1;
+                        f = *fe ? fe + 1 : fe;
                     }
-                    f = *fe ? fe + 1 : fe;
+                    sb_app(&rep, &rcap, &rlen, ")\n", 2);
+                    char bl[300];
+                    sb_app(&scr, &scap, &slen, bl,
+                           (size_t)snprintf(bl, sizeof bl,
+                               "BUILD.INDEX %s ALL\n", base));
                 }
-                if (hasf) {
-                    char line[300];
-                    int n = snprintf(line, sizeof line,
-                                     "BUILD.INDEX %s ALL\n", base);
-                    if (len + (size_t)n + 1 > cap) {
-                        cap = (len + (size_t)n + 1) * 2;
-                        scr = realloc(scr, cap);
-                        if (!scr) mv_fatal("out of memory");
-                    }
-                    memcpy(scr + len, line, (size_t)n);
-                    len += (size_t)n;
-                }
-                free(ix);
             }
+            free(ix);
         }
         p = *e ? e + 1 : e;
     }
     free(paths);
-    if (*count == 0) { free(scr); return NULL; }
-    const char *q = "QUIT\n";
-    size_t qn = strlen(q);
-    scr = realloc(scr, len + qn + 1);
-    if (!scr) mv_fatal("out of memory");
-    memcpy(scr + len, q, qn);
-    scr[len + qn] = '\0';
+    if (*ncreate == 0) { free(scr); free(rep); return NULL; }
+    sb_app(&scr, &scap, &slen, "QUIT\n", 5);
+    *report = rep;
     return scr;
 }
 
@@ -356,20 +390,35 @@ static int do_clone(const char *repo, const char *dir) {
 
     mv_ctx *ctx = mv_ctx_create();
     emit(mv_git_materialize(ctx, ".git"));
-    /* Collect the index-rebuild script while the repo is readable, then close the
-       InterCall session before feeding it to a fresh `udt` — so only one session
-       is ever open at a time. */
-    int nix = 0;
-    char *ixscript = collect_index_script(ctx, ".git", &nix);
+    /* Detect changed indexes while the repo is readable, then close the InterCall
+       session before touching them.  Do NOT rebuild automatically (#11): report
+       the changes and ask; only on yes feed the script to a fresh `udt`. */
+    int ncreate = 0, nfiles = 0;
+    char *report = NULL;
+    char *ixscript = collect_index_changes(ctx, ".git", &ncreate, &nfiles,
+                                           &report);
     mv_ctx_destroy(ctx);
     if (ixscript) {
-        FILE *u = popen("udt >/dev/null 2>&1", "w");   /* cwd = the account */
-        if (u) {
-            fwrite(ixscript, 1, strlen(ixscript), u);
-            pclose(u);
-            printf("%d index(es) rebuilt\n", nix);
+        fflush(stdout);   /* the materialise line before the prompt */
+        fprintf(stderr, "Indexes have changed for %d file(s):\n%s", nfiles,
+                report ? report : "");
+        fprintf(stderr, "Rebuild them now? [y/N] ");
+        fflush(stderr);
+        char ans[16];
+        int yes = fgets(ans, sizeof ans, stdin) &&
+                  (ans[0] == 'y' || ans[0] == 'Y');
+        if (yes) {
+            FILE *u = popen("udt >/dev/null 2>&1", "w");   /* cwd = the account */
+            if (u) {
+                fwrite(ixscript, 1, strlen(ixscript), u);
+                pclose(u);
+            }
+            printf("%d index(es) rebuilt\n", ncreate);
+        } else {
+            printf("Indexes not rebuilt; re-run the clone to rebuild them.\n");
         }
         free(ixscript);
+        free(report);
     }
     return 0;
 }
