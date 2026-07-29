@@ -108,6 +108,16 @@ char *GITLOG(char *repo, char *count) {
     return emit(repo, r);
 }
 
+/* GITBRANCH(repo, name) — list branches (name empty) or create `name`.  A pure
+   git-ref operation: it never touches records, so the InterCall session (which
+   only opens on a record op) stays closed — no second session. */
+char *GITBRANCH(char *repo, char *name) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_branch(ctx, rp(repo), name ? name : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* --- checkout side (git -> UniData account) -------------------------------- */
 
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
