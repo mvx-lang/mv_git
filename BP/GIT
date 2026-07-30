@@ -19,8 +19,9 @@
 * The command framework: by default the calls below bind to the minimal cmd
 * bundled in CMD.BP (CMD.MIN.*), so git runs standalone with no dependency.
 * One $DEFINE redirects every CMD.* below at once (a "." ends an identifier,
-* so CMD is its own token).  Build with -D FULLCMD to bind to the full mv_cmd.
-$IFNDEF FULLCMD
+* so CMD is its own token).  mkpkg defines HAVE_CMD automatically when the
+* full mv_cmd is resolvable at build time, binding to it instead.
+$IFNDEF HAVE_CMD
 $DEFINE CMD CMD.MIN
 $ENDIF
 CALL CMD.INIT("GIT", "version-control hash-file records")

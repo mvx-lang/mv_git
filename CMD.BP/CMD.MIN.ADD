@@ -9,8 +9,8 @@
 * SPDX-License-Identifier: GPL-2.0-only
 *
 * Minimal cmd bundled with git so it runs standalone (compiled by default).
-* GIT redirects CMD.* here via $DEFINE; build GIT with -D FULLCMD to use the
-* full mv_cmd (CMD.*) instead.
+* GIT redirects CMD.* here via $DEFINE unless HAVE_CMD is defined (mkpkg
+* defines it when the full mv_cmd is available), which binds the full CMD.*.
 * /**
 *  * @file CMD.ADD
 *  * @version 1.0

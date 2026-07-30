@@ -49,13 +49,14 @@ a single preprocessor directive — because a `.` ends an identifier, one
 the call sites:
 
 ```
-$IFNDEF FULLCMD
+$IFNDEF HAVE_CMD
 $DEFINE CMD CMD.MIN
 $ENDIF
 ```
 
-Built by default, git uses the bundled `CMD.MIN.*`; built with `-D FULLCMD`
-(when the full `mv_cmd` is installed) it uses the full `CMD.*`. The distinct
+`mkpkg` defines `HAVE_CMD` automatically when the full `mv_cmd` is resolvable at
+build time (a sibling package or on `$MVXPKGPATH`), so git binds to the full
+`CMD.*` there and to the bundled `CMD.MIN.*` when built alone. The distinct
 names mean the two never collide. (The UniData `GIT` verb has its own dispatch
 and does not use `cmd`.)
 
