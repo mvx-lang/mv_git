@@ -16,28 +16,23 @@
 * GITIGNORE (an account record) keeps bulk data out of history; DICT
 * addresses a dictionary.
 *
-* The command framework: prefer the full cmd when it is installed, else the
-* minimal cmd bundled in CMD.BP (CMD.MIN.*), so git runs standalone.  This is
-* a run-time choice (CATALOGED probes the catalog the way CALL resolves), so
-* installing mv_cmd later is picked up with no rebuild; CALL @var dispatches by
-* name.
-CI = "CMD.MIN.INIT" ; CA = "CMD.MIN.ADD" ; CR = "CMD.MIN.RUN"
-IF CATALOGED("CMD.INIT") THEN
-   CI = "CMD.INIT" ; CA = "CMD.ADD" ; CR = "CMD.RUN"
-END
-CALL @CI("GIT", "version-control hash-file records")
-CALL @CA("INIT", "create the record repository", "GIT.INIT")
-CALL @CA("ADD", "stage records (file {id})", "GIT.ADD")
-CALL @CA("RM", "unstage a record (file id)", "GIT.RM")
-CALL @CA("IGNORE", "keep records out of history (pattern)", "GIT.IGNORE")
-CALL @CA("STATUS", "show staged / changed records", "GIT.STATUS")
-CALL @CA("COMMIT", "commit staged records (-m msg)", "GIT.COMMIT")
-CALL @CA("LOG", "commit history", "GIT.LOG")
-CALL @CA("DIFF", "unstaged record changes {file}", "GIT.DIFF")
-CALL @CA("SHOW", "committed content of a record (file id)", "GIT.SHOW")
-CALL @CA("RESTORE", "restore records from HEAD (file)", "GIT.RESTORE")
-CALL @CA("BRANCH", "list or create a branch (name)", "GIT.BRANCH")
-CALL @CA("CHECKOUT", "switch branch, update records (name)", "GIT.CHECKOUT")
-CALL @CA("MERGE", "merge a branch into this one (name)", "GIT.MERGE")
-CALL @CA("CHERRY-PICK", "apply one commit (commit)", "GIT.CHERRYPICK")
-CALL @CR
+* The command framework: git calls CMD.* directly.  A minimal copy is bundled
+* in CMD.BP so git runs standalone; when the full mv_cmd is installed its
+* catalog entry overrides the bundled one, so the same calls bind to whichever
+* CMD.* is present — no probe, no rebuild.
+CALL CMD.INIT("GIT", "version-control hash-file records")
+CALL CMD.ADD("INIT", "create the record repository", "GIT.INIT")
+CALL CMD.ADD("ADD", "stage records (file {id})", "GIT.ADD")
+CALL CMD.ADD("RM", "unstage a record (file id)", "GIT.RM")
+CALL CMD.ADD("IGNORE", "keep records out of history (pattern)", "GIT.IGNORE")
+CALL CMD.ADD("STATUS", "show staged / changed records", "GIT.STATUS")
+CALL CMD.ADD("COMMIT", "commit staged records (-m msg)", "GIT.COMMIT")
+CALL CMD.ADD("LOG", "commit history", "GIT.LOG")
+CALL CMD.ADD("DIFF", "unstaged record changes {file}", "GIT.DIFF")
+CALL CMD.ADD("SHOW", "committed content of a record (file id)", "GIT.SHOW")
+CALL CMD.ADD("RESTORE", "restore records from HEAD (file)", "GIT.RESTORE")
+CALL CMD.ADD("BRANCH", "list or create a branch (name)", "GIT.BRANCH")
+CALL CMD.ADD("CHECKOUT", "switch branch, update records (name)", "GIT.CHECKOUT")
+CALL CMD.ADD("MERGE", "merge a branch into this one (name)", "GIT.MERGE")
+CALL CMD.ADD("CHERRY-PICK", "apply one commit (commit)", "GIT.CHERRYPICK")
+CALL CMD.RUN

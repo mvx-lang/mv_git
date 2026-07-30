@@ -8,16 +8,17 @@
 *
 * SPDX-License-Identifier: GPL-2.0-only
 *
-* Minimal cmd bundled with git so it runs standalone.  At run time GIT probes
-* CATALOGED("CMD.INIT") and uses the full mv_cmd (CMD.*) when it is installed,
-* falling back to these CMD.MIN.* otherwise.
+* Bundled fallback copy of cmd so git runs standalone.  When the full mv_cmd
+* is installed its catalog entry overrides this copy (UniData: a global
+* CATALOG overwrite; mvx: the account LIB loads before a package library), so
+* GIT calls CMD.* normally and gets whichever is present.
 * /**
 *  * @file CMD.RUN
 *  * @version 1.0
 *  */
 * CMD.RUN — parse the sentence, dispatch to the matching handler,
 * or print generated help.
-SUBROUTINE CMD.MIN.RUN
+SUBROUTINE CMD.RUN
 COMMON /CMDPKG/ CNAME, CDESC, CSUBS, CDESCS, CHANDLERS
 S = TRIM(SENTENCE())
 W = FIELD(S, " ", 2)

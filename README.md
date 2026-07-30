@@ -41,24 +41,21 @@ as directory files so the repo is itself a legible MVX package account.
 ## The cmd framework
 
 The `GIT` verb builds its subcommands on the
-[`cmd`](https://github.com/mvx-lang/mv_cmd) framework. So git runs **standalone,
-without mv-package**, a minimal copy of `cmd` is bundled in `CMD.BP` under the
-names `CMD.MIN.*` and compiles into `libgit`. The verb chooses between them at
-**run time**: it probes `CATALOGED("CMD.INIT")` — the MV catalog-lookup idiom,
-resolving exactly the way `CALL` does — and dispatches by name through
-`CALL @var`:
+[`cmd`](https://github.com/mvx-lang/mv_cmd) framework and simply `CALL`s
+`CMD.INIT` / `CMD.ADD` / `CMD.RUN`. So git runs **standalone, without
+mv-package**, a copy of `cmd` under the *same* names is bundled in `CMD.BP` and
+compiles into `libgit` — the calls resolve to it.
 
-```
-CI = "CMD.MIN.INIT" ; CA = "CMD.MIN.ADD" ; CR = "CMD.MIN.RUN"
-IF CATALOGED("CMD.INIT") THEN
-   CI = "CMD.INIT" ; CA = "CMD.ADD" ; CR = "CMD.RUN"
-END
-CALL @CI("GIT", "…") ; CALL @CA("INIT", "…", "GIT.INIT") ; … ; CALL @CR
-```
+When the full `mv_cmd` is installed its catalog entry **overrides** the bundled
+copy, so the same calls bind to whichever `CMD.*` is present, with no probe and
+no rebuild:
 
-Because the choice is at run time, **installing `mv_cmd` later is picked up with
-no rebuild** — the next `git` run uses the full `CMD.*`; with nothing installed
-it uses the bundled `CMD.MIN.*`. The distinct names mean the two never collide.
+- **UniData:** `cmd` is globally cataloged; installing/updating it is a
+  `CATALOG … FORCE` that overwrites the shared `CMD.*`.
+- **mvx:** mv-package installs `cmd` into the account's own `LIB/`, which loads
+  *before* any package library, so the account's `CMD.*` shadow the bundled
+  ones. (git's build skips `CMD.BP` when `cmd` is already resolvable.)
+
 (The UniData `GIT` verb has its own dispatch and does not use `cmd`.)
 
 ## License
