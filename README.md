@@ -38,6 +38,27 @@ and `libmvxrt` (`$MVX_ROOT/build/lib`), plus `libgit2`.
 `PKG` — the MVX package (the `GIT` verb and its subroutines). Records are stored
 as directory files so the repo is itself a legible MVX package account.
 
+## The cmd framework
+
+The `GIT` verb builds its subcommands on the
+[`cmd`](https://github.com/mvx-lang/mv_cmd) framework. So git runs **standalone,
+without mv-package**, a minimal copy of `cmd` is bundled in `CMD.BP` under the
+names `CMD.MIN.*` and compiles into `libgit`. The verb selects between them with
+a single preprocessor directive — because a `.` ends an identifier, one
+`$DEFINE CMD CMD.MIN` redirects every `CALL CMD.*` at once, with no change to
+the call sites:
+
+```
+$IFNDEF FULLCMD
+$DEFINE CMD CMD.MIN
+$ENDIF
+```
+
+Built by default, git uses the bundled `CMD.MIN.*`; built with `-D FULLCMD`
+(when the full `mv_cmd` is installed) it uses the full `CMD.*`. The distinct
+names mean the two never collide. (The UniData `GIT` verb has its own dispatch
+and does not use `cmd`.)
+
 ## License
 
 GPL-2.0-only. See [LICENSE](LICENSE).

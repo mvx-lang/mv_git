@@ -1,0 +1,47 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+*
+* Minimal cmd bundled with git so it runs standalone (compiled by default).
+* GIT redirects CMD.* here via $DEFINE; build GIT with -D FULLCMD to use the
+* full mv_cmd (CMD.*) instead.
+* /**
+*  * @file CMD.RUN
+*  * @version 1.0
+*  */
+* CMD.RUN — parse the sentence, dispatch to the matching handler,
+* or print generated help.
+SUBROUTINE CMD.MIN.RUN
+COMMON /CMDPKG/ CNAME, CDESC, CSUBS, CDESCS, CHANDLERS
+S = TRIM(SENTENCE())
+W = FIELD(S, " ", 2)
+WU = OCONV(W, "MCU")
+IF WU = "" OR WU = "HELP" THEN
+   GOSUB 9100
+   RETURN
+END
+LOCATE(WU, CSUBS; POS) THEN
+   H = CHANDLERS<POS>
+   CALL @H
+END ELSE
+   PRINT CNAME:": unknown command '":W:"'"
+   GOSUB 9100
+END
+RETURN
+* generated help
+9100
+PRINT CNAME:" - ":CDESC
+PRINT "usage: ":CNAME:" <command>"
+PRINT "commands:"
+N = DCOUNT(CSUBS, @AM)
+FOR I = 1 TO N
+   PRINT "  ":FMT(OCONV(CSUBS<I>, "MCL"), "L#12"):" ":CDESCS<I>
+NEXT I
+PRINT "  ":FMT("help", "L#12"):" show this help"
+RETURN

@@ -15,6 +15,14 @@
 * is an MVX file plus record id; the working tree is the live records.
 * GITIGNORE (an account record) keeps bulk data out of history; DICT
 * addresses a dictionary.
+*
+* The command framework: by default the calls below bind to the minimal cmd
+* bundled in CMD.BP (CMD.MIN.*), so git runs standalone with no dependency.
+* One $DEFINE redirects every CMD.* below at once (a "." ends an identifier,
+* so CMD is its own token).  Build with -D FULLCMD to bind to the full mv_cmd.
+$IFNDEF FULLCMD
+$DEFINE CMD CMD.MIN
+$ENDIF
 CALL CMD.INIT("GIT", "version-control hash-file records")
 CALL CMD.ADD("INIT", "create the record repository", "GIT.INIT")
 CALL CMD.ADD("ADD", "stage records (file {id})", "GIT.ADD")

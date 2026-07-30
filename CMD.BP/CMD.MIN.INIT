@@ -1,0 +1,26 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+*
+* Minimal cmd bundled with git so it runs standalone (compiled by default).
+* GIT redirects CMD.* here via $DEFINE; build GIT with -D FULLCMD to use the
+* full mv_cmd (CMD.*) instead.
+* /**
+*  * @file CMD.INIT
+*  * @version 1.0
+*  */
+* CMD.INIT(name, description) — begin defining a command.
+SUBROUTINE CMD.MIN.INIT(NAME, DESC)
+COMMON /CMDPKG/ CNAME, CDESC, CSUBS, CDESCS, CHANDLERS
+CNAME = NAME
+CDESC = DESC
+CSUBS = ""
+CDESCS = ""
+CHANDLERS = ""
+RETURN
