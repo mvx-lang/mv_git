@@ -1,0 +1,12 @@
+{
+  "name": "mv-lang/git",
+  "version": "5.0",
+  "description": "git for hash-file records (branch/merge)",
+  "license": "GPL-2.0-only",
+  "systems": ["mvx"],
+  "dependencies": ["mv-lang/cmd"],
+  "deploy": {
+    "verbs": ["GIT"],
+    "fallback": { "cmd": ["CMD.BP"] }
+  }
+}
