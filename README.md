@@ -43,22 +43,23 @@ as directory files so the repo is itself a legible MVX package account.
 The `GIT` verb builds its subcommands on the
 [`cmd`](https://github.com/mvx-lang/mv_cmd) framework. So git runs **standalone,
 without mv-package**, a minimal copy of `cmd` is bundled in `CMD.BP` under the
-names `CMD.MIN.*` and compiles into `libgit`. The verb selects between them with
-a single preprocessor directive — because a `.` ends an identifier, one
-`$DEFINE CMD CMD.MIN` redirects every `CALL CMD.*` at once, with no change to
-the call sites:
+names `CMD.MIN.*` and compiles into `libgit`. The verb chooses between them at
+**run time**: it probes `CATALOGED("CMD.INIT")` — the MV catalog-lookup idiom,
+resolving exactly the way `CALL` does — and dispatches by name through
+`CALL @var`:
 
 ```
-$IFNDEF HAVE_CMD
-$DEFINE CMD CMD.MIN
-$ENDIF
+CI = "CMD.MIN.INIT" ; CA = "CMD.MIN.ADD" ; CR = "CMD.MIN.RUN"
+IF CATALOGED("CMD.INIT") THEN
+   CI = "CMD.INIT" ; CA = "CMD.ADD" ; CR = "CMD.RUN"
+END
+CALL @CI("GIT", "…") ; CALL @CA("INIT", "…", "GIT.INIT") ; … ; CALL @CR
 ```
 
-`mkpkg` defines `HAVE_CMD` automatically when the full `mv_cmd` is resolvable at
-build time (a sibling package or on `$MVXPKGPATH`), so git binds to the full
-`CMD.*` there and to the bundled `CMD.MIN.*` when built alone. The distinct
-names mean the two never collide. (The UniData `GIT` verb has its own dispatch
-and does not use `cmd`.)
+Because the choice is at run time, **installing `mv_cmd` later is picked up with
+no rebuild** — the next `git` run uses the full `CMD.*`; with nothing installed
+it uses the bundled `CMD.MIN.*`. The distinct names mean the two never collide.
+(The UniData `GIT` verb has its own dispatch and does not use `cmd`.)
 
 ## License
 
