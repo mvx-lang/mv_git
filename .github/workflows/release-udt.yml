@@ -45,7 +45,7 @@ jobs:
             -e LIBGIT2_PREFIX=/usr/local \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v "$PWD":/pkg -w /pkg \
-            "$IMAGE" bash -lc './build-udt.sh && chown "$HOST_UID:$HOST_GID" udt-git'
+            "$IMAGE" bash -lc 'sh build-udt.sh && chown "$HOST_UID:$HOST_GID" udt-git'
           test -x ./udt-git
 
       - name: Package the release tarball
