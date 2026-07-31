@@ -1,6 +1,6 @@
 {
   "name": "mv-lang/git",
-  "version": "0.1",
+  "version": "1.0",
   "description": "git for hash-file records (branch/merge)",
   "license": "GPL-2.0-only",
   "systems": ["mvx", "udt"],
