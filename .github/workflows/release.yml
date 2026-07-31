@@ -1,0 +1,204 @@
+# Release mv_git on a version tag: publish the source package and prebuilt
+# binaries (mvx + UniData) as GitHub release assets.  The package registry
+# indexes them via its release webhook (it hosts nothing).  Each job publishes
+# to the same release; asset names mirror the registry's artifact key
+# (<name>-<ver>-<suffix>, base = package name '/'->'_'):
+#   source                        -> mv-lang_git-<ver>-source.tar.gz
+#   mvx binary  (linux/x86_64,le) -> mv-lang_git-<ver>-mvx-linux-x86_64-le.tar.gz
+#   udt binary  (linux/x86_64,le) -> mv-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
+#
+# git is native (libgit2).  The mvx binary is the compiled verbs plus the
+# libgit2 extension library and the mvx-git CLI, built against a from-source mvx
+# toolchain (build-native.sh needs the mvx build tree: runtime headers +
+# libmvxrt).  The udt binary is udt-git, the record-git drop-in built in the
+# udt-builder container.  Both are os/arch/endian-locked.
+# Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
+#
+# Tag the bare version to release, e.g.:  git tag 5.0 && git push origin 5.0
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: "21"
+
+jobs:
+  # ---- source package --------------------------------------------------------
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package the source
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME}"
+          BASE="mv-lang_git-$VER-source"
+          tar czf "/tmp/$BASE.tar.gz" \
+            --exclude='./.git' --exclude='./.github' --exclude='./docs' .
+          mv "/tmp/$BASE.tar.gz" .
+          sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
+          echo "tarball=$BASE.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the source asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: git ${{ github.ref_name }}
+          body: "mv_git — git for hash-file records. Source + prebuilt mvx/udt binaries; indexed by the package registry."
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.checksum }}
+          fail_on_unmatched_files: true
+
+  # ---- mvx binary: compiled verbs + libgit2 extension + mvx-git CLI -----------
+  # build-native.sh needs the mvx build tree (runtime/include + build/lib/
+  # libmvxrt), so build mvx from source here and point MVX_ROOT at it.
+  mvx-binary:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out mv_git
+        uses: actions/checkout@v4
+        with:
+          path: mv_git
+
+      - name: Check out mvx
+        uses: actions/checkout@v4
+        with:
+          repository: mvx-lang/mvx
+          path: mvx
+
+      - name: Install toolchain + libgit2
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc g++ liblmdb-dev libedit-dev libpq-dev \
+            libgit2-dev pkg-config zlib1g-dev libzstd-dev libncurses-dev \
+            wget lsb-release software-properties-common gnupg ca-certificates
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "${LLVM_VERSION}"
+          sudo apt-get install -y --no-install-recommends "llvm-${LLVM_VERSION}-dev"
+
+      - name: Build the mvx toolchain
+        run: |
+          set -euo pipefail
+          cmake -S mvx -B mvx/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="/usr/lib/llvm-${LLVM_VERSION}"
+          cmake --build mvx/build
+
+      - name: Build the mvx binary package
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME}"
+          ARCH="$(uname -m)"; OS="linux"
+          case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
+            0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
+          esac
+          BASE="mv-lang_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
+          MVX_ROOT="$GITHUB_WORKSPACE/mvx"
+
+          cd mv_git
+          # mkpkg runs build-native.sh (libgit2 extension + mvx-git CLI) then
+          # bundles the BASIC verbs into LIB/libgit.so.
+          MVX_ROOT="$MVX_ROOT" MVXBASIC="$MVX_ROOT/build/bin/mvx-basic" \
+            sh "$MVX_ROOT/scripts/mkpkg.sh" .
+          test -f LIB/libgit.so
+          test -x bin/mvx-git
+
+          # Binary-only package: prebuilt libraries + CLI + verb records + the
+          # bundled cmd fallback, no BASIC source.  Native -> os/arch-locked.
+          DIST="dist/$BASE"; rm -rf "$DIST"; mkdir -p "$DIST"
+          cp -a LIB bin PKG mvpkg.json LICENSE README.md "$DIST/"
+          for d in VOC VOC.DICT CMD.BP CMD.BP.DICT; do [ -e "$d" ] && cp -a "$d" "$DIST/" || true; done
+          rm -rf "$DIST"/LIB/*.dSYM "$DIST"/LIB/*.debug
+          tar czf "$BASE.tar.gz" -C dist "$BASE"
+          sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
+          echo "tarball=mv_git/$BASE.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=mv_git/$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the mvx binary asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.checksum }}
+          fail_on_unmatched_files: true
+
+  # ---- udt binary: udt-git, the record-git drop-in for UniData ---------------
+  udt-binary:
+    runs-on: [self-hosted, linux, udt]
+    steps:
+      - name: Check out mv_git
+        uses: actions/checkout@v4
+
+      - name: Build udt-git in the udt-builder container
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${UDT_BUILDER_IMAGE:-udt-builder:8.3.2}"
+          if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "::error::udt-builder image '$IMAGE' not on this runner (see mv-package-registry/builder/README.md)." >&2
+            exit 1
+          fi
+          docker run --rm --hostname unidata \
+            -e LIBGIT2_PREFIX=/usr/local \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -v "$PWD":/pkg -w /pkg \
+            "$IMAGE" bash -lc 'sh build-udt.sh && chown "$HOST_UID:$HOST_GID" udt-git'
+          test -x ./udt-git
+
+      - name: Package the udt binary
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME}"
+          ARCH="$(uname -m)"
+          OS="$(uname -s | tr 'A-Z' 'a-z')"; case "$OS" in *linux*) OS=linux ;; esac
+          case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
+            0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
+          esac
+          BASE="mv-lang_git-$VER-udt-$OS-$ARCH-$ENDIAN"
+          mkdir -p "dist/$BASE"
+          cp udt-git "dist/$BASE/"
+          cp udt/GIT.udt.b "dist/$BASE/" 2>/dev/null || true
+          cp LICENSE README.md "dist/$BASE/" 2>/dev/null || true
+          cat > "dist/$BASE/INSTALL.txt" <<EOF
+          udt-git — the record-git binary for Rocket UniData ($OS/$ARCH, $ENDIAN).
+
+          Install:
+            1. Copy udt-git onto the host PATH (e.g. \$UDTHOME/bin).
+            2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
+            3. Optionally catalog GIT.udt.b as the in-session GIT verb.
+
+          Run:  udt-git -a <account> <clone|status|...>
+          Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
+          EOF
+          TARBALL="$BASE.tar.gz"
+          tar czf "$TARBALL" -C dist "$BASE"
+          sha256sum "$TARBALL" > "$TARBALL.sha256"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "checksum=$TARBALL.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the udt binary asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.checksum }}
+          fail_on_unmatched_files: true
