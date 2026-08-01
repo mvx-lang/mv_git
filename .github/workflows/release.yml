@@ -108,89 +108,14 @@ jobs:
           fail_on_unmatched_files: true
 
   # ---- udt binary: udt-git, the record-git drop-in for UniData ---------------
+  # build-udt.sh (in the container) builds udt-git + the CallC objects and stages
+  # the package; the shared udt-build action does image check / key / tar / publish.
+  # libgit2 lives at the container default (/usr/local); the version is stamped
+  # from GITHUB_REF_NAME, which udt-run forwards.
   udt-binary:
     runs-on: [self-hosted, linux, udt]
     steps:
-      - name: Check out mv_git
-        uses: actions/checkout@v5
-
-      - name: Build udt-git in the udt-builder container
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE="${UDT_BUILDER_IMAGE:-udt-builder:8.3.2}"
-          if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "::error::udt-builder image '$IMAGE' not on this runner (see mv-package-registry/builder/README.md)." >&2
-            exit 1
-          fi
-          docker run --rm --hostname unidata \
-            -e LIBGIT2_PREFIX=/usr/local -e UDTGIT_VERSION="${GITHUB_REF_NAME}" \
-            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-            -v "$PWD":/pkg -w /pkg \
-            "$IMAGE" bash -lc 'sh build-udt.sh && chown "$HOST_UID:$HOST_GID" udt-git'
-          test -x ./udt-git
-
-      - name: Package the udt binary
-        id: pkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER="${GITHUB_REF_NAME}"
-          ARCH="$(uname -m)"
-          OS="$(uname -s | tr 'A-Z' 'a-z')"; case "$OS" in *linux*) OS=linux ;; esac
-          case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
-            0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
-          esac
-          BASE="mvx-lang_git-$VER-udt-$OS-$ARCH-$ENDIAN"
-          D="dist/$BASE"
-          mkdir -p "$D/BP" "$D/udt-callc"
-          # A proper MVPKG package (contents at the tar root, no wrapping dir):
-          #   BP/GIT       the in-session verb source — CATGLOBAL compiles + globally
-          #                catalogs it (after CALLC registers its functions), then
-          #                deploy.verbs:[GIT] points the account's VOC at it.
-          #   udt-callc/   the CallC objects + funcs/libs — CALLC aggregates them
-          #                into libu2callc.so so GITINIT/GITSTAGE/... resolve.
-          #   mvpkg.json   the manifest (its deploy block drives the verb deploy).
-          # GIT.udt.b + udt-git are also kept at the root for a manual/standalone
-          # install (udt-git finds GIT.udt.b beside itself; see INSTALL.txt).
-          cp udt/GIT.udt.b "$D/BP/GIT"
-          cp udt/GIT.udt.b "$D/GIT.udt.b"
-          cp udt-git "$D/"
-          cp mvpkg.json PKG LICENSE README.md "$D/" 2>/dev/null || true
-          cp udt-callc/*.o udt-callc/funcs udt-callc/libs "$D/udt-callc/" 2>/dev/null || true
-          cat > "$D/INSTALL.txt" <<EOF
-          mv_git for Rocket UniData ($OS/$ARCH, $ENDIAN).
-
-          The easy path is 'MVPKG install mvx-lang/git' — it builds the CallC
-          library (from udt-callc/), globally catalogs the in-session GIT verb
-          (BP/GIT), and deploys it into the account (mvpkg.json deploy.verbs).
-
-          Manual/standalone install:
-            1. Copy udt-git AND GIT.udt.b together onto the host PATH
-               (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
-               itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
-            2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
-          'udt-git init'/'clone' then set up the in-session GIT verb in the
-          account (needs the CallC library built).
-
-          If you installed standalone and later add MVPKG, run 'udt-git register'
-          (or any 'udt-git init') so git registers itself with MVPKG — it is then
-          managed like an MVPKG-installed package (MVPKG list / update).
-
-          Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
-          Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
-          EOF
-          TARBALL="$BASE.tar.gz"
-          tar czf "$TARBALL" -C "$D" .   # contents at the tar root (no wrapping dir)
-          sha256sum "$TARBALL" > "$TARBALL.sha256"
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "checksum=$TARBALL.sha256" >> "$GITHUB_OUTPUT"
-
-      - name: Publish the udt binary asset
-        uses: softprops/action-gh-release@v3
+      - uses: actions/checkout@v5
+      - uses: mvx-lang/mv-package-registry/.github/actions/udt-build@main
         with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            ${{ steps.pkg.outputs.tarball }}
-            ${{ steps.pkg.outputs.checksum }}
-          fail_on_unmatched_files: true
+          package: mvx-lang/git
