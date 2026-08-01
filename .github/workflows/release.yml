@@ -161,33 +161,42 @@ jobs:
             0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
           esac
           BASE="mv-lang_git-$VER-udt-$OS-$ARCH-$ENDIAN"
-          mkdir -p "dist/$BASE"
-          cp udt-git "dist/$BASE/"
-          cp udt/GIT.udt.b "dist/$BASE/" 2>/dev/null || true
-          cp LICENSE README.md "dist/$BASE/" 2>/dev/null || true
-          # the in-session verb's CallC contribution (objects built by build-udt.sh
-          # + the checked-in funcs/libs): MVPKG's CALLC op aggregates it into
-          # libu2callc.so so the GIT verb's GITINIT/GITSTAGE/... resolve.
-          mkdir -p "dist/$BASE/udt-callc"
-          cp udt-callc/*.o udt-callc/funcs udt-callc/libs "dist/$BASE/udt-callc/" 2>/dev/null || true
-          cat > "dist/$BASE/INSTALL.txt" <<EOF
-          udt-git — the record-git binary for Rocket UniData ($OS/$ARCH, $ENDIAN).
+          D="dist/$BASE"
+          mkdir -p "$D/BP" "$D/udt-callc"
+          # A proper MVPKG package (contents at the tar root, no wrapping dir):
+          #   BP/GIT       the in-session verb source — CATGLOBAL compiles + globally
+          #                catalogs it (after CALLC registers its functions), then
+          #                deploy.verbs:[GIT] points the account's VOC at it.
+          #   udt-callc/   the CallC objects + funcs/libs — CALLC aggregates them
+          #                into libu2callc.so so GITINIT/GITSTAGE/... resolve.
+          #   mvpkg.json   the manifest (its deploy block drives the verb deploy).
+          # GIT.udt.b + udt-git are also kept at the root for a manual/standalone
+          # install (udt-git finds GIT.udt.b beside itself; see INSTALL.txt).
+          cp udt/GIT.udt.b "$D/BP/GIT"
+          cp udt/GIT.udt.b "$D/GIT.udt.b"
+          cp udt-git "$D/"
+          cp mvpkg.json PKG LICENSE README.md "$D/" 2>/dev/null || true
+          cp udt-callc/*.o udt-callc/funcs udt-callc/libs "$D/udt-callc/" 2>/dev/null || true
+          cat > "$D/INSTALL.txt" <<EOF
+          mv_git for Rocket UniData ($OS/$ARCH, $ENDIAN).
 
-          Install:
+          The easy path is 'MVPKG install mv-lang/git' — it builds the CallC
+          library (from udt-callc/), globally catalogs the in-session GIT verb
+          (BP/GIT), and deploys it into the account (mvpkg.json deploy.verbs).
+
+          Manual/standalone install:
             1. Copy udt-git AND GIT.udt.b together onto the host PATH
                (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
                itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
             2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
-
-          'udt-git init' then also sets up the in-session GIT verb in the
-          account, so you can type 'GIT status' etc. (needs the package's CallC
-          library — installing git via MVPKG builds it).
+          'udt-git init'/'clone' then set up the in-session GIT verb in the
+          account (needs the CallC library built).
 
           Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
           Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
           EOF
           TARBALL="$BASE.tar.gz"
-          tar czf "$TARBALL" -C dist "$BASE"
+          tar czf "$TARBALL" -C "$D" .   # contents at the tar root (no wrapping dir)
           sha256sum "$TARBALL" > "$TARBALL.sha256"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "checksum=$TARBALL.sha256" >> "$GITHUB_OUTPUT"
