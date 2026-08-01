@@ -143,7 +143,7 @@ jobs:
             exit 1
           fi
           docker run --rm --hostname unidata \
-            -e LIBGIT2_PREFIX=/usr/local \
+            -e LIBGIT2_PREFIX=/usr/local -e UDTGIT_VERSION="${GITHUB_REF_NAME}" \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v "$PWD":/pkg -w /pkg \
             "$IMAGE" bash -lc 'sh build-udt.sh && chown "$HOST_UID:$HOST_GID" udt-git'
@@ -191,6 +191,10 @@ jobs:
             2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
           'udt-git init'/'clone' then set up the in-session GIT verb in the
           account (needs the CallC library built).
+
+          If you installed standalone and later add MVPKG, run 'udt-git register'
+          (or any 'udt-git init') so git registers itself with MVPKG — it is then
+          managed like an MVPKG-installed package (MVPKG list / update).
 
           Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
           Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.

@@ -25,6 +25,7 @@
 
 #include "mvxgit.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
@@ -35,6 +36,13 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* This package's registry name, and its version (stamped in at build time from
+   the release tag; 0 for an unversioned dev build). */
+#define UDTGIT_PKG "mvx-lang/git"
+#ifndef UDTGIT_VERSION
+#define UDTGIT_VERSION "0"
+#endif
 
 /* Render the engine's output (lines separated by @AM = 0xFE) to stdout. */
 static void emit(char *out) {
@@ -469,6 +477,73 @@ static int find_verb_src(char *out, size_t n) {
     return 0;
 }
 
+/* Ensure the manifest at `path` has exactly one line for `name` (its first
+   space-delimited field): `fullline`.  Rewrites the file, dropping any prior
+   line for `name` (so a re-register updates the version rather than duplicating
+   it).  Small files; read all, filter, write back.  Returns 0 on success. */
+static int manifest_set(const char *path, const char *name, const char *fullline) {
+    size_t nl = strlen(name);
+    char *keep = NULL;
+    size_t klen = 0;
+    FILE *r = fopen(path, "r");
+    if (r) {
+        char buf[1024];
+        while (fgets(buf, sizeof buf, r)) {
+            const char *e = buf;
+            while (*e && *e != ' ' && *e != '\t' && *e != '\n') e++;
+            if ((size_t)(e - buf) == nl && strncmp(buf, name, nl) == 0)
+                continue;                       /* drop the old line for name */
+            size_t bl = strlen(buf);
+            char *nk = realloc(keep, klen + bl + 1);
+            if (!nk) { free(keep); fclose(r); return -1; }
+            keep = nk; memcpy(keep + klen, buf, bl); klen += bl; keep[klen] = '\0';
+        }
+        fclose(r);
+    }
+    FILE *w = fopen(path, "w");
+    if (!w) { free(keep); return -1; }
+    if (keep) fputs(keep, w);
+    if (klen && keep[klen - 1] != '\n') fputc('\n', w);
+    fprintf(w, "%s\n", fullline);
+    fclose(w);
+    free(keep);
+    return 0;
+}
+
+/* Register this git install with MVPKG so it manages the package: record
+   "mvx-lang/git <version>" in MVPKG's global store manifest and this account's
+   manifest (idempotent — a re-register just refreshes the version).  The store
+   is $MVPKG_STORE, else $UDTHOME/mvpkg.  `force` (explicit `udt-git register`)
+   creates the store if absent; otherwise (a lazy self-register on `init`) it
+   registers only when the store already exists — i.e. MVPKG is set up — so a
+   plain init before MVPKG is present does not create it prematurely. */
+static void self_register(int force) {
+    char store[4096];
+    const char *s = getenv("MVPKG_STORE");
+    if (s && *s) {
+        snprintf(store, sizeof store, "%s", s);
+    } else {
+        const char *uh = getenv("UDTHOME");
+        if (!uh || !*uh) return;
+        snprintf(store, sizeof store, "%s/mvpkg", uh);
+    }
+    struct stat st;
+    if (stat(store, &st) != 0) {
+        if (!force) return;                     /* MVPKG not set up yet */
+        if (mkdir(store, 0755) != 0 && errno != EEXIST) {
+            fprintf(stderr, "udt-git: cannot create the MVPKG store %s\n", store);
+            return;
+        }
+    }
+    char gman[4200], line[256];
+    snprintf(gman, sizeof gman, "%s/installed", store);
+    snprintf(line, sizeof line, "%s %s", UDTGIT_PKG, UDTGIT_VERSION);
+    manifest_set(gman, UDTGIT_PKG, line);           /* global store: "name version" */
+    manifest_set("mvpkg.installed", UDTGIT_PKG, UDTGIT_PKG);   /* account (cwd): "name" */
+    if (force)
+        printf("udt-git: registered %s %s with MVPKG\n", UDTGIT_PKG, UDTGIT_VERSION);
+}
+
 /* After `init`, set up the in-session GIT verb in the current account so the
    user can type `GIT status` etc., not only the udt-git CLI.  Stages GIT.udt.b
    into the account's BP and compiles + catalogs it as the account-local GIT
@@ -549,6 +624,9 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "init")) {
         emit(mv_git_init(ctx, repo));
         deploy_git_verb();   /* also set up the in-session GIT verb here */
+        self_register(0);    /* adopt into MVPKG if it is already set up */
+    } else if (!strcmp(sub, "register")) {
+        self_register(1);    /* explicit: record this install with MVPKG */
     } else if (!strcmp(sub, "add")) {
         /* bare `add`, `add -A`, or `add .` stages the whole account */
         if (!p0[0] || !strcmp(p0, "-A") || !strcmp(p0, "--all") ||

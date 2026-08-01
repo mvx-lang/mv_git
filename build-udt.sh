@@ -21,8 +21,9 @@ LG2="${LIBGIT2_PREFIX:-/usr/local}"
 LG2LIB="$LG2/lib64"
 [ -f "$LG2LIB/libgit2.so" ] || LG2LIB="$LG2/lib"
 CC="${CC:-cc}"
+UGVER="${UDTGIT_VERSION:-0}"   # stamped into udt-git for MVPKG self-registration
 
-"$CC" -std=c11 -O2 -DMVXGIT_UDT \
+"$CC" -std=c11 -O2 -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" -I"$LG2/include" -I"$UDTHOME/bin/include" \
     "$SRC/mvxgit.c" "$SRC/udtgit_rt.c" "$SRC/udt-git.c" \
     -L"$LG2LIB" -Wl,-rpath,"$LG2LIB" -lgit2 \
