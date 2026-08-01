@@ -25,9 +25,6 @@ on:
 permissions:
   contents: write
 
-env:
-  LLVM_VERSION: "21"
-
 jobs:
   # ---- source package --------------------------------------------------------
   source:
@@ -61,8 +58,8 @@ jobs:
           fail_on_unmatched_files: true
 
   # ---- mvx binary: compiled verbs + libgit2 extension + mvx-git CLI -----------
-  # build-native.sh needs the mvx build tree (runtime/include + build/lib/
-  # libmvxrt), so build mvx from source here and point MVX_ROOT at it.
+  # Uses a published mvx toolchain (setup-mvx) — it ships the runtime headers +
+  # libmvxrt, which build-native.sh finds via $MVXHOME.  No from-source build.
   mvx-binary:
     runs-on: ubuntu-24.04
     steps:
@@ -71,31 +68,23 @@ jobs:
         with:
           path: mv_git
 
-      - name: Check out mvx
+      - name: Check out the mvx package tooling (scripts/mkpkg.sh)
         uses: actions/checkout@v4
         with:
           repository: mvx-lang/mvx
-          path: mvx
+          path: .mvx-src
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
 
-      - name: Install toolchain + libgit2
+      - name: Set up the mvx toolchain (latest published build)
+        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
+        with:
+          version: latest
+
+      - name: Install libgit2
         run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build gcc g++ liblmdb-dev libedit-dev libpq-dev \
-            libgit2-dev pkg-config zlib1g-dev libzstd-dev libncurses-dev \
-            wget lsb-release software-properties-common gnupg ca-certificates
-          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh "${LLVM_VERSION}"
-          sudo apt-get install -y --no-install-recommends "llvm-${LLVM_VERSION}-dev"
-
-      - name: Build the mvx toolchain
-        run: |
-          set -euo pipefail
-          cmake -S mvx -B mvx/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="/usr/lib/llvm-${LLVM_VERSION}"
-          cmake --build mvx/build
+          sudo apt-get install -y --no-install-recommends libgit2-dev pkg-config
 
       - name: Build the mvx binary package
         id: pkg
@@ -108,13 +97,12 @@ jobs:
             0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
           esac
           BASE="mv-lang_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
-          MVX_ROOT="$GITHUB_WORKSPACE/mvx"
 
           cd mv_git
-          # mkpkg runs build-native.sh (libgit2 extension + mvx-git CLI) then
-          # bundles the BASIC verbs into LIB/libgit.so.
-          MVX_ROOT="$MVX_ROOT" MVXBASIC="$MVX_ROOT/build/bin/mvx-basic" \
-            sh "$MVX_ROOT/scripts/mkpkg.sh" .
+          # setup-mvx exported MVXHOME (headers + libmvxrt); build-native.sh uses
+          # it, and mkpkg compiles the verbs with the installed mvx-basic.
+          MVXBASIC="$(command -v mvx-basic)" \
+            sh "$GITHUB_WORKSPACE/.mvx-src/scripts/mkpkg.sh" .
           test -f LIB/libgit.so
           test -x bin/mvx-git
 
