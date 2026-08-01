@@ -3,9 +3,9 @@
 # indexes them via its release webhook (it hosts nothing).  Each job publishes
 # to the same release; asset names mirror the registry's artifact key
 # (<name>-<ver>-<suffix>, base = package name '/'->'_'):
-#   source                        -> mv-lang_git-<ver>-source.tar.gz
-#   mvx binary  (linux/x86_64,le) -> mv-lang_git-<ver>-mvx-linux-x86_64-le.tar.gz
-#   udt binary  (linux/x86_64,le) -> mv-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
+#   source                        -> mvx-lang_git-<ver>-source.tar.gz
+#   mvx binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-mvx-linux-x86_64-le.tar.gz
+#   udt binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
 #
 # git is native (libgit2).  The mvx binary is the compiled verbs plus the
 # libgit2 extension library and the mvx-git CLI, built against a published mvx
@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME}"
-          BASE="mv-lang_git-$VER-source"
+          BASE="mvx-lang_git-$VER-source"
           tar czf "/tmp/$BASE.tar.gz" \
             --exclude='./.git' --exclude='./.github' --exclude='./docs' .
           mv "/tmp/$BASE.tar.gz" .
@@ -96,7 +96,7 @@ jobs:
           case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
             0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
           esac
-          BASE="mv-lang_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
+          BASE="mvx-lang_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
 
           cd mv_git
           # setup-mvx exported MVXHOME (headers + libmvxrt); build-native.sh uses
@@ -160,7 +160,7 @@ jobs:
           case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
             0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
           esac
-          BASE="mv-lang_git-$VER-udt-$OS-$ARCH-$ENDIAN"
+          BASE="mvx-lang_git-$VER-udt-$OS-$ARCH-$ENDIAN"
           D="dist/$BASE"
           mkdir -p "$D/BP" "$D/udt-callc"
           # A proper MVPKG package (contents at the tar root, no wrapping dir):
@@ -180,7 +180,7 @@ jobs:
           cat > "$D/INSTALL.txt" <<EOF
           mv_git for Rocket UniData ($OS/$ARCH, $ENDIAN).
 
-          The easy path is 'MVPKG install mv-lang/git' — it builds the CallC
+          The easy path is 'MVPKG install mvx-lang/git' — it builds the CallC
           library (from udt-callc/), globally catalogs the in-session GIT verb
           (BP/GIT), and deploys it into the account (mvpkg.json deploy.verbs).
 

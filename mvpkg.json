@@ -1,10 +1,10 @@
 {
-  "name": "mv-lang/git",
+  "name": "mvx-lang/git",
   "version": "1.2.1",
   "description": "git for hash-file records (branch/merge)",
   "license": "GPL-2.0-only",
   "systems": ["mvx", "udt"],
-  "dependencies": ["mv-lang/cmd"],
+  "dependencies": ["mvx-lang/cmd"],
   "deploy": {
     "verbs": ["GIT"],
     "fallback": { "cmd": ["CMD.BP"] }
