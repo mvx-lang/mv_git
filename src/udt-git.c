@@ -423,6 +423,80 @@ static int do_clone(const char *repo, const char *dir) {
     return 0;
 }
 
+/* Copy a file byte-for-byte.  Returns 0 on success. */
+static int copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[8192];
+    size_t r;
+    int rc = 0;
+    while ((r = fread(buf, 1, sizeof buf, in)) > 0)
+        if (fwrite(buf, 1, r, out) != r) { rc = -1; break; }
+    if (ferror(in)) rc = -1;
+    fclose(in);
+    if (fclose(out) != 0) rc = -1;
+    return rc;
+}
+
+/* Locate the in-session verb source GIT.udt.b: $MVGIT_VERB, then beside the
+   udt-git binary, then $UDTHOME/lib/mvgit.  Returns 1 and fills `out` on hit. */
+static int find_verb_src(char *out, size_t n) {
+    const char *e = getenv("MVGIT_VERB");
+    if (e && *e && access(e, R_OK) == 0) { snprintf(out, n, "%s", e); return 1; }
+    char exe[4096];
+    ssize_t k = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (k > 0) {
+        exe[k] = '\0';
+        char *d = strrchr(exe, '/');
+        if (d) {
+            *d = '\0';
+            snprintf(out, n, "%s/GIT.udt.b", exe);
+            if (access(out, R_OK) == 0) return 1;
+        }
+    }
+    const char *uh = getenv("UDTHOME");
+    if (uh && *uh) {
+        snprintf(out, n, "%s/lib/mvgit/GIT.udt.b", uh);
+        if (access(out, R_OK) == 0) return 1;
+    }
+    return 0;
+}
+
+/* After `init`, set up the in-session GIT verb in the current account so the
+   user can type `GIT status` etc., not only the udt-git CLI.  Stages GIT.udt.b
+   into the account's BP and compiles + catalogs it as the account-local GIT
+   verb via a udt session (the same LOCAL FORCE path MVPKG uses).  Non-fatal —
+   init already succeeded.  The verb drives the git CallC functions, so it runs
+   once the package's CallC library is built (installing git does this); the
+   catalog step reports if it is not yet present. */
+static void deploy_git_verb(void) {
+    char src[4096];
+    if (!find_verb_src(src, sizeof src)) {
+        fprintf(stderr, "udt-git: GIT.udt.b not found; skipping in-session verb setup"
+                        " (set MVGIT_VERB to its path)\n");
+        return;
+    }
+    if (access("BP", F_OK) != 0) {
+        fprintf(stderr, "udt-git: no BP file here; skipping in-session verb setup\n");
+        return;
+    }
+    if (copy_file(src, "BP/GIT") != 0) {
+        fprintf(stderr, "udt-git: could not stage the GIT verb into BP\n");
+        return;
+    }
+    FILE *u = popen("udt >/dev/null 2>&1", "w");   /* cwd = the account */
+    if (!u) { fprintf(stderr, "udt-git: could not run udt to catalog the GIT verb\n"); return; }
+    fputs("BASIC BP GIT\n", u);
+    fputs("CATALOG BP GIT LOCAL FORCE\n", u);
+    if (pclose(u) == 0)
+        printf("udt-git: in-session GIT verb set up in this account (try: GIT STATUS)\n");
+    else
+        fprintf(stderr, "udt-git: could not catalog the GIT verb"
+                        " (is the package's CallC library built?)\n");
+}
+
 int main(int argc, char **argv) {
     /* optional "-a <account>" before the subcommand */
     int i = 1;
@@ -469,6 +543,7 @@ int main(int argc, char **argv) {
 
     if (!strcmp(sub, "init")) {
         emit(mv_git_init(ctx, repo));
+        deploy_git_verb();   /* also set up the in-session GIT verb here */
     } else if (!strcmp(sub, "add")) {
         /* bare `add`, `add -A`, or `add .` stages the whole account */
         if (!p0[0] || !strcmp(p0, "-A") || !strcmp(p0, "--all") ||

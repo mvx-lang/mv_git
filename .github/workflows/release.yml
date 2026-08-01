@@ -169,11 +169,16 @@ jobs:
           udt-git — the record-git binary for Rocket UniData ($OS/$ARCH, $ENDIAN).
 
           Install:
-            1. Copy udt-git onto the host PATH (e.g. \$UDTHOME/bin).
+            1. Copy udt-git AND GIT.udt.b together onto the host PATH
+               (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
+               itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
             2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
-            3. Optionally catalog GIT.udt.b as the in-session GIT verb.
 
-          Run:  udt-git -a <account> <clone|status|...>
+          'udt-git init' then also sets up the in-session GIT verb in the
+          account, so you can type 'GIT status' etc. (needs the package's CallC
+          library — installing git via MVPKG builds it).
+
+          Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
           Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
           EOF
           TARBALL="$BASE.tar.gz"
