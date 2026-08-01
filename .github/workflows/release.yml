@@ -112,7 +112,7 @@ jobs:
           cp -a LIB bin PKG mvpkg.json LICENSE README.md "$DIST/"
           for d in VOC VOC.DICT CMD.BP CMD.BP.DICT; do [ -e "$d" ] && cp -a "$d" "$DIST/" || true; done
           rm -rf "$DIST"/LIB/*.dSYM "$DIST"/LIB/*.debug
-          tar czf "$BASE.tar.gz" -C dist "$BASE"
+          tar czf "$BASE.tar.gz" -C "$DIST" .   # contents at the tar root (no wrapping dir)
           sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
           echo "tarball=mv_git/$BASE.tar.gz" >> "$GITHUB_OUTPUT"
           echo "checksum=mv_git/$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
