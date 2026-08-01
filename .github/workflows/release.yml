@@ -31,31 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Package the source
-        id: pkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER="${GITHUB_REF_NAME}"
-          BASE="mvx-lang_git-$VER-source"
-          tar czf "/tmp/$BASE.tar.gz" \
-            --exclude='./.git' --exclude='./.github' --exclude='./docs' .
-          mv "/tmp/$BASE.tar.gz" .
-          sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
-          echo "tarball=$BASE.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "checksum=$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
-
-      - name: Publish the source asset
-        uses: softprops/action-gh-release@v3
+      - uses: mvx-lang/mvx/.github/actions/publish-source@main
         with:
-          tag_name: ${{ github.ref_name }}
-          name: git ${{ github.ref_name }}
+          package: mvx-lang/git
+          title: git
           body: "mv_git — git for hash-file records. Source + prebuilt mvx/udt binaries; indexed by the package registry."
-          files: |
-            ${{ steps.pkg.outputs.tarball }}
-            ${{ steps.pkg.outputs.checksum }}
-          fail_on_unmatched_files: true
+          extra-exclude: docs        # the docs wiki submodule
 
   # ---- mvx binary: compiled verbs + libgit2 extension + mvx-git CLI -----------
   # Uses a published mvx toolchain (setup-mvx) — it ships the runtime headers +
