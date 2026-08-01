@@ -8,10 +8,10 @@
 #   udt binary  (linux/x86_64,le) -> mv-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
 #
 # git is native (libgit2).  The mvx binary is the compiled verbs plus the
-# libgit2 extension library and the mvx-git CLI, built against a from-source mvx
-# toolchain (build-native.sh needs the mvx build tree: runtime headers +
-# libmvxrt).  The udt binary is udt-git, the record-git drop-in built in the
-# udt-builder container.  Both are os/arch/endian-locked.
+# libgit2 extension library and the mvx-git CLI, built against a published mvx
+# toolchain (setup-mvx ships the runtime headers + libmvxrt that build-native.sh
+# needs via $MVXHOME).  The udt binary is udt-git, the record-git drop-in built
+# in the udt-builder container.  Both are os/arch/endian-locked.
 # Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
 #
 # Tag the bare version to release, e.g.:  git tag 5.0 && git push origin 5.0
@@ -30,7 +30,7 @@ jobs:
   source:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Package the source
         id: pkg
@@ -47,7 +47,7 @@ jobs:
           echo "checksum=$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Publish the source asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: git ${{ github.ref_name }}
@@ -64,12 +64,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out mv_git
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: mv_git
 
       - name: Check out the mvx package tooling (scripts/mkpkg.sh)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: mvx-lang/mvx
           path: .mvx-src
@@ -118,7 +118,7 @@ jobs:
           echo "checksum=mv_git/$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Publish the mvx binary asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: |
@@ -131,7 +131,7 @@ jobs:
     runs-on: [self-hosted, linux, udt]
     steps:
       - name: Check out mv_git
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build udt-git in the udt-builder container
         shell: bash
@@ -183,7 +183,7 @@ jobs:
           echo "checksum=$TARBALL.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Publish the udt binary asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: |
