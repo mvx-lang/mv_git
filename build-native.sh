@@ -20,6 +20,19 @@ PKG="$(cd "$(dirname "$0")" && pwd)"
 # tree via $MVX_ROOT.
 ROOT="${MVX_ROOT:-$(cd "$PKG/../.." && pwd)}"
 
+# The mvx runtime headers + libmvxrt come from either an mvx source tree with a
+# build (runtime/include + build/lib) or an installed toolchain prefix (setup-mvx
+# ships them at $MVXHOME/include + $MVXHOME/lib).  Prefer the build tree; fall
+# back to the install so a package builds in CI with no mvx checkout.
+if [ -d "$ROOT/runtime/include" ]; then
+  MVXINC="$ROOT/runtime/include" ; MVXLIB="$ROOT/build/lib"
+elif [ -n "${MVXHOME:-}" ] && [ -f "$MVXHOME/include/mvx_runtime.h" ]; then
+  MVXINC="$MVXHOME/include" ; MVXLIB="$MVXHOME/lib"
+else
+  echo "build-native.sh: no mvx runtime headers (set MVX_ROOT to an mvx build tree, or MVXHOME to an installed toolchain)" >&2
+  exit 1
+fi
+
 case "$(uname)" in
   Darwin) EXT=dylib ; UNDEF="-undefined dynamic_lookup" ; RPATH="@executable_path/../lib" ;;
   *)      EXT=so ; UNDEF="" ; RPATH='$ORIGIN/../lib' ;;
@@ -30,7 +43,7 @@ LDFLAGS="$(pkg-config --libs libgit2 2>/dev/null || echo -L/opt/homebrew/lib -lg
 
 mkdir -p "$PKG/LIB"
 cc -O2 -fPIC -shared $UNDEF \
-   -I"$ROOT/runtime/include" $CFLAGS \
+   -I"$MVXINC" $CFLAGS \
    "$PKG/src/mvxgit.c" $LDFLAGS \
    -o "$PKG/LIB/libmvxgit.$EXT"
 echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
@@ -41,9 +54,9 @@ echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
 # non-record-git command it just execs the real git, so no runtime is needed at
 # run time in that path — but the link is unconditional.
 mkdir -p "$PKG/bin"
-cc -O2 -I"$ROOT/runtime/include" -I"$PKG/src" $CFLAGS \
+cc -O2 -I"$MVXINC" -I"$PKG/src" $CFLAGS \
    "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" \
-   -L"$ROOT/build/lib" -lmvxrt $LDFLAGS \
-   -Wl,-rpath,"$RPATH" -Wl,-rpath,"$ROOT/build/lib" \
+   -L"$MVXLIB" -lmvxrt $LDFLAGS \
+   -Wl,-rpath,"$RPATH" -Wl,-rpath,"$MVXLIB" \
    -o "$PKG/bin/mvx-git"
 echo "  built bin/mvx-git (record-git engine + git wrapper)"
