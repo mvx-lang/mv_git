@@ -49,6 +49,10 @@ static const char *arg(int argc, char **argv, int n) {
     return n < argc ? argv[n] : "";
 }
 
+/* Set up the in-session GIT verb in the current account (defined below); also
+   run after clone so a freshly provisioned account can use `GIT` immediately. */
+static void deploy_git_verb(void);
+
 /* True if the account (cwd) opts into the open interchange format via git config
    `mvx.openaccount = true` — the same flag mvx-git honours.  Plain text scan of
    .git/config so the result matches across libgit2 versions. */
@@ -420,6 +424,7 @@ static int do_clone(const char *repo, const char *dir) {
         free(ixscript);
         free(report);
     }
+    deploy_git_verb();   /* the cloned account can run the in-session GIT verb too */
     return 0;
 }
 
