@@ -30,3 +30,17 @@ CC="${CC:-cc}"
     -o udt-git
 
 echo "built udt-git"
+
+# The in-session GIT verb's CallC objects: gitcallcb.c (the eight GIT* CallC
+# entry points) + the engine (mvxgit.c) + the UniData record backend
+# (udtgit_rt.c).  Shipped in udt-callc/ so MVPKG's CALLC op aggregates them into
+# UniData's libu2callc.so on install (with udt-callc/funcs + libs).  The
+# git-object path never opens the lazily-created InterCall session, so the verb
+# uses no second session / licence.
+mkdir -p udt-callc
+for c in gitcallcb mvxgit udtgit_rt; do
+    "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT \
+        -I"$SRC" -I"$LG2/include" -I"$UDTHOME/bin/include" \
+        -c "$SRC/$c.c" -o "udt-callc/$c.o"
+done
+echo "built udt-callc/{gitcallcb,mvxgit,udtgit_rt}.o"

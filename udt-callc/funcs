@@ -1,0 +1,8 @@
+GITINIT:string:1:string
+GITSTAGE:string:4:string,string,string,string
+GITSTAGEBLOB:string:3:string,string,string
+GITCOMMIT:string:2:string,string
+GITLOG:string:2:string,string
+GITBRANCH:string:2:string,string
+GITFILES:string:1:string
+GITCAT:string:2:string,string

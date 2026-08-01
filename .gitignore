@@ -11,3 +11,4 @@ BP.O.DICT/
 *.o
 *.dylib
 *.so
+udt-callc/*.o

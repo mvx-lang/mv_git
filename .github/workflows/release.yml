@@ -165,6 +165,11 @@ jobs:
           cp udt-git "dist/$BASE/"
           cp udt/GIT.udt.b "dist/$BASE/" 2>/dev/null || true
           cp LICENSE README.md "dist/$BASE/" 2>/dev/null || true
+          # the in-session verb's CallC contribution (objects built by build-udt.sh
+          # + the checked-in funcs/libs): MVPKG's CALLC op aggregates it into
+          # libu2callc.so so the GIT verb's GITINIT/GITSTAGE/... resolve.
+          mkdir -p "dist/$BASE/udt-callc"
+          cp udt-callc/*.o udt-callc/funcs udt-callc/libs "dist/$BASE/udt-callc/" 2>/dev/null || true
           cat > "dist/$BASE/INSTALL.txt" <<EOF
           udt-git — the record-git binary for Rocket UniData ($OS/$ARCH, $ENDIAN).
 
