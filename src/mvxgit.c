@@ -174,6 +174,19 @@ static int ignored(const char *file, const char *path) {
     return 0;
 }
 
+/* A well-known BUILD provisioning pointer: a `CATALOG` item in VOC/MD pointing
+   at the account's local CATALOG directory.  BUILD (re)creates it when it
+   provisions an account — alongside the CATALOG binaries and index B-trees it
+   rebuilds — so it is derived local plumbing, never part of the committed
+   portable form.  So a wholesale add (`add -A` or `add VOC`) skips it and status
+   never reports it as untracked — a fresh open clone reads clean after BUILD
+   runs (mvx#77).  An explicit `add VOC CATALOG` still stages it (the escape
+   hatch), the same shape as the compiled-object skip (mv_git#9). */
+static int is_provision_pointer(const char *file, const char *id) {
+    if (strcasecmp(id, "CATALOG") != 0) return 0;
+    return strcasecmp(file, "VOC") == 0 || strcasecmp(file, "MD") == 0;
+}
+
 /* Open an MVX file by its git name: a trailing ".DICT" opens the
    dictionary of the base file, so dictionaries are trackable as
    "<file>.DICT". */
@@ -391,6 +404,12 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 snprintf(pcheck, sizeof pcheck, "%s/%s", fn, idb);
                 if (ignored(fn, pcheck)) { skipped++; if (one) break;
                     else continue; }
+            }
+            if (!one && is_provision_pointer(fn, idb)) {
+                skipped++;      /* BUILD provisioning pointer: skip on a wholesale
+                                   `add -A`/`add VOC`; explicit `add VOC CATALOG`
+                                   (one) still stages it */
+                continue;
             }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
@@ -1047,6 +1066,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 }
                 if (!entry) {
                     if (ignored(fn, path)) continue;   /* not untracked */
+                    if (is_provision_pointer(fn, idb)) continue;  /* BUILD-derived */
                     char line[700];
                     snprintf(line, sizeof line, "?? %s", path);
                     sb_line(&s, line);
