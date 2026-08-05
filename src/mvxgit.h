@@ -61,6 +61,9 @@
 #endif
 
 char *mv_git_init(mv_ctx *ctx, const char *repo);
+/* textconv filter (tidy diffs): beautify a record blob at `path` to stdout for
+   diff display only — the stored blob is untouched.  0 on success. */
+int mv_git_textconv(const char *path);
 char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
                   const char *id);
 /* Stage a git submodule directory `name` as a gitlink (not as records). */

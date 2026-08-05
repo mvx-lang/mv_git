@@ -2064,6 +2064,31 @@ char *mv_git_init(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITINIT, ctx, a, 1);
 }
+
+/* textconv (mvx#25 tidy diffs) — a git textconv filter: read the record blob at
+   `path` (git hands the content as a temp file) and write a legible rendering to
+   stdout.  DISPLAY ONLY — the stored blob is never altered.  The blob already
+   carries @AM as newlines; put each sub-attribute value on its own indented line
+   so a diff reads cleanly instead of showing raw mark bytes:
+     @VM (0xFD) -> "\n]"   @SVM (0xFC) -> "\n]]"   @TM (0xFB) -> "\n]]]"
+   (a bare @AM 0xFE, should one ever appear, -> newline).  Plain text with no
+   marks passes through unchanged, so it is safe to apply to every path. */
+int mv_git_textconv(const char *path) {
+    FILE *f = (path && strcmp(path, "-") != 0) ? fopen(path, "rb") : stdin;
+    if (!f) { fprintf(stderr, "mvx-git: textconv: cannot open %s\n", path ? path : "-"); return 1; }
+    int c;
+    while ((c = fgetc(f)) != EOF) {
+        switch ((unsigned char)c) {
+            case 0xFE: fputc('\n', stdout); break;
+            case 0xFD: fputs("\n]", stdout); break;
+            case 0xFC: fputs("\n]]", stdout); break;
+            case 0xFB: fputs("\n]]]", stdout); break;
+            default:   fputc(c, stdout);
+        }
+    }
+    if (f != stdin) fclose(f);
+    return 0;
+}
 char *mv_git_add(mv_ctx *ctx, const char *repo, const char *file,
                   const char *id) {
     const char *a[] = {repo, file, id};

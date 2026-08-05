@@ -620,6 +620,11 @@ int main(int argc, char **argv) {
     }
     const char *sub = argv[i++];
 
+    /* textconv is a git diff filter (render a record blob legibly for the diff
+       view; the blob is untouched) — no account or InterCall session needed. */
+    if (!strcmp(sub, "textconv"))
+        return mv_git_textconv(i < argc ? argv[i] : "-");
+
     /* clone provisions a NEW account, so it runs before the chdir-into-an-
        existing-account path below (it creates the directory itself). */
     if (!strcmp(sub, "clone"))

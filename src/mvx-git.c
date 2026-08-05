@@ -39,9 +39,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>          /* _NSGetExecutablePath */
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -392,7 +396,8 @@ static int ask_create_account(const char *acct) {
 static int engine_sub(const char *sub) {
     static const char *ops[] = {
         "init", "add", "rm", "commit", "status", "log", "diff", "show",
-        "branch", "checkout", "merge", "cherry-pick", "restore", NULL};
+        "branch", "checkout", "merge", "cherry-pick", "restore",
+        "diff-setup", NULL};
     for (int i = 0; ops[i]; i++)
         if (strcmp(sub, ops[i]) == 0) return 1;
     return 0;
@@ -553,6 +558,34 @@ static const char *positional(int argc, char **argv, int subidx, int nth) {
     return NULL;
 }
 
+/* Configure the tidy-diff textconv driver for the repo at `.git` (idempotent):
+   a `diff.mvxrec.textconv` pointing at this binary, and a `.gitattributes`
+   mapping every path to it.  Display only — the stored blobs are unchanged.
+   Runs at `init` and via `mvx-git diff-setup` on an existing account. */
+static void setup_textconv(void) {
+    char self[PATH_MAX] = "mvx-git";
+#ifdef __APPLE__
+    uint32_t sz = sizeof self;
+    if (_NSGetExecutablePath(self, &sz) != 0) snprintf(self, sizeof self, "mvx-git");
+#else
+    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (n > 0) self[n] = '\0'; else snprintf(self, sizeof self, "mvx-git");
+#endif
+    git_libgit2_init();
+    git_config *cfg = NULL;
+    if (git_config_open_ondisk(&cfg, ".git/config") == 0) {
+        char val[PATH_MAX + 16];
+        snprintf(val, sizeof val, "%s textconv", self);
+        git_config_set_string(cfg, "diff.mvxrec.textconv", val);
+        git_config_set_bool(cfg, "diff.mvxrec.cachetextconv", 0);
+        git_config_free(cfg);
+    }
+    int have = 0;
+    FILE *r = fopen(".gitattributes", "r");
+    if (r) { char l[256]; while (fgets(l, sizeof l, r)) if (strstr(l, "diff=mvxrec")) { have = 1; break; } fclose(r); }
+    if (!have) { FILE *w = fopen(".gitattributes", "a"); if (w) { fputs("* diff=mvxrec\n", w); fclose(w); } }
+}
+
 static int engine_run(const char *acct, const char *sub,
                       int argc, char **argv, int subidx) {
     setenv("MVXACCOUNT", acct, 1);
@@ -568,6 +601,10 @@ static int engine_run(const char *acct, const char *sub,
 
     if (!strcmp(sub, "init")) {
         out = mv_git_init(ctx, repo);
+        setup_textconv();                 /* tidy-diff textconv driver */
+    } else if (!strcmp(sub, "diff-setup")) {
+        setup_textconv();
+        out = strdup("tidy-diff configured (diff.mvxrec textconv + .gitattributes)");
     } else if (!strcmp(sub, "status")) {
         out = mv_git_status(ctx, repo);
     } else if (!strcmp(sub, "add")) {
@@ -641,6 +678,13 @@ int main(int argc, char **argv) {
         if (argv[i][0] != '-') { sub = argv[i]; subidx = i; break; }
         if (strcmp(argv[i], "-C") == 0 || strcmp(argv[i], "-c") == 0) i++;
     }
+
+    /* `textconv` is a git diff filter, not an account operation: git runs
+       `mvx-git textconv <tempfile>` to render a record blob legibly for the
+       diff view (the blob is untouched).  Handle it before any account
+       detection so it works from anywhere. */
+    if (sub && !strcmp(sub, "textconv"))
+        return mv_git_textconv(subidx + 1 < argc ? argv[subidx + 1] : "-");
 
     /* Record-git path: an engine command in an MVX account (a .mvx marks it)
      * that has its own .git — or `init`, which creates one — drives the engine
