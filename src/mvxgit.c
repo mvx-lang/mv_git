@@ -92,6 +92,46 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
     free(s->d);
 }
 
+#ifdef MVXGIT_UDT
+/* UniData D-item <-> open-dict attribute remap (mvx#25 open-dict interchange).
+   A UniData dictionary D/I item is  TYP LOC CONV NAME FORMAT SM ASSOC — single/
+   multi at attribute 6, association at 7; the canonical open form is mvx-shaped,
+   with ASSOC at 6 and SM at 7.  Swapping attributes 6 and 7 converts EITHER way
+   (an involution), so one function serves both commit (native->open) and
+   materialise (open->native).  Trailing empty attributes are trimmed so a
+   no-association item does not grow an attribute across a round trip.  Only D/I
+   items are remapped; every other record (PH, %FILE%, %INDEXES%, …) passes
+   through unchanged (returns NULL).  On MVX this is absent — its D-items already
+   ARE the open form.  Returns a malloc'd buffer + *outlen, or NULL. */
+static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
+    const char *att[32];
+    int64_t alen[32];
+    int na = 0;
+    const char *s = rec, *e = rec + len;
+    while (na < 32) {
+        const char *m = memchr(s, (char)0xFE, (size_t)(e - s));
+        att[na] = s;
+        alen[na] = (m ? m : e) - s;
+        na++;
+        if (!m) break;
+        s = m + 1;
+    }
+    if (na == 0 || alen[0] != 1 || (att[0][0] != 'D' && att[0][0] != 'I'))
+        return NULL;                    /* only D/I items carry SM/assoc */
+    int slots = na < 7 ? 7 : na;
+    sbuf sb = {0};
+    for (int i = 0; i < slots; i++) {
+        int src = i == 5 ? 6 : (i == 6 ? 5 : i);   /* swap attrs 6 and 7 */
+        if (i) { char am = (char)0xFE; sb_put(&sb, &am, 1); }
+        if (src < na) sb_put(&sb, att[src], (size_t)alen[src]);
+    }
+    while (sb.len && (unsigned char)sb.d[sb.len - 1] == 0xFE) sb.len--;  /* trim tail */
+    *outlen = (int64_t)sb.len;
+    if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
+    return sb.d;
+}
+#endif
+
 /* --- ignore rules ------------------------------------------------------
    The account's GITIGNORE record (a file in the account root, one glob
    per line) keeps bulk data out of history: ignore "ORDERS" to skip a
@@ -283,6 +323,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
     int voc_open = is_voc && mv_openaccount();
+#ifdef MVXGIT_UDT
+    /* An open-account dictionary commits its D/I items in the canonical (mvx-
+       shaped) open form: UniData's SM/assoc attribute order is remapped here. */
+    size_t fnlen = strlen(fn);
+    int dict_open = fnlen > 5 && strcmp(fn + fnlen - 5, ".DICT") == 0 &&
+                    mv_openaccount();
+#endif
     /* A blanket `add -A` sets $MVX_GIT_SKIP_OBJECTS so compiled BASIC objects
        (binary records holding a NUL — derived, rebuilt on the target by
        CATALOG/BUILD) are not committed by default; an explicit `add <file>`
@@ -352,8 +399,19 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 if (one) break;
                 continue;
             }
+            const char *sc = cp;
+            int64_t sl = clen;
+            char *dtmp = NULL;
+#ifdef MVXGIT_UDT
+            if (dict_open) {
+                int64_t dl;
+                dtmp = dict_item_swap(cp, clen, &dl);
+                if (dtmp) { sc = dtmp; sl = dl; }
+            }
+#endif
             int64_t bl;
-            char *blob = xlate(cp, clen, (char)0xFE, '\n', &bl);
+            char *blob = xlate(sc, sl, (char)0xFE, '\n', &bl);
+            free(dtmp);
             git_oid boid;
             if (git_blob_create_from_buffer(&boid, repo, blob,
                                             (size_t)bl) == 0) {
@@ -1391,6 +1449,17 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         if (is_dir && rl > 0 && (unsigned char)r[rl - 1] == 0xFE) rl--;
         mv_set_str(&rec, r, rl);
         free(r);
+#ifdef MVXGIT_UDT
+        /* open-form dictionary D/I item -> native UniData order (SM/assoc). */
+        if (is_dict && mv_openaccount()) {
+            char rnb[40];
+            const char *rp;
+            int64_t rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
+            int64_t dl;
+            char *dn = dict_item_swap(rp, rlen, &dl);
+            if (dn) { mv_set_str(&rec, dn, dl); free(dn); }
+        }
+#endif
         mv_set_str(&id, name, (int64_t)strlen(name));
         mv_write(ctx, &rec, &fvar, &id, 0, 0);
         (*nw)++;
