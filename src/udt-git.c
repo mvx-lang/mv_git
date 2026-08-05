@@ -191,6 +191,22 @@ static int runcmd(const char *const cmd[]) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
 }
 
+/* Like runcmd but with stdout/stderr silenced — for a probe whose only signal
+   is its exit status (e.g. `git cat-file -e`). */
+static int runcmd_quiet(const char *const cmd[]) {
+    pid_t pid = fork();
+    if (pid < 0) return 127;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); }
+        execvp(cmd[0], (char *const *)cmd);
+        _exit(127);
+    }
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0) { /* retry on EINTR */ }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
 /* Provision a fresh, registered UniData account in the current directory with
    UniData's own newacct.  This restores every standard system file (VOC and its
    dictionary, _HOLD_, SAVEDLISTS, BP/CTLG, MENUFILE, ...) that the open-account
@@ -391,6 +407,19 @@ static int do_clone(const char *repo, const char *dir) {
                 "(owner=%s group=%s); check the login/group are valid\n",
                 owner, group);
         return 1;
+    }
+
+    /* A cloned OPEN account carries `.mv-account` in HEAD, but `git clone` does
+       not copy the local `mvx.openaccount` flag — set it now so open-account
+       materialisation runs: the committed %FILE% controls and dictionaries are
+       in the open form, and the reverse translation (open -> native, incl. the
+       dict SM/assoc order) is gated on this flag. */
+    {
+        const char *chk[] = { "git", "cat-file", "-e", "HEAD:.mv-account", NULL };
+        if (runcmd_quiet(chk) == 0) {
+            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
+            runcmd(cfg);
+        }
     }
 
     /* 3. materialise the user's files and records on top, over InterCall. */
