@@ -521,6 +521,118 @@ static long guess_modulo(git_index *index, const char *base) {
     return next_prime((long)(n / OPENFORM_RECS_PER_GROUP));
 }
 
+/* --- account descriptor conversion: .mvx <-> .mv-account (mvx#73) ---------
+ *
+ * The on-disk native descriptor `.mvx` and the portable git-side `.mv-account`
+ * share one `key = value` grammar but hold different subsets.  `.mvx` is native
+ * and may carry MVX-local security policy (`permit`/`deny`, #80).  `.mv-account`
+ * is the portable superset: identity (name/version/description) plus the
+ * open-form markers `openaccount` and the default `hash` backend — and it must
+ * NOT leak platform-local policy into git (a public repo, or a UniData clone
+ * that has no concept of `permit`).  So the engine *converts* at the boundary
+ * rather than renaming: commit projects `.mvx` down to the portable form,
+ * checkout rebuilds a minimal native `.mvx` (local policy is re-established
+ * locally, never shipped), and status/diff compare in open-space — so an edit
+ * to a local permit line is invisible to git.  One schema, one writer, shared
+ * with udt-git via mv_git_desc_open(). */
+typedef struct {
+    char name[128];
+    char version[32];
+    char description[256];
+    char hash[32];        /* default hash backend; empty -> "lmdb" on open form */
+    int  openaccount;     /* open-form version; 0 if the source carried none */
+} acct_desc;
+
+static void desc_rtrim(char *s) {
+    size_t n = strlen(s);
+    while (n && (s[n-1]=='\n' || s[n-1]=='\r' || s[n-1]==' ' || s[n-1]=='\t'))
+        s[--n] = '\0';
+}
+
+/* Parse a legible descriptor (either `.mvx` or `.mv-account`) into `d`.  Only
+   the portable keys are read; comment, `permit`/`deny` and `file` lines are
+   ignored (a `permit * = uname` line has an '=', but its key matches nothing). */
+static void desc_parse(const char *buf, size_t len, acct_desc *d) {
+    memset(d, 0, sizeof *d);
+    size_t i = 0;
+    while (i < len) {
+        size_t s = i;
+        while (i < len && buf[i] != '\n') i++;
+        size_t ll = i - s;
+        if (i < len) i++;                        /* consume the newline */
+        char line[512];
+        if (ll >= sizeof line) ll = sizeof line - 1;
+        memcpy(line, buf + s, ll);
+        line[ll] = '\0';
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || !*p) continue;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = p, *val = eq + 1;
+        desc_rtrim(key);
+        while (*val == ' ' || *val == '\t') val++;
+        desc_rtrim(val);
+        if      (strcasecmp(key, "name") == 0)
+            snprintf(d->name, sizeof d->name, "%s", val);
+        else if (strcasecmp(key, "version") == 0)
+            snprintf(d->version, sizeof d->version, "%s", val);
+        else if (strcasecmp(key, "description") == 0)
+            snprintf(d->description, sizeof d->description, "%s", val);
+        else if (strcasecmp(key, "hash") == 0)
+            snprintf(d->hash, sizeof d->hash, "%s", val);
+        else if (strcasecmp(key, "openaccount") == 0)
+            d->openaccount = atoi(val);
+    }
+}
+
+/* Render the canonical portable `.mv-account` form of `d`; returns its length. */
+static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
+    const char *name = d->name[0]    ? d->name    : "account";
+    const char *ver  = d->version[0] ? d->version : "1";
+    const char *hash = d->hash[0]    ? d->hash    : "lmdb";
+    int oa = d->openaccount > 0 ? d->openaccount : 1;
+    int n = snprintf(out, cap,
+        "# .mv-account - open (portable) account descriptor\n"
+        "name = %s\nversion = %s\nopenaccount = %d\nhash = %s\n",
+        name, ver, oa, hash);
+    if (n > 0 && (size_t)n < cap && d->description[0])
+        n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
+                      d->description);
+    return n;
+}
+
+/* Render the minimal native `.mvx` form of `d` (identity only — local security
+   policy is re-established locally, never carried in git). */
+static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
+    const char *name = d->name[0]    ? d->name    : "account";
+    const char *ver  = d->version[0] ? d->version : "1";
+    int n = snprintf(out, cap,
+        "# MVX account descriptor\nname = %s\nversion = %s\n", name, ver);
+    if (n > 0 && (size_t)n < cap && d->description[0])
+        n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
+                      d->description);
+    return n;
+}
+
+/* Public: render the canonical portable descriptor for an account with the
+   given identity + default hash backend (udt-git synthesises it from the live
+   UniData account; mvx-git converts from `.mvx`).  Returns the length. */
+int mv_git_desc_open(const char *name, const char *version,
+                     const char *description, const char *hash,
+                     char *out, size_t cap) {
+    acct_desc d;
+    memset(&d, 0, sizeof d);
+    if (name)        snprintf(d.name, sizeof d.name, "%s", name);
+    if (version)     snprintf(d.version, sizeof d.version, "%s", version);
+    if (description) snprintf(d.description, sizeof d.description, "%s",
+                             description);
+    if (hash)        snprintf(d.hash, sizeof d.hash, "%s", hash);
+    d.openaccount = 1;
+    return desc_render_open(&d, out, cap);
+}
+
 /* Normalise the staged index to the open account format — the record-git
    cross-platform interchange (mvx#73).  The working tree stays a native account
    on disk; only the git objects carry the open form, so this rewrites staged
@@ -528,8 +640,9 @@ static long guess_modulo(git_index *index, const char *base) {
    conn`) becomes the portable class `DIR` or `hash` (a hashed file carries a
    guessed modulo, "hash <modulo> DYNAMIC", so a clone onto a modulo-based
    platform sizes the file instead of always making a tiny default), and the
-   account descriptor `.mvx` is stored at path `.mv-account`.  Runs only when the
-   account opts in (`mvx.openaccount`).  GITOPENFORM(repo, out) */
+   native account descriptor `.mvx` is converted (not renamed) to the portable
+   `.mv-account`.  Runs only when the account opts in (`mvx.openaccount`).
+   GITOPENFORM(repo, out) */
 void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
@@ -556,12 +669,16 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
         size_t pl = strlen(e->path);
 
-        if (strcmp(e->path, ".mvx") == 0) {             /* .mvx -> .mv-account */
+        if (strcmp(e->path, ".mvx") == 0) {   /* .mvx -> .mv-account (convert) */
             git_blob *b = NULL;
             if (git_blob_lookup(&b, repo, &e->id) == 0) {
-                if (git_blob_create_from_buffer(&mvx_blob, repo,
-                        git_blob_rawcontent(b),
-                        (size_t)git_blob_rawsize(b)) == 0)
+                acct_desc d;
+                desc_parse(git_blob_rawcontent(b),
+                           (size_t)git_blob_rawsize(b), &d);
+                char open[1024];
+                int ol = desc_render_open(&d, open, sizeof open);
+                if (ol > 0 && git_blob_create_from_buffer(&mvx_blob, repo,
+                        open, (size_t)ol) == 0)
                     have_mvx = 1;
                 git_blob_free(b);
             }
@@ -994,9 +1111,10 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 continue;
             char top[256];
             split_top(d->new_file.path, top, sizeof top);
-            /* the descriptor is committed at `.mv-account` but on disk is native
-               `.mvx` (identical content) — compare the two and report a real
-               edit as a modification of `.mv-account`, else skip. */
+            /* the descriptor is committed at `.mv-account` (portable form) but on
+               disk is native `.mvx` — project the on-disk `.mvx` down to the open
+               form and compare that against the committed blob, so a local
+               permit/deny edit is invisible while a real identity change shows. */
             if (mv_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
                 FILE *df = fopen(".mvx", "rb");
                 int clean = 0;
@@ -1004,8 +1122,14 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     char buf[65536];
                     size_t bn = fread(buf, 1, sizeof buf, df);
                     fclose(df);
+                    acct_desc ad;
+                    desc_parse(buf, bn, &ad);
+                    char open[1024];
+                    int ol = desc_render_open(&ad, open, sizeof open);
                     git_oid woid;
-                    if (git_odb_hash(&woid, buf, bn, GIT_OBJECT_BLOB) == 0 &&
+                    if (ol > 0 &&
+                        git_odb_hash(&woid, open, (size_t)ol,
+                                     GIT_OBJECT_BLOB) == 0 &&
                         git_oid_equal(&woid, &d->old_file.id))
                         clean = 1;
                 }
@@ -1158,13 +1282,18 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             char ofb[16];
             int ofl;
             if (open && strcmp(e->path, ".mv-account") == 0) {
-                /* descriptor: on disk it is native `.mvx`, whose content is the
-                   open blob verbatim (only the path differs) — diff against it */
+                /* descriptor: on disk it is native `.mvx`; diff its portable
+                   projection (open form) against the committed `.mv-account`, so
+                   a local permit/deny edit is not shown as a change */
                 FILE *df = fopen(".mvx", "rb");
                 if (df) {
-                    buf = malloc(65536);
-                    if (buf) bl = (int64_t)fread(buf, 1, 65536, df);
+                    char raw[65536];
+                    size_t rn = fread(raw, 1, sizeof raw, df);
                     fclose(df);
+                    acct_desc ad;
+                    desc_parse(raw, rn, &ad);
+                    buf = malloc(1024);
+                    if (buf) bl = desc_render_open(&ad, buf, 1024);
                 }
             } else if (open && strcmp(recid, "%FILE%") == 0 && have &&
                        (clen = mv_val_chars(&rec, nb, sizeof nb, &cp),
@@ -1617,9 +1746,26 @@ void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         const char *name = git_tree_entry_name(te);
         git_object_t ty = git_tree_entry_type(te);
         if (ty == GIT_OBJECT_TREE && tree_is_mv_file(tree, name)) continue;
-        if (ty == GIT_OBJECT_BLOB &&
-            (strcmp(name, ".mv-account") == 0 || strcmp(name, ".mvx") == 0)) {
-            git_blob *b = NULL;                          /* descriptor -> .mvx */
+        if (ty == GIT_OBJECT_BLOB && strcmp(name, ".mv-account") == 0) {
+            /* portable descriptor -> minimal native `.mvx` (convert; local
+               security policy is re-seeded locally, never shipped in git) */
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+                acct_desc d;
+                desc_parse(git_blob_rawcontent(b),
+                           (size_t)git_blob_rawsize(b), &d);
+                char nat[1024];
+                int nl = desc_render_native(&d, nat, sizeof nat);
+                FILE *f = fopen(".mvx", "wb");
+                if (f) { if (nl > 0) fwrite(nat, 1, (size_t)nl, f); fclose(f); }
+                git_blob_free(b);
+            }
+            continue;
+        }
+        if (ty == GIT_OBJECT_BLOB && strcmp(name, ".mvx") == 0) {
+            /* native descriptor committed verbatim (a native, non-open repo):
+               restore as-is so its local `permit`/`deny` policy round-trips */
+            git_blob *b = NULL;
             if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
                 FILE *f = fopen(".mvx", "wb");
                 if (f) { fwrite(git_blob_rawcontent(b), 1,

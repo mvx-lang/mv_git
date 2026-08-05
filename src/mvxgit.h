@@ -73,6 +73,14 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content);
 
+/* Render the canonical portable `.mv-account` descriptor for an account with the
+   given identity and default hash backend into `out`; returns its length.  One
+   schema shared by mvx-git (converting from the native `.mvx`) and udt-git
+   (synthesising from the live UniData account), so both emit identical bytes. */
+int mv_git_desc_open(const char *name, const char *version,
+                     const char *description, const char *hash,
+                     char *out, size_t cap);
+
 /* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
    in `out`; returns its length, or -1 if `base` has no committed control yet.
    Generators use it to keep a shipped hash modulo sticky: a re-add preserves the

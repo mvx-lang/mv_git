@@ -160,10 +160,9 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     if (slash && slash[1]) base = slash + 1;
     char desc[512];
     if (open) {
-        /* the portable account descriptor (UniData has no .mvx on disk) */
-        snprintf(desc, sizeof desc,
-                 "# MV account descriptor\nname = %s\nversion = 1\n"
-                 "hash = lmdb\n", base);
+        /* the portable account descriptor (UniData has no .mvx on disk) — the
+           canonical open schema, identical to what mvx-git converts .mvx into */
+        mv_git_desc_open(base, "1", NULL, "lmdb", desc, sizeof desc);
         free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
         printf(".mv-account + %%FILE%% controls written (open format)\n");
     } else {
