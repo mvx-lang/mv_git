@@ -58,6 +58,7 @@ ARCH="$(uname -m)"; OS="$(uname -s | tr '[:upper:]' '[:lower:]')"; case "$OS" in
 mkdir -p "$STAGE/BP" "$STAGE/udt-callc"
 cp udt/GIT.udt.b "$STAGE/BP/GIT"
 cp udt/GIT.udt.b "$STAGE/GIT.udt.b"
+cp udt/preflight.sh "$STAGE/preflight.sh"
 cp udt-git "$STAGE/"
 cp mvpkg.json PKG LICENSE README.md "$STAGE/" 2>/dev/null || true
 cp udt-callc/*.o udt-callc/funcs udt-callc/libs "$STAGE/udt-callc/" 2>/dev/null || true
@@ -69,10 +70,13 @@ library (from udt-callc/), globally catalogs the in-session GIT verb
 (BP/GIT), and deploys it into the account (mvpkg.json deploy.verbs).
 
 Manual/standalone install:
-  1. Copy udt-git AND GIT.udt.b together onto the host PATH
+  1. Validate the host — MVPKG would do this for you:
+       UDTHOME=$UDTHOME sh preflight.sh
+     Fix any FAIL lines (usually: install libgit2 1.9.x) before going on.
+  2. Copy udt-git AND GIT.udt.b together onto the host PATH
      (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
      itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
-  2. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
+  3. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
 'udt-git init'/'clone' then set up the in-session GIT verb in the
 account (needs the CallC library built).
 
