@@ -10,8 +10,15 @@
 # root) into $1.  The action tars $1 as
 # mvx-lang_git-<ver>-udt-<os>-<arch>-<endian>.tar.gz and chowns it back.
 #
-# Requires: a C compiler; libgit2 1.9.x under $LIBGIT2_PREFIX (/usr/local); and
-# UniData ($UDTHOME with InterCall headers + libuvic) — all in the container.
+# Requires: a C compiler; libgit2 under $LIBGIT2_PREFIX (/usr/local); and UniData
+# ($UDTHOME with InterCall headers + libuvic) — all in the container.
+#
+# libgit2 version: minimum 1.0.0 to build (the engine uses git_blob_create_from_buffer,
+# introduced in 1.0).  The compiled udt-git dynamically links libgit2.so.<major.minor>
+# for whatever it is built against, and a different major.minor will NOT load at
+# runtime — so build and run against the same series.  Official releases build
+# against 1.9.x; that is the recommended (and, for the shipped binaries, required)
+# runtime version.  Rocky/RHEL 8 ship only 0.26 — build 1.9.x from source.
 #
 #   sh build-udt.sh <stagedir>
 set -e
@@ -76,7 +83,10 @@ Manual/standalone install:
   2. Copy udt-git AND GIT.udt.b together onto the host PATH
      (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
      itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
-  3. Ensure libgit2 1.9.x is present at runtime (/usr/local/lib64).
+  3. Ensure libgit2 1.9.x is present at runtime (this binary links
+     libgit2.so.1.9; a different major.minor will not load).  Distro
+     packages are usually far older (Rocky/RHEL 8 = 0.26) — build 1.9.x
+     from source into /usr/local/lib64 and run 'sudo ldconfig'.
 'udt-git init'/'clone' then set up the in-session GIT verb in the
 account (needs the CallC library built).
 

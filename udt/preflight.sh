@@ -11,8 +11,10 @@
 #   UDTHOME=/usr/ud83 sh preflight.sh
 #
 # Exit 0 if every hard prerequisite passes (warnings are non-fatal), 1 otherwise.
-# Hard: udt-git present + all shared libs resolve (incl. libgit2 1.9.x), and a
-# real UniData home.  Warn: unirpcd not up, GIT.udt.b missing, session env unset.
+# Hard: udt-git present + all shared libs resolve (incl. libgit2 — this binary
+# links libgit2.so.1.9, i.e. libgit2 1.9.x; a different major.minor will not
+# load), and a real UniData home.  Warn: unirpcd not up, GIT.udt.b missing,
+# session env unset.
 
 fail=0 ; warn=0
 ok()   { printf '  ok   %s\n' "$1"; }
