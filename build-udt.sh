@@ -98,9 +98,13 @@ Manual/standalone install:
      validate the host — MVPKG would do this for you:
        UDTHOME=$UDTHOME sh preflight.sh
      It reports the exact libgit2 soname needed; fix any FAIL first.
-  2. Copy udt-git AND GIT.udt.b together onto the host PATH
-     (e.g. both into \$UDTHOME/bin) — udt-git finds GIT.udt.b beside
-     itself (or via \$MVGIT_VERB / \$UDTHOME/lib/mvgit/GIT.udt.b).
+  2. Install the udt-git binary anywhere on PATH — /usr/local/bin is
+     the recommended spot (nothing ties it to \$UDTHOME/bin; its UniData
+     libs resolve via ldconfig, not an rpath):
+       sudo install -m755 udt-git /usr/local/bin/
+     Then put the in-session verb source where udt-git looks for it —
+     \$UDTHOME/lib/mvgit/GIT.udt.b (or beside the binary, or \$MVGIT_VERB):
+       sudo mkdir -p \$UDTHOME/lib/mvgit && sudo cp GIT.udt.b \$UDTHOME/lib/mvgit/
   3. Ensure the matching libgit2 is present at runtime.  This EL8 build
      links libgit2.so.1.7, from EPEL:
        sudo dnf install epel-release && sudo dnf install libgit2_1.7
