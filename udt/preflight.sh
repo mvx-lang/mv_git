@@ -11,10 +11,10 @@
 #   UDTHOME=/usr/ud83 sh preflight.sh
 #
 # Exit 0 if every hard prerequisite passes (warnings are non-fatal), 1 otherwise.
-# Hard: udt-git present + all shared libs resolve (incl. libgit2 — this binary
-# links libgit2.so.1.9, i.e. libgit2 1.9.x; a different major.minor will not
-# load), and a real UniData home.  Warn: unirpcd not up, GIT.udt.b missing,
-# session env unset.
+# Hard: udt-git present + all shared libs resolve (incl. libgit2 — the binary
+# links a specific libgit2.so.<major.minor>, and a different series will not
+# load; the check reports the exact one it needs), and a real UniData home.
+# Warn: unirpcd not up, GIT.udt.b missing, session env unset.
 
 fail=0 ; warn=0
 ok()   { printf '  ok   %s\n' "$1"; }
@@ -37,29 +37,27 @@ else
   UDTGIT=""
 fi
 
-# 2) shared-library resolution — libgit2 1.9.x is the one that bites, since
-#    the distro's libgit2 is far older; udt-git is built against 1.9.x.
+# 2) shared-library resolution — libgit2 is the one that bites: distros ship a
+#    different major.minor than the binary was built against, and libgit2's
+#    soname is major.minor, so the wrong series won't load.  Report the exact
+#    soname this binary needs, not a hard-coded version.
 if [ -n "$UDTGIT" ] && command -v ldd >/dev/null 2>&1; then
+  need=$(ldd "$UDTGIT" 2>/dev/null | sed -n 's/^[[:space:]]*\(libgit2\.so[0-9.]*\).*/\1/p' | head -1)
   miss=$(ldd "$UDTGIT" 2>/dev/null | awk '/not found/{print $1}' | tr '\n' ' ')
   if [ -n "$miss" ]; then
     bad "unresolved shared libraries: $miss"
     case "$miss" in *libgit2*)
-      note "  -> install libgit2 1.9.x (build from source into /usr/local; run ldconfig)" ;;
+      vv=$(printf '%s' "$need" | sed -n 's/libgit2\.so\.\([0-9]*\.[0-9]*\).*/\1/p')
+      note "  -> this binary needs ${need:-libgit2}; install a matching libgit2"
+      [ -n "$vv" ] && note "     (EPEL: dnf install libgit2_${vv} , or build ${vv}.x from source + ldconfig)" ;;
     esac
   else
     ok "all shared libraries resolve"
   fi
   lg=$(ldd "$UDTGIT" 2>/dev/null | awk '/libgit2/{print $3; exit}')
-  if [ -n "$lg" ]; then
-    real=$(readlink -f "$lg" 2>/dev/null || echo "$lg")
-    ver=$(printf '%s' "$real" | sed -n 's/.*libgit2\.so\.\([0-9][0-9.]*\).*/\1/p')
-    ok "libgit2: $real"
-    case "$ver" in 1.9*|1.[9-9]*|"") : ;;
-      *) note "libgit2 soname is $ver but udt-git targets 1.9.x — verify compatibility" ;;
-    esac
-  fi
+  [ -n "$lg" ] && ok "libgit2: ${need:-libgit2} -> $(readlink -f "$lg" 2>/dev/null || echo "$lg")"
 elif [ -n "$UDTGIT" ]; then
-  note "ldd unavailable — cannot verify libgit2 1.9.x; ensure it is on the runtime path"
+  note "ldd unavailable — cannot verify the libgit2 soname; ensure a matching libgit2 is on the runtime path"
 fi
 
 # 3) the in-session GIT verb source, co-located or findable
