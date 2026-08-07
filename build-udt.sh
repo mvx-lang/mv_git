@@ -68,56 +68,64 @@ for c in gitcallcb mvxgit udtgit_rt; do
 done
 echo "built udt-callc/{gitcallcb,mvxgit,udtgit_rt}.o"
 
-# ---- stage the release into $STAGE (contents at the root) -------------------
-# A proper MVPKG package:
-#   BP/GIT       the in-session verb source — CATGLOBAL compiles + globally
-#                catalogs it (after CALLC registers its functions), then
-#                deploy.verbs:[GIT] points the account's VOC at it.
-#   udt-callc/   the CallC objects + funcs/libs — CALLC aggregates them into
-#                libu2callc.so so GITINIT/GITSTAGE/... resolve.
-#   mvpkg.json   the manifest (its deploy block drives the verb deploy).
-# GIT.udt.b + udt-git are also kept at the root for a manual/standalone install
-# (udt-git finds GIT.udt.b beside itself; see INSTALL.txt).
+# ---- stage the release as a UniData account dir named 'git' -----------------
+# The tar wraps this one dir, so the tarball unpacks to ./git/ — a self-sufficient
+# UniData account (install.sh runs `newacct` on it) you LOGTO and catalog from,
+# exactly as an MVPKG-installed package is an account.  MVPKG consumes the same
+# tarball with `tar --strip-components=1`, landing the contents at its store root.
+#   BP/GIT           the in-session verb source (compiled + GLOBALLY cataloged)
+#   udt-callc/       CallC objects + funcs + libs — aggregated into libu2callc.so
+#   install.sh       standalone host installer (preflight, CallC, global catalog)
+#   udt-callc-build.sh   the CallC aggregator, vendored so standalone needs no MVPKG
+#   mvpkg.json/PKG   package metadata (name mvx-lang/git — the convergence key)
+# GIT.udt.b + udt-git are also kept at the root for a bare manual install.
 ARCH="$(uname -m)"; OS="$(uname -s | tr '[:upper:]' '[:lower:]')"; case "$OS" in *linux*) OS=linux ;; esac
-mkdir -p "$STAGE/BP" "$STAGE/udt-callc"
-cp udt/GIT.udt.b "$STAGE/BP/GIT"
-cp udt/GIT.udt.b "$STAGE/GIT.udt.b"
-cp udt/preflight.sh "$STAGE/preflight.sh"
-cp udt-git "$STAGE/"
-cp mvpkg.json PKG LICENSE README.md "$STAGE/" 2>/dev/null || true
-cp udt-callc/*.o udt-callc/funcs udt-callc/libs "$STAGE/udt-callc/" 2>/dev/null || true
-cat > "$STAGE/INSTALL.txt" <<EOF
-mv_git for Rocket UniData ($OS/$ARCH).
+ACCT="$STAGE/git"
+mkdir -p "$ACCT/BP" "$ACCT/udt-callc"
+cp udt/GIT.udt.b "$ACCT/BP/GIT"
+cp udt/GIT.udt.b "$ACCT/GIT.udt.b"
+cp udt/preflight.sh "$ACCT/preflight.sh"
+cp udt/install.sh "$ACCT/install.sh";            chmod +x "$ACCT/install.sh"
+cp udt/udt-callc-build.sh "$ACCT/udt-callc-build.sh"; chmod +x "$ACCT/udt-callc-build.sh"
+cp udt-git "$ACCT/"
+cp mvpkg.json PKG LICENSE README.md "$ACCT/" 2>/dev/null || true
+cp udt-callc/*.o udt-callc/funcs "$ACCT/udt-callc/" 2>/dev/null || true
+# Generate udt-callc/libs from the ACTUAL libgit2 link flags this build used, so
+# the CallC library links the SAME libgit2 the udt-git binary does (a static
+# shipped libs would drift — e.g. an EPEL 1.7 build must not carry a 1.9 flag).
+printf '%s\n' "$LG2LIBS" > "$ACCT/udt-callc/libs"
+cat > "$ACCT/INSTALL.txt" <<EOF
+mv_git for Rocket UniData ($OS/$ARCH).  This directory IS the package/account.
 
-The easy path is 'MVPKG install mvx-lang/git' — it builds the CallC
-library (from udt-callc/), globally catalogs the in-session GIT verb
-(BP/GIT), and deploys it into the account (mvpkg.json deploy.verbs).
+Easiest:  MVPKG install mvx-lang/git   (if you run the MVPKG client)
 
-Manual/standalone install:
-  1. Install the libgit2 runtime this binary links (see step 3), then
-     validate the host — MVPKG would do this for you:
-       UDTHOME=$UDTHOME sh preflight.sh
-     It reports the exact libgit2 soname needed; fix any FAIL first.
-  2. Install the udt-git binary anywhere on PATH — /usr/local/bin is
-     the recommended spot (nothing ties it to \$UDTHOME/bin; its UniData
-     libs resolve via ldconfig, not an rpath):
-       sudo install -m755 udt-git /usr/local/bin/
-     Then put the in-session verb source where udt-git looks for it —
-     \$UDTHOME/lib/mvgit/GIT.udt.b (or beside the binary, or \$MVGIT_VERB):
-       sudo mkdir -p \$UDTHOME/lib/mvgit && sudo cp GIT.udt.b \$UDTHOME/lib/mvgit/
-  3. Ensure the matching libgit2 is present at runtime.  This EL8 build
-     links libgit2.so.1.7, from EPEL:
-       sudo dnf install epel-release && sudo dnf install libgit2_1.7
-     (A different major.minor will not load; RHEL/Rocky 8 base is 0.26,
-     too old.  'preflight.sh' prints the exact soname this binary needs.)
-'udt-git init'/'clone' then set up the in-session GIT verb in the
-account (needs the CallC library built).
+Standalone (no MVPKG), from inside this directory:
+  1. Install the host prerequisites.  The runtime libgit2 this binary links
+     (libgit2.so.1.7 on EL8) comes straight from EPEL; building libu2callc.so
+     for the in-session GIT verb also needs a C compiler and ncurses' linker
+     lib (UniData's CallC link pulls -lncurses):
+       sudo dnf install epel-release
+       sudo dnf install libgit2_1.7 gcc ncurses-devel
+     (RHEL/Rocky 8 base libgit2 is 0.26, too old.  A build against another
+     libgit2 needs that series instead — preflight.sh prints the exact soname.
+     The udt-git CLI alone needs only libgit2; gcc/ncurses-devel are for the
+     in-session verb's CallC library.)
+  2. Run the installer:
+       ./install.sh
+     It validates the host (preflight.sh), installs the udt-git CLI to
+     /usr/local/bin and GIT.udt.b to \$UDTHOME/lib/mvgit, runs 'newacct' on
+     THIS dir so it is a real account, builds libu2callc.so with the GIT*
+     CallC functions, and compiles + GLOBALLY catalogs the GIT verb — so
+     'GIT status' works in every account.  Needs sudo (writes \$UDTHOME).
+  3. Per account:  udt-git -a <account> init   (the verb + lib are global).
 
-If you installed standalone and later add MVPKG, run 'udt-git register'
-(or any 'udt-git init') so git registers itself with MVPKG — it is then
-managed like an MVPKG-installed package (MVPKG list / update).
+Adopting into MVPKG later:  run 'udt-git register' (or any 'udt-git init'
+once MVPKG is set up).  install.sh stages the CallC fragment under the
+package name mvx-lang/git — identical to an MVPKG-native install — so a
+standalone box that later adopts MVPKG ends up in the same state as one
+where MVPKG installed git from the start.
 
 Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
 Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
 EOF
-echo "build-udt: staged the udt-git package"
+echo "build-udt: staged the udt-git package as ./git/"
