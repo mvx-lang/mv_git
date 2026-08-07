@@ -25,6 +25,10 @@
  * touches a filesystem working tree.  Library calls, not exec: any
  * privilege tier.
  */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L   /* expose gmtime_r in <time.h> under -std=c11 */
+#endif
+
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
 #include <fnmatch.h>
@@ -32,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <strings.h>      /* strcasecmp / strncasecmp */
 #include <sys/stat.h>
 
@@ -1222,12 +1227,40 @@ void mvx_sub_GITLOG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         while (seen < want && git_revwalk_next(&oid, w) == 0) {
             git_commit *c = NULL;
             if (git_commit_lookup(&c, repo, &oid) != 0) break;
-            char sha[8];
-            git_oid_tostr(sha, sizeof sha, &oid);
-            const char *sum = git_commit_summary(c);
-            char line[4200];
-            snprintf(line, sizeof line, "%s %s", sha, sum ? sum : "");
+            /* Standard `git log` layout: a full-SHA "commit" header, Author,
+               Date in the author's own timezone, a blank line, then the message
+               indented four spaces, then a blank separator. */
+            char full[41];
+            git_oid_tostr(full, sizeof full, &oid);
+            const git_signature *au = git_commit_author(c);
+            char line[4300];
+            snprintf(line, sizeof line, "commit %s", full);
             sb_line(&s, line);
+            if (au) {
+                snprintf(line, sizeof line, "Author: %s <%s>",
+                         au->name ? au->name : "", au->email ? au->email : "");
+                sb_line(&s, line);
+                time_t local = (time_t)(au->when.time + (int64_t)au->when.offset * 60);
+                struct tm tmv;
+                gmtime_r(&local, &tmv);
+                char dbuf[64];
+                strftime(dbuf, sizeof dbuf, "%a %b %e %H:%M:%S %Y", &tmv);
+                int off = au->when.offset, ao = off < 0 ? -off : off;
+                snprintf(line, sizeof line, "Date:   %s %c%02d%02d", dbuf,
+                         off < 0 ? '-' : '+', ao / 60, ao % 60);
+                sb_line(&s, line);
+            }
+            sb_line(&s, "");
+            const char *msg = git_commit_message(c);
+            for (const char *p = msg ? msg : ""; *p; ) {
+                const char *nl = strchr(p, '\n');
+                int len = nl ? (int)(nl - p) : (int)strlen(p);
+                snprintf(line, sizeof line, "    %.*s", len, p);
+                sb_line(&s, line);
+                if (!nl) break;
+                p = nl + 1;
+            }
+            sb_line(&s, "");
             git_commit_free(c);
             seen++;
         }

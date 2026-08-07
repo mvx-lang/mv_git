@@ -22,10 +22,18 @@
       SENT = @SENTENCE                 ;* capture BEFORE any PERFORM (overwrites)
       SUB  = FIELD(SENT, " ", 2)
       ARG3 = FIELD(SENT, " ", 3)
-      MSG  = "" ; NW = DCOUNT(SENT, " ")
-      FOR I = 1 TO NW
-         IF FIELD(SENT, " ", I) = "-m" THEN MSG = FIELD(SENT, " ", I + 1)
-      NEXT I
+*     Commit message: everything after `-m ` to the end of the sentence, with one
+*     layer of surrounding quotes stripped.  Space-tokenising (FIELD) would cut a
+*     multi-word "..." message at its first space and keep the opening quote.
+      MSG = "" ; MP = INDEX(SENT, " -m ", 1)
+      IF MP > 0 THEN
+         MSG = TRIM(SENT[MP + 4, LEN(SENT)])
+         ML = LEN(MSG)
+         IF ML >= 2 THEN
+            QC = MSG[1,1]
+            IF (QC = CHAR(34) OR QC = CHAR(39)) AND MSG[ML,1] = QC THEN MSG = MSG[2, ML - 2]
+         END
+      END
       OPENFMT = 0
       IF INDEX(SENT, " -o", 1) # 0 OR INDEX(SENT, " --open", 1) # 0 THEN OPENFMT = 1
 *
@@ -40,8 +48,9 @@
          SKIPOBJ = 1                     ;* -A skips compiled objects by default
          GOSUB ADDALL
          PRINT NSTAGED : " record(s) staged across " : NFILES : " file(s)"
+         IF NSKIP > 0 THEN PRINT NSKIP : " virtual file(s) skipped (SQL catalog / DataView — no data to stage)"
       CASE SUB = "ADD"
-         FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0  ;* explicit: all
+         FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0 ; BLANKET = 0  ;* explicit: all
          GOSUB STAGEDATA
          PRINT NSTAGED : " record(s) staged"
       CASE SUB = "COMMIT"
@@ -69,7 +78,7 @@
 *  clobber each other), then stage each file's data + dictionary (+ open-form
 *  controls).
    ADDALL:
-      NSTAGED = 0 ; NFILES = 0 ; FILES = ""
+      NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0
       OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
       SELECT VOCF
       LOOP WHILE READNEXT VID DO
@@ -144,7 +153,13 @@
 *  Stage FILE's data records.  When staging the master VOC in the open form,
 *  drop the auto-created system items the destination supplies its own of.
    STAGEDATA:
-      OPEN FILE TO DF ELSE PRINT "GIT: cannot open ":FILE ; RETURN
+*     A blanket -A walks every VOC F/DIR pointer, including virtual ones (SQL
+*     catalog, DataView subfiles) that cannot be opened — skip those quietly and
+*     count them; an explicit `ADD <file>` names one file, so still report it.
+      OPEN FILE TO DF ELSE
+         IF BLANKET THEN NSKIP += 1 ELSE PRINT "GIT: cannot open " : FILE
+         RETURN
+      END
       SELECT DF
       LOOP WHILE READNEXT RID DO
          READ RREC FROM DF, RID THEN
