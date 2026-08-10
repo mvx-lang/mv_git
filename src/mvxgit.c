@@ -241,7 +241,11 @@ static int repo_open(const char *path, git_repository **repo,
         return -1;
     if (index) {
         char ipath[4200];
-        snprintf(ipath, sizeof ipath, "%s/index", path);
+        /* Use the RESOLVED git dir — git_repository_path handles a submodule's
+           gitlink `.git` FILE; "<path>/index" would be ".git/index" and fail
+           with ENOTDIR when .git is a file rather than a directory. */
+        const char *gd = git_repository_path(*repo);
+        snprintf(ipath, sizeof ipath, "%sindex", gd ? gd : "");
         if (git_index_open(index, ipath) != 0) {
             git_repository_free(*repo);
             return -1;
@@ -1728,7 +1732,9 @@ static void materialize_tree(mv_ctx *ctx, git_repository *repo,
 static void sync_index(git_repository *repo, const char *rp,
                        git_tree *tree) {
     char ipath[4200];
-    snprintf(ipath, sizeof ipath, "%s/index", rp);
+    const char *gd = git_repository_path(repo);   /* submodule-safe git dir */
+    snprintf(ipath, sizeof ipath, "%sindex", gd ? gd : "");
+    (void)rp;
     git_index *idx = NULL;
     if (git_index_open(&idx, ipath) == 0) {
         git_index_read_tree(idx, tree);

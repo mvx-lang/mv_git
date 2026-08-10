@@ -334,12 +334,26 @@ static void materialize_clone(const char *acct) {
    `mvx.openaccount` (the core.autocrlf analogue).  These read/set it in the
    account's .git/config and surface it to the runtime as $MVX_OPENACCOUNT, so
    both the in-process engine and the mvx-git-adopt subprocess honour it. */
+/* Fill BUF with the account's REAL git config path.  git_repository_path
+   resolves a submodule's gitlink `.git` FILE to the true git dir (e.g.
+   .git/modules/<path>/), so config reads/writes work for submodules too — a
+   hardcoded "<acct>/.git/config" does not exist when .git is a file. */
+static void real_config_path(const char *acct, char *buf, size_t n) {
+    git_libgit2_init();
+    git_repository *gr = NULL;
+    if (git_repository_open(&gr, acct) == 0) {
+        snprintf(buf, n, "%sconfig", git_repository_path(gr));
+        git_repository_free(gr);
+    } else {
+        snprintf(buf, n, "%s/.git/config", acct);
+    }
+}
+
 static int open_config_on(const char *acct) {
-    /* Read `mvx.openaccount` straight from the account's .git/config.  A plain
-       text scan (not libgit2) so the result is identical across libgit2
-       versions — get_bool behaved differently on the CI toolchain. */
-    char cfgpath[PATH_MAX + 16];
-    snprintf(cfgpath, sizeof cfgpath, "%s/.git/config", acct);
+    /* Plain text scan (not libgit2 get_bool) so the result is identical across
+       libgit2 versions — get_bool behaved differently on the CI toolchain. */
+    char cfgpath[PATH_MAX + 64];
+    real_config_path(acct, cfgpath, sizeof cfgpath);
     FILE *f = fopen(cfgpath, "r");
     if (!f) return 0;
     char line[512];
@@ -362,8 +376,8 @@ static int open_config_on(const char *acct) {
 }
 
 static void open_config_set(const char *acct) {
-    char cfgpath[PATH_MAX + 16];
-    snprintf(cfgpath, sizeof cfgpath, "%s/.git/config", acct);
+    char cfgpath[PATH_MAX + 64];
+    real_config_path(acct, cfgpath, sizeof cfgpath);
     git_libgit2_init();
     git_config *cfg = NULL;
     if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
@@ -594,7 +608,9 @@ static void setup_textconv(void) {
 #endif
     git_libgit2_init();
     git_config *cfg = NULL;
-    if (git_config_open_ondisk(&cfg, ".git/config") == 0) {
+    char icfg[PATH_MAX + 64];
+    real_config_path(".", icfg, sizeof icfg);
+    if (git_config_open_ondisk(&cfg, icfg) == 0) {
         char val[PATH_MAX + 16];
         snprintf(val, sizeof val, "%s textconv", self);
         git_config_set_string(cfg, "diff.mvxrec.textconv", val);
