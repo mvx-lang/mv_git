@@ -6,6 +6,7 @@
   "systems": ["mvx", "udt"],
   "dependencies": ["mvx-lang/cmd"],
   "clibs": ["libgit2.so:>=1.7,<2.8"],
+  "shell": ["sudo", "chown", "cp", "install", "mkdir", "gcc", "udt-callc-build", "git", "ldd", "ldconfig", "id", "ls", "awk", "od"],
   "deploy": {
     "verbs": ["GIT"],
     "fallback": { "cmd": ["CMD.BP"] }
