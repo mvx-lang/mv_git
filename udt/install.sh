@@ -38,6 +38,25 @@ say() { printf 'install: %s\n' "$1"; }
 die() { printf 'install: %s\n' "$1" >&2; exit 1; }
 [ -d "$UDTHOME" ] && [ -x "$UDT" ] || die "UDTHOME=$UDTHOME is not a UniData install (set UDTHOME)"
 command -v sudo >/dev/null 2>&1 || die "sudo not found — needed for \$UDTHOME and /usr/local/bin writes"
+
+# fixperms mode:  ./install.sh fixperms [<user>]
+# Hand GIT's artifacts (this account, the global GIT verb, its CallC fragment +
+# the shared CallC library) to the operator — repair a root-owned standalone
+# install so it can be adopted/upgraded, or move it to a new operator.  git-only
+# (MVPKG fixperms does the same for every managed package).  Needs sudo (the
+# global catalog + CallC library are DBA-owned); short-circuits before the build.
+if [ "${1:-}" = fixperms ]; then
+  TU="${2:-$OWNER}"
+  id "$TU" >/dev/null 2>&1 || die "no such user '$TU' — usage: ./install.sh fixperms [<user>]"
+  TG="$(id -gn "$TU" 2>/dev/null || echo "$TU")"
+  say "fixperms: handing git's files to '$TU:$TG'"
+  sudo chown -R "$TU:$TG" "$HERE" 2>/dev/null || true
+  sudo chown "$TU:$TG" "$UDTHOME/bin/libu2callc.so" 2>/dev/null || true
+  sudo chown -R "$TU:$TG" "$UDTHOME/callc.d/mvx-lang_git" 2>/dev/null || true
+  sudo chown "$TU:$TG" "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null || true
+  say "fixperms: done — GIT can be re-cataloged / adopted as '$TU' now"
+  exit 0
+fi
 # Building libu2callc.so compiles the UniData CallC glue (gencdef/genefs/genfunc
 # emit C, which gcc then compiles + links), so a C compiler is a hard prereq for
 # the in-session GIT verb — the udt-git CLI alone does not need it.
@@ -103,6 +122,11 @@ UDTHOME="$UDTHOME" PATH="$UDTHOME/bin:$PATH" sh "$HERE/udt-callc-build.sh" add "
 #    catalog dirs user-writable so any account can catalog (unlike $UDTHOME/bin,
 #    which is why step 3 needs sudo).  Verify by the catalog ENTRY, not udt's exit
 #    code — a piped `udt` exits 0 even when an internal command (CATALOG) fails.
+# Auto-repair: an earlier `sudo ./install.sh` (before this re-execed as the
+# operator) may have left CTLG/<c>/GIT root-owned, so this re-catalog would fail
+# with 'Copy catalog file error'.  We run as the operator now but still have sudo
+# — hand it back first (a fresh install is a harmless no-op).
+sudo chown "$OWNER:$GROUP" "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null || true
 say "compiling + globally cataloging the GIT verb"
 ( cd "$HERE" && printf 'BASIC BP GIT\nCATALOG BP GIT FORCE\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
 if ls "$UDTHOME"/sys/CTLG/*/GIT >/dev/null 2>&1; then
