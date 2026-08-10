@@ -1,9 +1,9 @@
 #!/bin/sh
-# VENDORED VERBATIM from mvx-lang/mv_package (udt/udt-callc-build.sh).  Keep it a
-# byte-for-byte copy: a standalone udt-git install (install.sh) uses this to
-# stage its CallC fragment EXACTLY as an MVPKG install would, so a box that
+# VENDORED VERBATIM from mvx-lang/mv_package (udt/udt-callc-build.sh).  Keep the
+# body a byte-for-byte copy of upstream: a standalone udt-git install (install.sh)
+# stages its CallC fragment EXACTLY as an MVPKG install would, so a box that
 # installs git standalone and later adopts MVPKG converges on the identical
-# libu2callc.so.  If the upstream changes, re-vendor rather than editing here.
+# libu2callc.so.  If upstream changes, re-vendor rather than editing here.
 #
 # mv_package — rebuild UniData's shared CallC library from every installed
 # package that compiles native code into UniData.
@@ -36,6 +36,12 @@
 set -e
 
 : "${UDTHOME:?set UDTHOME to your UniData home (e.g. /usr/ud83)}"
+# The UniData generators this runs (gencdef/genefs/genfunc) and the other udt
+# tools it relies on live in $UDTHOME/bin.  A UniData LOGIN shell has that on
+# PATH, but MVPKG's MVPKGOS "CALLC" op invokes this from a piped, NON-login udt
+# session (EXECUTE '!udt-callc-build ...') whose PATH may not — so put it on PATH
+# here rather than trust the caller's environment (else: "gencdef: not found").
+PATH="$UDTHOME/bin:$PATH"; export PATH
 SUDO=${SUDO-sudo}
 CALLCD="${UDT_CALLCD:-$UDTHOME/callc.d}"   # one subdir per contributing package
 WORK="$UDTHOME/bin/work"                   # UniData's generators + efsdef + libuvic.a
@@ -59,6 +65,15 @@ remove)
 	$SUDO rm -rf "${CALLCD:?}/$pkg"
 	echo "udt-callc: unstaged $pkg" ;;
 esac
+
+# Every path below (re)links the library and needs a compiler.  A no-callc `add`
+# already exited 0 above, so this only gates packages that actually contribute
+# native code — fail early and clearly rather than deep in the gcc invocations.
+command -v gcc >/dev/null 2>&1 || {
+	echo "udt-callc: gcc not found — CallC packages need a compiler to (re)link $LIB." >&2
+	echo "udt-callc: install it (e.g. 'sudo dnf install -y gcc') plus any package -devel libs, then retry." >&2
+	exit 3
+}
 
 BUILD=$(mktemp -d "${TMPDIR:-/tmp}/udtcallc.XXXXXX")
 trap 'rm -rf "$BUILD"' EXIT

@@ -25,8 +25,13 @@ set -e
 UDTHOME="${UDTHOME:-/usr/ud83}"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 LANG_OK="${LANG:-en_US.UTF-8}"; case "$LANG_OK" in C.UTF-8|POSIX|C) LANG_OK=en_US.UTF-8 ;; esac
-OWNER="${UDT_OWNER:-${SUDO_USER:-$(id -un)}}"
-GROUP="${UDT_GROUP:-$(id -gn "$OWNER" 2>/dev/null || id -gn)}"
+# The operator: an explicit UDT_OWNER, else whoever owns this unpacked release
+# (they unpacked it as themselves).  Robust whether we were started with sudo, su,
+# or a plain root login — unlike $SUDO_USER, which is unset under `su -`/a root
+# shell.  Fall back to the current user only if the dir owner is unreadable/root.
+OWNER="${UDT_OWNER:-$(ls -ld "$HERE" 2>/dev/null | awk 'NR==1{print $3}')}"
+[ -n "$OWNER" ] && [ "$OWNER" != root ] || OWNER="$(id -un)"
+GROUP="${UDT_GROUP:-$(id -gn "$OWNER" 2>/dev/null || echo "$OWNER")}"
 UDT="$UDTHOME/bin/udt"
 
 say() { printf 'install: %s\n' "$1"; }
@@ -42,6 +47,21 @@ command -v gcc >/dev/null 2>&1 || die "gcc not found — the CallC build needs a
 # actually trying to link, so the message is right whatever the distro layout.
 printf 'int main(void){return 0;}\n' | gcc -xc - -lncurses -o /dev/null 2>/dev/null \
   || die "the CallC link needs -lncurses — install ncurses-devel: sudo dnf install -y ncurses-devel"
+
+# Do the operator-level work (newacct here + the GLOBAL catalog of GIT) AS THE
+# OPERATOR, not root: root is needed only for the /usr/local/bin + $UDTHOME writes,
+# which the steps below elevate with sudo themselves.  A standalone install that
+# catalogs GIT as root leaves CTLG/<c>/GIT root-owned — then adopting this box into
+# MVPKG and running `MVPKG update mvx-lang/git` (which re-catalogs GIT as the
+# operator) fails with 'Copy catalog file error'.  So if we are root ("am I root"
+# is `id -u`, NOT $SUDO_USER, which is unset under `su -`) but the operator is
+# someone else, re-exec as them; their sudo then elevates only the few root writes.
+if [ "$(id -u)" = 0 ] && [ "$OWNER" != root ]; then
+  id "$OWNER" >/dev/null 2>&1 || die "operator '$OWNER' is not a user — set UDT_OWNER"
+  say "root invocation: re-running as the operator '$OWNER' (root elevates only /usr/local/bin + \$UDTHOME writes)"
+  exec sudo -u "$OWNER" UDTHOME="$UDTHOME" LANG="$LANG_OK" \
+    UDT_OWNER="$OWNER" UDT_GROUP="$GROUP" -- "$HERE/$(basename -- "$0")" "$@"
+fi
 
 # 0) validate the host (libgit2, shared libs, UniData up) — same check MVPKG runs
 say "preflight"
