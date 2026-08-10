@@ -453,6 +453,22 @@ static int is_mv_file(const char *acct, const char *n) {
     return stat(p, &sb) == 0;
 }
 
+/* True when NAME (an account entry) is gitignored.  Step 1 (git's own add)
+ * already skips ignored plain files, but step 2 stages MV files record-by-record
+ * and would otherwise bypass .gitignore — e.g. a derived LIB/ has a LIB.DICT so
+ * it looks like an MV file and its *.dylib records would be staged.  Checked
+ * with a trailing "/" too, since a rule like `LIB/` matches the directory. */
+static int is_ignored(git_repository *gr, const char *name) {
+    if (!gr || !name || !*name) return 0;
+    int ig = 0;
+    if (git_ignore_path_is_ignored(&ig, gr, name) == 0 && ig) return 1;
+    char slash[PATH_MAX];
+    snprintf(slash, sizeof slash, "%s/", name);
+    ig = 0;
+    if (git_ignore_path_is_ignored(&ig, gr, slash) == 0 && ig) return 1;
+    return 0;
+}
+
 static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
     char *out = NULL;
 
@@ -461,6 +477,8 @@ static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
     free(r);
 
     if (is_account(acct)) {                          /* 2. MV files, canonical */
+        git_repository *gr = NULL;                    /* for .gitignore checks */
+        git_repository_open(&gr, repo);
         DIR *d = opendir(acct);
         struct dirent *e;
         while (d && (e = readdir(d))) {
@@ -471,6 +489,7 @@ static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
             struct stat sb;
             if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
             if (!is_mv_file(acct, n)) continue;
+            if (is_ignored(gr, n)) continue;          /* honour .gitignore (e.g. LIB/) */
             r = mv_git_add(ctx, repo, n, "");
             join(&out, r);
             free(r);
@@ -504,7 +523,8 @@ static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
                     struct stat ns;
                     /* on-disk directories were handled above; stage only the
                        files that have no directory, i.e. the LMDB hash files. */
-                    if (stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) {
+                    if ((stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) &&
+                        !is_ignored(gr, name)) {
                         r = mv_git_add(ctx, repo, name, "");
                         join(&out, r);
                         free(r);
@@ -534,6 +554,7 @@ static char *add_all(mv_ctx *ctx, const char *repo, const char *acct) {
             join(&out, r);
             free(r);
         }
+        if (gr) git_repository_free(gr);
     }
     return out ? out : strdup("nothing to stage");
 }
