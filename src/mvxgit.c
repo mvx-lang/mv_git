@@ -2231,6 +2231,104 @@ void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* GITREMOTE(repo, action, name, url, out) — manage remotes without the OS git:
+   no action (or "list") prints "<name>\t<url>" lines; "add"/"set-url"/"remove"
+   configure one.  Needed to point a GIT INIT'd repo at a remote before push/pull
+   (a clone sets origin already) — and the only way to do it on a backend with no
+   OS git to pass `git remote` through to (D3). */
+void mvx_sub_GITREMOTE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 5) return;
+    ensure_init();
+    char rp[4096], act[64], name[256], url[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], act, sizeof act);
+    arg_str(argv[2], name, sizeof name);
+    arg_str(argv[3], url, sizeof url);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[4], "open"); return; }
+
+    if (!act[0] || strcasecmp(act, "list") == 0 || strcmp(act, "-v") == 0) {
+        sbuf s = {0, 0, 0};
+        git_strarray rs = {0, 0};
+        if (git_remote_list(&rs, repo) == 0) {
+            for (size_t i = 0; i < rs.count; i++) {
+                git_remote *rem = NULL;
+                const char *u = "";
+                if (git_remote_lookup(&rem, repo, rs.strings[i]) == 0)
+                    u = git_remote_url(rem) ? git_remote_url(rem) : "";
+                char line[4400];
+                snprintf(line, sizeof line, "%s\t%s", rs.strings[i], u);
+                sb_line(&s, line);
+                if (rem) git_remote_free(rem);
+            }
+            git_strarray_dispose(&rs);
+        }
+        git_repository_free(repo);
+        sb_out(&s, argv[4], "no remotes");
+        return;
+    }
+
+    int rc;
+    if (strcasecmp(act, "add") == 0) {
+        git_remote *rem = NULL;
+        rc = git_remote_create(&rem, repo, name, url);
+        if (rem) git_remote_free(rem);
+    } else if (strcasecmp(act, "set-url") == 0) {
+        rc = git_remote_set_url(repo, name, url);
+    } else if (strcasecmp(act, "remove") == 0 || strcasecmp(act, "rm") == 0) {
+        rc = git_remote_delete(repo, name);
+    } else {
+        git_repository_free(repo);
+        fail(argv[4], "usage: remote [add|set-url|remove] <name> [url]");
+        return;
+    }
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[4], "remote"); return; }
+    char out[400];
+    snprintf(out, sizeof out, "remote %s %s", act, name);
+    mv_set_str(argv[4], out, (int64_t)strlen(out));
+}
+
+/* GITCONFIG(repo, key, value, out) — get (empty value) or set repo config.  The
+   only way to set commit identity (user.name/user.email) or mvx.openaccount on a
+   backend with no OS git to run `git config` (D3).  Get of an unset key is "",
+   not an error. */
+void mvx_sub_GITCONFIG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], key[256], val[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], key, sizeof key);
+    arg_str(argv[2], val, sizeof val);
+    if (!key[0]) { fail(argv[3], "usage: config <key> [value]"); return; }
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
+    git_config *cfg = NULL;
+    if (git_repository_config(&cfg, repo) != 0) {
+        git_repository_free(repo); fail(argv[3], "config"); return;
+    }
+    if (val[0]) {                                   /* set */
+        if (git_config_set_string(cfg, key, val) == 0) {
+            char out[4400];
+            snprintf(out, sizeof out, "%s = %s", key, val);
+            mv_set_str(argv[3], out, (int64_t)strlen(out));
+        } else {
+            fail(argv[3], "set");
+        }
+    } else {                                        /* get (unset -> "") */
+        git_buf b = GIT_BUF_INIT;
+        if (git_config_get_string_buf(&b, cfg, key) == 0 && b.ptr)
+            mv_set_str(argv[3], b.ptr, (int64_t)strlen(b.ptr));
+        else
+            mv_set_str(argv[3], "", 0);
+        git_buf_dispose(&b);
+    }
+    git_config_free(cfg);
+    git_repository_free(repo);
+}
+
 /* --- remotes & clone (libgit2, no OS git) — mvx#94 / mvpkg#23 -------------
    Pure-engine transport so the GIT verb OWNS clone/fetch/pull/push: each runs at
    any tier (no shell, no `!` gate), and a backend-swapped build reuses the same
@@ -2653,4 +2751,13 @@ char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char 
 char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch) {
     const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
     return run_sub(mvx_sub_GITPULL, ctx, a, 3);
+}
+char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
+                    const char *name, const char *url) {
+    const char *a[] = {repo, action ? action : "", name ? name : "", url ? url : ""};
+    return run_sub(mvx_sub_GITREMOTE, ctx, a, 4);
+}
+char *mv_git_config(mv_ctx *ctx, const char *repo, const char *key, const char *value) {
+    const char *a[] = {repo, key ? key : "", value ? value : ""};
+    return run_sub(mvx_sub_GITCONFIG, ctx, a, 3);
 }
