@@ -2067,20 +2067,13 @@ static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
     return rc;
 }
 
-/* GITMERGE(repo, revspec, out) — merge `revspec` into HEAD.  `revspec` is any
-   commit-ish (a local branch, a remote-tracking ref origin/main, FETCH_HEAD so
-   pull reuses this, or a raw SHA), so the tree merge + re-materialise path serves
-   both `merge` and `pull`.  Fast-forwards when HEAD is an ancestor (the common
-   pull), reports up-to-date, and otherwise makes a real merge commit — with
-   record-level conflicts surfaced by finish_merge. */
-void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
-    if (argc < 3) return;
-    ensure_init();
-    char rp[4096], name[256];
-    arg_str(argv[0], rp, sizeof rp);
-    arg_str(argv[1], name, sizeof name);
-    git_repository *repo = NULL;
-    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+/* Merge commit-ish NAME into HEAD of an already-open REPO (caller frees repo).
+   NAME is anything git_revparse resolves — a local branch, a remote-tracking ref
+   (origin/main), FETCH_HEAD (so pull reuses this), or a SHA.  Fast-forwards when
+   HEAD is an ancestor, reports up-to-date, else makes a real merge commit; record
+   conflicts surfaced by finish_merge.  One path for both `merge` and `pull`. */
+static void merge_into_head(mv_ctx *ctx, git_repository *repo, const char *rp,
+                            const char *name, mv_value *out) {
     git_object *ho = NULL, *to = NULL;
     git_commit *ours = NULL, *theirs = NULL;
     git_annotated_commit *ann = NULL;
@@ -2090,7 +2083,7 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (rc == 0) rc = git_commit_lookup(&ours, repo, git_object_id(ho));
     if (rc == 0) rc = git_revparse_single(&to, repo, name);
     if (rc == 0) rc = git_commit_lookup(&theirs, repo, git_object_id(to));
-    if (rc != 0) { fail(argv[2], "no such revision"); goto done; }
+    if (rc != 0) { fail(out, "no such revision"); goto done; }
 
     git_merge_analysis_t an = GIT_MERGE_ANALYSIS_NONE;
     git_merge_preference_t pref = GIT_MERGE_PREFERENCE_NONE;
@@ -2100,23 +2093,23 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
 
     if (an & GIT_MERGE_ANALYSIS_UP_TO_DATE) {
-        mv_set_str(argv[2], "already up to date", 18);
+        mv_set_str(out, "already up to date", 18);
     } else if (an & GIT_MERGE_ANALYSIS_FASTFORWARD) {
         if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd) != 0) {
-            fail(argv[2], "fast-forward");
+            fail(out, "fast-forward");
         } else {
-            char out[300];
-            snprintf(out, sizeof out,
+            char msg[300];
+            snprintf(msg, sizeof msg,
                      "fast-forward (%lld record(s) updated, %lld removed)",
                      (long long)nw, (long long)nd);
-            mv_set_str(argv[2], out, (int64_t)strlen(out));
+            mv_set_str(out, msg, (int64_t)strlen(msg));
         }
     } else if (git_merge_commits(&mindex, repo, ours, theirs, NULL) == 0) {
         char msg[300];
         snprintf(msg, sizeof msg, "Merge '%s'", name);
-        finish_merge(ctx, repo, rp, mindex, ours, theirs, msg, argv[2]);
+        finish_merge(ctx, repo, rp, mindex, ours, theirs, msg, out);
     } else {
-        fail(argv[2], "merge");
+        fail(out, "merge");
     }
 done:
     if (mindex) git_index_free(mindex);
@@ -2125,7 +2118,180 @@ done:
     if (ours) git_commit_free(ours);
     if (to) git_object_free(to);
     if (ho) git_object_free(ho);
+}
+
+/* GITMERGE(repo, revspec, out) — merge revspec into HEAD. */
+void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    merge_into_head(ctx, repo, rp, name, argv[2]);
     git_repository_free(repo);
+}
+
+/* GITFETCH(repo, remote, out) — fetch REMOTE (default origin), updating the
+   remote-tracking refs; no working-tree change (records untouched). */
+void mvx_sub_GITFETCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], rn[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], rn, sizeof rn);
+    if (!rn[0]) snprintf(rn, sizeof rn, "origin");
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_remote *rem = NULL;
+    int rc = git_remote_lookup(&rem, repo, rn);
+    if (rc == 0) {
+        git_fetch_options fo = GIT_FETCH_OPTIONS_INIT;
+        rc = git_remote_fetch(rem, NULL, &fo, NULL);
+    }
+    if (rem) git_remote_free(rem);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[2], "fetch"); return; }
+    char out[300];
+    snprintf(out, sizeof out, "fetched %s", rn);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
+}
+
+/* GITPUSH(repo, remote, refspec, out) — push REFSPEC (default: the current
+   branch) to REMOTE (default origin).  Needs a writable remote; public transport
+   only for now (add a credential callback for authenticated pushes). */
+void mvx_sub_GITPUSH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], rn[256], spec[512];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], rn, sizeof rn);
+    arg_str(argv[2], spec, sizeof spec);
+    if (!rn[0]) snprintf(rn, sizeof rn, "origin");
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
+    char specbuf[700];
+    specbuf[0] = '\0';
+    if (!spec[0]) {                                    /* current branch */
+        git_reference *head = NULL;
+        if (git_repository_head(&head, repo) == 0) {
+            const char *hn = git_reference_name(head);
+            snprintf(specbuf, sizeof specbuf, "%s:%s", hn, hn);
+            git_reference_free(head);
+        }
+    } else if (strchr(spec, ':') || strncmp(spec, "refs/", 5) == 0) {
+        snprintf(specbuf, sizeof specbuf, "%s", spec);
+    } else {                                           /* bare branch name */
+        snprintf(specbuf, sizeof specbuf, "refs/heads/%s:refs/heads/%s", spec, spec);
+    }
+    git_remote *rem = NULL;
+    int rc = specbuf[0] ? git_remote_lookup(&rem, repo, rn) : -1;
+    if (rc == 0) {
+        char *specs[1] = {specbuf};
+        git_strarray arr = {specs, 1};
+        git_push_options po = GIT_PUSH_OPTIONS_INIT;
+        rc = git_remote_push(rem, &arr, &po);
+    }
+    if (rem) git_remote_free(rem);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[3], "push"); return; }
+    char out[800];
+    snprintf(out, sizeof out, "pushed %s to %s", specbuf, rn);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
+}
+
+/* GITPULL(repo, remote, branch, out) — fetch then merge into HEAD, re-materialising
+   records (a plain `git pull` refuses: our working tree is the native form).
+   Merges refs/remotes/<remote>/<branch>, or FETCH_HEAD when no branch is named. */
+void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], rn[256], br[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], rn, sizeof rn);
+    arg_str(argv[2], br, sizeof br);
+    if (!rn[0]) snprintf(rn, sizeof rn, "origin");
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
+    git_remote *rem = NULL;
+    int rc = git_remote_lookup(&rem, repo, rn);
+    if (rc == 0) {
+        git_fetch_options fo = GIT_FETCH_OPTIONS_INIT;
+        rc = git_remote_fetch(rem, NULL, &fo, NULL);
+    }
+    if (rem) git_remote_free(rem);
+    if (rc != 0) { git_repository_free(repo); fail(argv[3], "fetch"); return; }
+    char mref[320];
+    if (br[0]) snprintf(mref, sizeof mref, "refs/remotes/%s/%s", rn, br);
+    else       snprintf(mref, sizeof mref, "FETCH_HEAD");
+    merge_into_head(ctx, repo, rp, mref, argv[3]);
+    git_repository_free(repo);
+}
+
+/* --- remotes & clone (libgit2, no OS git) — mvx#94 / mvpkg#23 -------------
+   Pure-engine transport so the GIT verb OWNS clone/fetch/pull/push: each runs at
+   any tier (no shell, no `!` gate), and a backend-swapped build reuses the same
+   code — the path a D3/UniVerse `.git`-in-an-MV-file store needs.  Public
+   transport for now (no credential callback yet; the udt libgit2 must be built
+   with USE_HTTPS=ON for https remotes). */
+
+/* GITCLONE(url, dir, ref, out) — clone URL into DIR as a plain working-tree clone
+   (what a source package needs), then check REF out if given: a branch becomes a
+   local tracking branch, a tag or raw SHA detaches HEAD. */
+void mvx_sub_GITCLONE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char url[4096], dir[4096], ref[256];
+    arg_str(argv[0], url, sizeof url);
+    arg_str(argv[1], dir, sizeof dir);
+    arg_str(argv[2], ref, sizeof ref);
+    if (!url[0] || !dir[0]) { fail(argv[3], "usage: clone <url> <dir> [ref]"); return; }
+
+    git_repository *repo = NULL;
+    git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
+    if (git_clone(&repo, url, dir, &opts) != 0) { fail(argv[3], "clone"); return; }
+
+    if (ref[0]) {
+        int rc = -1;
+        char heads[300], remote[300];
+        snprintf(heads, sizeof heads, "refs/heads/%s", ref);
+        snprintf(remote, sizeof remote, "refs/remotes/origin/%s", ref);
+        git_reference *lr = NULL, *rr = NULL;
+        git_object *obj = NULL;
+        if (git_reference_lookup(&lr, repo, heads) == 0) {   /* already local (default) */
+            rc = git_repository_set_head(repo, heads);
+            git_reference_free(lr);
+        } else if (git_reference_lookup(&rr, repo, remote) == 0) {  /* remote branch */
+            git_commit *c = NULL;
+            git_reference *nb = NULL;
+            if (git_commit_lookup(&c, repo, git_reference_target(rr)) == 0) {
+                if (git_branch_create(&nb, repo, ref, c, 0) == 0) {
+                    git_reference_free(nb);
+                    rc = git_repository_set_head(repo, heads);
+                }
+                git_commit_free(c);
+            }
+            git_reference_free(rr);
+        } else if (git_revparse_single(&obj, repo, ref) == 0) {   /* tag or SHA */
+            rc = git_repository_set_head_detached(repo, git_object_id(obj));
+        }
+        if (obj) git_object_free(obj);
+        if (rc == 0) {
+            git_checkout_options co = GIT_CHECKOUT_OPTIONS_INIT;
+            co.checkout_strategy = GIT_CHECKOUT_FORCE;
+            rc = git_checkout_head(repo, &co);
+        }
+        if (rc != 0) { git_repository_free(repo); fail(argv[3], "no such ref"); return; }
+    }
+    git_repository_free(repo);
+    char out[4500];
+    if (ref[0]) snprintf(out, sizeof out, "cloned %s -> %s @ %s", url, dir, ref);
+    else        snprintf(out, sizeof out, "cloned %s -> %s", url, dir);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
 /* GITCHERRYPICK(repo, commitish, out) — apply one commit onto HEAD. */
@@ -2471,4 +2637,20 @@ char *mv_git_cherrypick(mv_ctx *ctx, const char *repo, const char *commit) {
 char *mv_git_restore(mv_ctx *ctx, const char *repo, const char *file) {
     const char *a[] = {repo, file};
     return run_sub(mvx_sub_GITRESTORE, ctx, a, 2);
+}
+char *mv_git_clone(mv_ctx *ctx, const char *url, const char *dir, const char *ref) {
+    const char *a[] = {url, dir, ref ? ref : ""};
+    return run_sub(mvx_sub_GITCLONE, ctx, a, 3);
+}
+char *mv_git_fetch(mv_ctx *ctx, const char *repo, const char *remote) {
+    const char *a[] = {repo, remote ? remote : ""};
+    return run_sub(mvx_sub_GITFETCH, ctx, a, 2);
+}
+char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char *refspec) {
+    const char *a[] = {repo, remote ? remote : "", refspec ? refspec : ""};
+    return run_sub(mvx_sub_GITPUSH, ctx, a, 3);
+}
+char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch) {
+    const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
+    return run_sub(mvx_sub_GITPULL, ctx, a, 3);
 }

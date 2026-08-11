@@ -126,5 +126,10 @@ char *mv_git_checkout(mv_ctx *ctx, const char *repo, const char *name);
 char *mv_git_merge(mv_ctx *ctx, const char *repo, const char *branch);
 char *mv_git_cherrypick(mv_ctx *ctx, const char *repo, const char *commit);
 char *mv_git_restore(mv_ctx *ctx, const char *repo, const char *file);
+/* remotes & clone (libgit2, no OS git) — mvx#94 / mvpkg#23 */
+char *mv_git_clone(mv_ctx *ctx, const char *url, const char *dir, const char *ref);
+char *mv_git_fetch(mv_ctx *ctx, const char *repo, const char *remote);
+char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char *refspec);
+char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch);
 
 #endif /* MVXGIT_H */

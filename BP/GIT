@@ -35,4 +35,8 @@ CALL CMD.ADD("BRANCH", "list or create a branch (name)", "GIT.BRANCH")
 CALL CMD.ADD("CHECKOUT", "switch branch, update records (name)", "GIT.CHECKOUT")
 CALL CMD.ADD("MERGE", "merge a branch into this one (name)", "GIT.MERGE")
 CALL CMD.ADD("CHERRY-PICK", "apply one commit (commit)", "GIT.CHERRYPICK")
+CALL CMD.ADD("CLONE", "clone a repo into a dir (url dir {ref})", "GIT.CLONE")
+CALL CMD.ADD("FETCH", "fetch a remote ({remote})", "GIT.FETCH")
+CALL CMD.ADD("PULL", "fetch + merge, re-materialising ({remote} {branch})", "GIT.PULL")
+CALL CMD.ADD("PUSH", "push to a remote ({remote} {refspec})", "GIT.PUSH")
 CALL CMD.RUN
