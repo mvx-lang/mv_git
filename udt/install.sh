@@ -127,6 +127,19 @@ UDTHOME="$UDTHOME" PATH="$UDTHOME/bin:$PATH" sh "$HERE/udt-callc-build.sh" add "
 # with 'Copy catalog file error'.  We run as the operator now but still have sudo
 # — hand it back first (a fresh install is a harmless no-op).
 sudo chown "$OWNER:$GROUP" "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null || true
+
+# 3.5) register the BP.INC include file and write the platform header GIT compiles
+#      against.  BP/GIT begins with `$INCLUDE BP.INC PLATFORM.H`; UniData resolves
+#      that only when BP.INC is a VOC-registered directory-file, so CREATE.FILE DIR
+#      makes the directory + its VOC pointer (it errors harmlessly on a re-install),
+#      then we write the UDT defines.  Must precede the catalog below.
+say "registering BP.INC + writing PLATFORM.H (UDT platform defines)"
+( cd "$HERE" && printf 'CREATE.FILE DIR BP.INC\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
+printf '%s\n' \
+  '* PLATFORM.H - UniData (UDT) platform defines, written by install.sh.' \
+  '$DEFINE MV' \
+  '$DEFINE UDT' > "$HERE/BP.INC/PLATFORM.H"
+
 say "compiling + globally cataloging the GIT verb"
 ( cd "$HERE" && printf 'BASIC BP GIT\nCATALOG BP GIT FORCE\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
 if ls "$UDTHOME"/sys/CTLG/*/GIT >/dev/null 2>&1; then
