@@ -179,6 +179,17 @@ static int ignored(const char *file, const char *path) {
     return 0;
 }
 
+/* True when a record's git PATH is excluded by .gitignore.  `ignored()` above
+   consults the account's own GIT IGNORE list (bulk MV data); this consults git's
+   ordinary .gitignore, so a record git's plain `add` never enumerates — an lmdb
+   record, or a directory-file record whose path a rule names (e.g. `VOC/LIB`) —
+   is honoured the same way, in both `add` and `status`.  A NULL repo or a rule
+   lookup error means "not ignored". */
+static int git_path_ignored(git_repository *repo, const char *path) {
+    int ig = 0;
+    return repo && git_ignore_path_is_ignored(&ig, repo, path) == 0 && ig;
+}
+
 /* A well-known BUILD provisioning pointer: a `CATALOG` item in VOC/MD pointing
    at the account's local CATALOG directory.  BUILD (re)creates it when it
    provisions an account — alongside the CATALOG binaries and index B-trees it
@@ -411,8 +422,8 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             {
                 char pcheck[600];
                 snprintf(pcheck, sizeof pcheck, "%s/%s", fn, idb);
-                if (ignored(fn, pcheck)) { skipped++; if (one) break;
-                    else continue; }
+                if (ignored(fn, pcheck) || git_path_ignored(repo, pcheck)) {
+                    skipped++; if (one) break; else continue; }
             }
             if (!one && is_provision_pointer(fn, idb)) {
                 skipped++;      /* BUILD provisioning pointer: skip on a wholesale
@@ -1100,7 +1111,8 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     record_oid(cp, clen, &woid);
                 }
                 if (!entry) {
-                    if (ignored(fn, path)) continue;   /* not untracked */
+                    if (ignored(fn, path)) continue;   /* MVX GIT IGNORE list */
+                    if (git_path_ignored(repo, path)) continue;   /* .gitignore */
                     if (is_provision_pointer(fn, idb)) continue;  /* BUILD-derived */
                     char line[700];
                     snprintf(line, sizeof line, "?? %s", path);
