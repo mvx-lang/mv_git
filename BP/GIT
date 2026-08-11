@@ -117,11 +117,58 @@ $ELSE
          DFILE = ARG3 ; GOSUB DIFF
       CASE SUB = "BRANCH"
          R = CALLC GITBRANCH(REPO, ARG3) ; GOSUB SHOW
+      CASE SUB = "CLONE"
+         URL = FIELD(SENT, " ", 3) ; DIR = FIELD(SENT, " ", 4) ; CREF = FIELD(SENT, " ", 5)
+         R = CALLC GITCLONE(REPO, URL, DIR, CREF) ; GOSUB SHOW
+      CASE SUB = "FETCH"
+         R = CALLC GITFETCH(REPO, ARG3) ; GOSUB SHOW
+      CASE SUB = "PULL"
+         PBR = FIELD(SENT, " ", 4)
+         R = CALLC GITPULL(REPO, ARG3, PBR) ; GOSUB SHOW
+      CASE SUB = "PUSH"
+         PSPEC = FIELD(SENT, " ", 4)
+         R = CALLC GITPUSH(REPO, ARG3, PSPEC) ; GOSUB SHOW
+      CASE SUB = "REMOTE"
+         RNM = FIELD(SENT, " ", 4) ; RURL = FIELD(SENT, " ", 5)
+         R = CALLC GITREMOTE(REPO, ARG3, RNM, RURL) ; GOSUB SHOW
+      CASE SUB = "CONFIG"
+         CKEY = ARG3 ; CVAL = FIELD(SENT, " ", 4, 99)
+         R = CALLC GITCONFIG(REPO, CKEY, CVAL) ; GOSUB SHOW
+      CASE SUB = "TAG"
+         GOSUB TAGPARSE
+         R = CALLC GITTAG(REPO, TOP, TNM, TTGT, TMSG) ; GOSUB SHOW
       CASE 1
-         PRINT "usage: GIT <init | add file | add -A [-o] | commit -m msg |"
-         PRINT "            log | status | diff [file] | branch [name] | checkout>"
+         PRINT "usage: GIT <init | add file | add -A [-o] | commit -m msg | log |"
+         PRINT "            status | diff [file] | branch [name] | checkout |"
+         PRINT "            clone url dir [ref] | fetch [remote] | pull [remote [branch]] |"
+         PRINT "            push [remote [refspec]] | remote [add|remove name [url]] |"
+         PRINT "            config key [value] | tag [name [commit] | -a name -m msg | -d name]>"
       END CASE
       STOP
+*
+*  Parse a GIT TAG sentence into TOP (list|add|delete), TNM, TTGT, TMSG.
+   TAGPARSE:
+      TOP = "list" ; TNM = "" ; TTGT = "" ; TMSG = ""
+      BEGIN CASE
+      CASE ARG3 = ""
+         TOP = "list"
+      CASE ARG3 = "-d" OR ARG3 = "DELETE"
+         TOP = "delete" ; TNM = FIELD(SENT, " ", 4)
+      CASE ARG3 = "-a"
+         TOP = "add" ; TNM = FIELD(SENT, " ", 4)
+         TMP = INDEX(SENT, " -m ", 1)
+         IF TMP > 0 THEN
+            TMSG = TRIM(SENT[TMP + 4, LEN(SENT)])
+            TL = LEN(TMSG)
+            IF TL >= 2 THEN
+               TQ = TMSG[1,1]
+               IF (TQ = CHAR(34) OR TQ = CHAR(39)) AND TMSG[TL,1] = TQ THEN TMSG = TMSG[2, TL - 2]
+            END
+         END
+      CASE 1
+         TOP = "add" ; TNM = ARG3 ; TTGT = FIELD(SENT, " ", 4)
+      END CASE
+      RETURN
 *
 *  Stage the whole account: collect the local files from VOC first (draining the
 *  VOC select before opening any file — nested selects on the default list would

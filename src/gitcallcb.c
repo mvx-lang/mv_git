@@ -143,3 +143,54 @@ char *GITCAT(char *repo, char *path) {
     free(r);
     return "";
 }
+
+/* --- remotes, clone, config, tag (libgit2 engine, no OS git) ----------------
+   Thin CallC bridges over the mv_git_* wrappers; output goes through gitmsg like
+   the rest.  Public transport only for now (no credential callback) — the udt
+   libgit2 must be built with USE_HTTPS=ON for https remotes.  GITCLONE writes its
+   confirmation to <repo>/gitmsg, so run it from a git account (or after GIT INIT)
+   to see it; the clone itself lands regardless. */
+char *GITCLONE(char *repo, char *url, char *dir, char *ref) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_clone(ctx, url ? url : "", dir ? dir : "", ref ? ref : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITFETCH(char *repo, char *remote) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_fetch(ctx, rp(repo), remote ? remote : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITPULL(char *repo, char *remote, char *branch) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_pull(ctx, rp(repo), remote ? remote : "", branch ? branch : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITPUSH(char *repo, char *remote, char *refspec) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_push(ctx, rp(repo), remote ? remote : "", refspec ? refspec : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITREMOTE(char *repo, char *action, char *name, char *url) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_remote(ctx, rp(repo), action ? action : "",
+                            name ? name : "", url ? url : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITCONFIG(char *repo, char *key, char *value) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_config(ctx, rp(repo), key ? key : "", value ? value : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITTAG(char *repo, char *op, char *name, char *target, char *message) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_tag(ctx, rp(repo), op ? op : "", name ? name : "",
+                         target ? target : "", message ? message : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
