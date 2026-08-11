@@ -14,6 +14,12 @@
 SUBROUTINE GIT.ADD
 S = TRIM(SENTENCE())
 A = FIELD(S, " ", 3)
+IF A = "-A" OR A = "--all" OR A = "." THEN
+   OUT = ""
+   CALL GITADDALL(".git", OUT)
+   PRINT OUT
+   RETURN
+END
 IF A = "DICT" THEN
    FN = FIELD(S, " ", 4):".DICT"
    ID = FIELD(S, " ", 5)

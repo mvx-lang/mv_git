@@ -134,5 +134,6 @@ char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char 
 char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
                     const char *name, const char *url);
 char *mv_git_config(mv_ctx *ctx, const char *repo, const char *key, const char *value);
+char *mv_git_addall(mv_ctx *ctx, const char *repo);
 
 #endif /* MVXGIT_H */

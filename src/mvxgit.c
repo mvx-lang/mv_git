@@ -31,6 +31,7 @@
 
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
+#include <dirent.h>
 #include <fnmatch.h>
 #include <git2.h>
 #include <stdio.h>
@@ -190,6 +191,33 @@ static int git_path_ignored(git_repository *repo, const char *path) {
     return repo && git_ignore_path_is_ignored(&ig, repo, path) == 0 && ig;
 }
 
+/* Seed $MVX_OPENACCOUNT from a repo's mvx.openaccount config so the engine
+   honours open-account mode when driven by the GIT verb.  The CLI sets this env
+   via apply_open_env before calling the engine; the verb path (and D3, which has
+   no CLI at all) did not — so read it straight from .git/config here.  Only ever
+   SETS (never clears), leaving an explicit env from the CLI untouched.  Call at
+   the top of a sub, before any mv_openaccount() (which reads the env, uncached). */
+static void openaccount_sync(const char *rp) {
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) return;
+    git_config *cfg = NULL;
+    int on = 0;
+    if (git_repository_config(&cfg, repo) == 0) {
+        int b = 0;
+        if (git_config_get_bool(&b, cfg, "mvx.openaccount") == 0) {
+            on = b;
+        } else {
+            git_buf s = GIT_BUF_INIT;    /* get_bool differs across libgit2 builds */
+            if (git_config_get_string_buf(&s, cfg, "mvx.openaccount") == 0 && s.ptr)
+                on = strcasecmp(s.ptr, "true") == 0 || strcmp(s.ptr, "1") == 0;
+            git_buf_dispose(&s);
+        }
+        git_config_free(cfg);
+    }
+    git_repository_free(repo);
+    if (on) setenv("MVX_OPENACCOUNT", "1", 1);
+}
+
 /* A well-known BUILD provisioning pointer: a `CATALOG` item in VOC/MD pointing
    at the account's local CATALOG directory.  BUILD (re)creates it when it
    provisions an account — alongside the CATALOG binaries and index B-trees it
@@ -343,6 +371,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], fn, sizeof fn);
     arg_str(argv[2], only, sizeof only);
+    openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
        sentences, menus, phrases (portable PROCs that must run on the other
@@ -832,6 +861,120 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[1], out, (int64_t)strlen(out));
 }
 
+/* Invoke an engine sub with n string args + an output slot; discard the output. */
+static void addall_call(void (*fn)(mv_ctx *, int32_t, mv_value **),
+                        mv_ctx *ctx, const char **args, int n) {
+    mv_value v[6], *av[6];
+    for (int i = 0; i < n; i++) {
+        mv_init(&v[i]);
+        mv_set_str(&v[i], args[i], (int64_t)strlen(args[i]));
+        av[i] = &v[i];
+    }
+    mv_init(&v[n]); av[n] = &v[n];
+    fn(ctx, n + 1, av);
+    for (int i = 0; i <= n; i++) mv_clear(&v[i]);
+}
+
+/* <acct>/<n>.DICT/%FILE% present -> an on-disk MV file (directory-backed). */
+static int addall_is_mv_file(const char *acct, const char *n) {
+    struct stat sb;
+    char p[4096];
+    snprintf(p, sizeof p, "%s/%s.DICT/%%FILE%%", acct, n);
+    return stat(p, &sb) == 0;
+}
+
+/* GITADDALL(repo, out) — the whole-account `add -A`, IN THE ENGINE so it works
+   where there is no CLI to fall back to (D3).  Same three passes as the former
+   CLI-only add_all: git's own add of plain files (honouring .gitignore), then
+   every MV file's records — on-disk directory files AND lmdb-backed files (found
+   via mv_filelist, staged with their .DICT) — then the open-form normalisation.
+   A gitignored MV file is skipped (its records never enter the open form). */
+void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
+    const char *acct = getenv("MVXACCOUNT");
+    if (!acct || !acct[0]) acct = ".";
+    int64_t nfiles = 0;
+
+    /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules */
+    { const char *a[] = {rp}; addall_call(mvx_sub_GITADDDISK, ctx, a, 1); }
+
+    git_repository *repo = NULL;
+    git_repository_open(&repo, rp);              /* for the .gitignore checks */
+
+    /* 2. on-disk MV files (a directory with <name>.DICT/%FILE%) */
+    DIR *d = opendir(acct);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        const char *n = e->d_name;
+        if (n[0] == '.') continue;
+        char p[4096];
+        struct stat sb;
+        snprintf(p, sizeof p, "%s/%s", acct, n);
+        if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
+        if (!addall_is_mv_file(acct, n)) continue;
+        if (git_path_ignored(repo, n)) continue;
+        const char *a[] = {rp, n, ""};
+        addall_call(mvx_sub_GITADD, ctx, a, 3);
+        nfiles++;
+    }
+    if (d) closedir(d);
+
+    /* 3. lmdb-backed files (records not on disk), only if the store exists */
+    char lmdbp[4096];
+    struct stat lsb;
+    snprintf(lmdbp, sizeof lmdbp, "%s/mvxdata.lmdb", acct);
+    if (stat(lmdbp, &lsb) == 0) {
+        mv_value fl;
+        mv_init(&fl);
+        mv_filelist(ctx, &fl);                   /* name<VM>type, @AM-separated */
+        char nb[40];
+        const char *p;
+        int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p), i = 0;
+        while (i < len) {
+            int64_t s = i;
+            while (i < len && (unsigned char)p[i] != 0xFE &&
+                   (unsigned char)p[i] != 0xFD) i++;
+            int64_t nl = i - s;
+            if (nl > 0 && nl < 256) {
+                char name[256];
+                memcpy(name, p + s, (size_t)nl);
+                name[nl] = '\0';
+                char fp[4096];
+                struct stat ns;
+                snprintf(fp, sizeof fp, "%s/%s", acct, name);
+                if ((stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) &&
+                    !git_path_ignored(repo, name)) {
+                    const char *a[] = {rp, name, ""};
+                    addall_call(mvx_sub_GITADD, ctx, a, 3);
+                    char dn[300];
+                    snprintf(dn, sizeof dn, "%s.DICT", name);
+                    const char *a2[] = {rp, dn, ""};
+                    addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    nfiles++;
+                }
+            }
+            while (i < len && (unsigned char)p[i] != 0xFE) i++;
+            if (i < len) i++;
+        }
+        mv_clear(&fl);
+    }
+    if (repo) git_repository_free(repo);
+
+    /* 4. open-account normalisation of the staged index */
+    if (mv_openaccount()) {
+        const char *a[] = {rp};
+        addall_call(mvx_sub_GITOPENFORM, ctx, a, 1);
+    }
+
+    char out[128];
+    snprintf(out, sizeof out, "staged %lld file(s)", (long long)nfiles);
+    mv_set_str(argv[1], out, (int64_t)strlen(out));
+}
+
 /* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
    current HEAD) rather than recursing into it as a directory file — so an
    account can carry submodules (e.g. docs -> the repo wiki).  The submodule is
@@ -909,6 +1052,7 @@ void mvx_sub_GITCOMMIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     ensure_init();
     char rp[4096], msg[4096];
     arg_str(argv[0], rp, sizeof rp);
+    openaccount_sync(rp);
     arg_str(argv[1], msg, sizeof msg);
 
     git_repository *repo = NULL;
@@ -1039,6 +1183,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     ensure_init();
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
+    openaccount_sync(rp);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
@@ -1345,6 +1490,7 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     ensure_init();
     char rp[4096], only[256];
     arg_str(argv[0], rp, sizeof rp);
+    openaccount_sync(rp);
     arg_str(argv[1], only, sizeof only);
     git_repository *repo = NULL;
     git_index *index = NULL;
@@ -2760,4 +2906,8 @@ char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
 char *mv_git_config(mv_ctx *ctx, const char *repo, const char *key, const char *value) {
     const char *a[] = {repo, key ? key : "", value ? value : ""};
     return run_sub(mvx_sub_GITCONFIG, ctx, a, 3);
+}
+char *mv_git_addall(mv_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITADDALL, ctx, a, 1);
 }
