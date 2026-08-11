@@ -24,6 +24,9 @@
 *     via CallC (Model B): no InterCall, no second session, no extra licence.
 * The remote/clone/tag ops are MVX-only for now; on UniData they fall through to
 * the usage line until the record-git engine's new subs are bridged into CallC.
+* Platform compile-time defines (MV / UDT / UV / D3): a build-created, gitignored
+* header in the BP.INC include file; on MVX it is comment-only (MVX is builtin).
+$INCLUDE BP.INC PLATFORM.H
 $IFDEF MVX
 * --- MVX: CMD-framework dispatch (the engine does the work) ------------------
 * The command framework: git calls CMD.* directly.  A minimal copy is bundled in
