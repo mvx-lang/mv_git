@@ -2475,6 +2475,69 @@ void mvx_sub_GITCONFIG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* GITTAG(repo, op, name, target, message, out) — no-shell tags for releases (a
+   version resolves via its tag).  op "" / "list" prints the tag names; "add"
+   creates tag NAME at TARGET (HEAD if empty) — annotated when MESSAGE is given,
+   else lightweight; "delete" removes NAME. */
+void mvx_sub_GITTAG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 6) return;
+    ensure_init();
+    char rp[4096], op[32], name[256], target[256], msg[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], op, sizeof op);
+    arg_str(argv[2], name, sizeof name);
+    arg_str(argv[3], target, sizeof target);
+    arg_str(argv[4], msg, sizeof msg);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[5], "open"); return; }
+
+    if (!op[0] || strcasecmp(op, "list") == 0) {
+        sbuf s = {0, 0, 0};
+        git_strarray ts = {0, 0};
+        if (git_tag_list(&ts, repo) == 0) {
+            for (size_t i = 0; i < ts.count; i++) sb_line(&s, ts.strings[i]);
+            git_strarray_dispose(&ts);
+        }
+        git_repository_free(repo);
+        sb_out(&s, argv[5], "no tags");
+        return;
+    }
+
+    if (strcasecmp(op, "delete") == 0) {
+        int rc = git_tag_delete(repo, name);
+        git_repository_free(repo);
+        if (rc != 0) { fail(argv[5], "no such tag"); return; }
+        char out[300];
+        snprintf(out, sizeof out, "deleted tag %s", name);
+        mv_set_str(argv[5], out, (int64_t)strlen(out));
+        return;
+    }
+
+    /* add: resolve the target commit-ish (HEAD by default) */
+    const char *tgt = target[0] ? target : "HEAD";
+    git_object *obj = NULL;
+    git_oid oid;
+    int rc = git_revparse_single(&obj, repo, tgt);
+    if (rc == 0) {
+        if (msg[0]) {
+            git_signature *sig = NULL;
+            if (git_signature_default(&sig, repo) != 0)
+                git_signature_now(&sig, "MVX", "mvx@localhost");
+            rc = git_tag_create(&oid, repo, name, obj, sig, msg, 0);
+            if (sig) git_signature_free(sig);
+        } else {
+            rc = git_tag_create_lightweight(&oid, repo, name, obj, 0);
+        }
+    }
+    if (obj) git_object_free(obj);
+    git_repository_free(repo);
+    if (rc != 0) { fail(argv[5], "tag"); return; }
+    char out[600];
+    snprintf(out, sizeof out, "tagged %s at %s", name, tgt);
+    mv_set_str(argv[5], out, (int64_t)strlen(out));
+}
+
 /* --- remotes & clone (libgit2, no OS git) — mvx#94 / mvpkg#23 -------------
    Pure-engine transport so the GIT verb OWNS clone/fetch/pull/push: each runs at
    any tier (no shell, no `!` gate), and a backend-swapped build reuses the same
@@ -2910,4 +2973,10 @@ char *mv_git_config(mv_ctx *ctx, const char *repo, const char *key, const char *
 char *mv_git_addall(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITADDALL, ctx, a, 1);
+}
+char *mv_git_tag(mv_ctx *ctx, const char *repo, const char *op, const char *name,
+                 const char *target, const char *message) {
+    const char *a[] = {repo, op ? op : "", name ? name : "",
+                       target ? target : "", message ? message : ""};
+    return run_sub(mvx_sub_GITTAG, ctx, a, 5);
 }

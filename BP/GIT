@@ -41,4 +41,5 @@ CALL CMD.ADD("PULL", "fetch + merge, re-materialising ({remote} {branch})", "GIT
 CALL CMD.ADD("PUSH", "push to a remote ({remote} {refspec})", "GIT.PUSH")
 CALL CMD.ADD("REMOTE", "list or configure remotes ({add|set-url|remove} name {url})", "GIT.REMOTE")
 CALL CMD.ADD("CONFIG", "get or set repo config (key {value})", "GIT.CONFIG")
+CALL CMD.ADD("TAG", "list or manage tags (name {commit} | -a name -m msg | -d name)", "GIT.TAG")
 CALL CMD.RUN
