@@ -82,8 +82,10 @@ echo "built udt-callc/{gitcallcb,mvxgit,udtgit_rt}.o"
 ARCH="$(uname -m)"; OS="$(uname -s | tr '[:upper:]' '[:lower:]')"; case "$OS" in *linux*) OS=linux ;; esac
 ACCT="$STAGE/git"
 mkdir -p "$ACCT/BP" "$ACCT/udt-callc"
-cp udt/GIT.udt.b "$ACCT/BP/GIT"
-cp udt/GIT.udt.b "$ACCT/GIT.udt.b"
+# The GIT verb is one $IFDEF source in BP/GIT: MVX takes the CMD-dispatch branch,
+# UniData takes the $ELSE (Model B) branch — so udt compiles the same file.
+cp BP/GIT "$ACCT/BP/GIT"
+cp BP/GIT "$ACCT/GIT.udt.b"
 cp udt/preflight.sh "$ACCT/preflight.sh"
 cp udt/install.sh "$ACCT/install.sh";            chmod +x "$ACCT/install.sh"
 cp udt/udt-callc-build.sh "$ACCT/udt-callc-build.sh"; chmod +x "$ACCT/udt-callc-build.sh"
