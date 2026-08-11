@@ -7,10 +7,10 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT
- * @version 4.1
- */
+* /**
+*  * @file GIT
+*  * @version 4.1
+*  */
 * GIT — git for hash-file records, modelled on real git.  The "path" is an MVX
 * file plus record id; the working tree is the live records.  GITIGNORE (an
 * account record) keeps bulk data out of history; DICT addresses a dictionary.
