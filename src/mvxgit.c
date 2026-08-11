@@ -552,23 +552,29 @@ static long guess_modulo(git_index *index, const char *base) {
 /* --- account descriptor conversion: .mvx <-> .mv-account (mvx#73) ---------
  *
  * The on-disk native descriptor `.mvx` and the portable git-side `.mv-account`
- * share one `key = value` grammar but hold different subsets.  `.mvx` is native
- * and may carry MVX-local security policy (`permit`/`deny`, #80).  `.mv-account`
- * is the portable superset: identity (name/version/description) plus the
- * open-form markers `openaccount` and the default `hash` backend — and it must
- * NOT leak platform-local policy into git (a public repo, or a UniData clone
- * that has no concept of `permit`).  So the engine *converts* at the boundary
- * rather than renaming: commit projects `.mvx` down to the portable form,
- * checkout rebuilds a minimal native `.mvx` (local policy is re-established
- * locally, never shipped), and status/diff compare in open-space — so an edit
- * to a local permit line is invisible to git.  One schema, one writer, shared
- * with udt-git via mv_git_desc_open(). */
+ * share one `key = value` grammar but hold different subsets.  `.mv-account` is
+ * the portable superset: identity (name/version/description) plus the open-form
+ * markers `openaccount` and the default `hash` backend.
+ *
+ * Security policy (`permit`/`deny`, #80) has TWO layers (mvx_perm.c):
+ *   - the account's `.mvx` is the VENDOR declaration (source #1) — the shell
+ *     command surface a package ships, e.g. `permit prog:MVPKG = mkdir tar ...`.
+ *     This IS the package and MUST travel with the account, so `.mv-account`
+ *     carries it and checkout re-seeds it into the native `.mvx` — enforced on
+ *     mvx at the restricted tier; on UniData/other systems it is a declaration
+ *     the git editor manages, not enforced.
+ *   - `.mvx-private/permissions` (source #2) is the LOCAL admin's policy —
+ *     git-ignored, host-specific, and NEVER carried here.
+ * So the engine converts at the boundary: commit projects `.mvx` (identity +
+ * vendor permits) down to the portable form, checkout rebuilds `.mvx` from it.
+ * One schema, one writer, shared with udt-git via mv_git_desc_open(). */
 typedef struct {
     char name[128];
     char version[32];
     char description[256];
     char hash[32];        /* default hash backend; empty -> "lmdb" on open form */
     int  openaccount;     /* open-form version; 0 if the source carried none */
+    char permits[2048];   /* vendor permit/deny lines, verbatim (each \n-terminated) */
 } acct_desc;
 
 static void desc_rtrim(char *s) {
@@ -577,9 +583,10 @@ static void desc_rtrim(char *s) {
         s[--n] = '\0';
 }
 
-/* Parse a legible descriptor (either `.mvx` or `.mv-account`) into `d`.  Only
-   the portable keys are read; comment, `permit`/`deny` and `file` lines are
-   ignored (a `permit * = uname` line has an '=', but its key matches nothing). */
+/* Parse a legible descriptor (either `.mvx` or `.mv-account`) into `d`.  The
+   portable identity keys fill the struct; `permit`/`deny` lines are captured
+   VERBATIM into d->permits (the vendor security policy, which travels with the
+   account); comment and `file` lines are ignored. */
 static void desc_parse(const char *buf, size_t len, acct_desc *d) {
     memset(d, 0, sizeof *d);
     size_t i = 0;
@@ -595,6 +602,18 @@ static void desc_parse(const char *buf, size_t len, acct_desc *d) {
         char *p = line;
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '#' || !*p) continue;
+        /* Vendor security policy travels with the account: capture permit/deny
+           lines verbatim (they carry an '=', but no portable key matches, so
+           they'd otherwise be dropped).  Local admin policy lives in
+           .mvx-private/permissions and never reaches here. */
+        if ((strncmp(p, "permit", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) ||
+            (strncmp(p, "deny",   4) == 0 && (p[4] == ' ' || p[4] == '\t'))) {
+            desc_rtrim(p);
+            size_t have = strlen(d->permits);
+            if (have + strlen(p) + 2 < sizeof d->permits)
+                snprintf(d->permits + have, sizeof d->permits - have, "%s\n", p);
+            continue;
+        }
         char *eq = strchr(p, '=');
         if (!eq) continue;
         *eq = '\0';
@@ -628,11 +647,16 @@ static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    /* vendor permit/deny lines travel with the account (the package's declared
+       shell surface); the local admin layer stays in .mvx-private. */
+    if (n > 0 && (size_t)n < cap && d->permits[0])
+        n += snprintf(out + n, cap - (size_t)n, "%s", d->permits);
     return n;
 }
 
-/* Render the minimal native `.mvx` form of `d` (identity only — local security
-   policy is re-established locally, never carried in git). */
+/* Render the native `.mvx` form of `d`: identity + the VENDOR permit/deny lines
+   (re-seeded on checkout so mvx enforces them at the restricted tier).  The
+   LOCAL admin policy is re-established from .mvx-private, never carried here. */
 static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
     const char *name = d->name[0]    ? d->name    : "account";
     const char *ver  = d->version[0] ? d->version : "1";
@@ -641,6 +665,8 @@ static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    if (n > 0 && (size_t)n < cap && d->permits[0])
+        n += snprintf(out + n, cap - (size_t)n, "%s", d->permits);
     return n;
 }
 
