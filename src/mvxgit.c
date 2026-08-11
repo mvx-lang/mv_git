@@ -2034,6 +2034,33 @@ static void finish_merge(mv_ctx *ctx, git_repository *repo,
 }
 
 /* GITMERGE(repo, branch, out) — 3-way merge a branch into HEAD. */
+/* Fast-forward HEAD to `target` and materialise its tree — no merge commit.
+   Returns 0 ok. */
+static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
+                              git_commit *target, int64_t *nw, int64_t *nd) {
+    git_reference *head = NULL, *moved = NULL;
+    git_tree *tree = NULL;
+    int rc = git_repository_head(&head, repo);
+    if (rc == 0)
+        rc = git_reference_set_target(&moved, head, git_commit_id(target),
+                                      "mvx-git: fast-forward");
+    if (rc == 0) rc = git_commit_tree(&tree, target);
+    if (rc == 0) {
+        materialize_tree(ctx, repo, tree, nw, nd);
+        sync_index(repo, rp, tree);
+    }
+    if (tree) git_tree_free(tree);
+    if (moved) git_reference_free(moved);
+    if (head) git_reference_free(head);
+    return rc;
+}
+
+/* GITMERGE(repo, revspec, out) — merge `revspec` into HEAD.  `revspec` is any
+   commit-ish (a local branch, a remote-tracking ref origin/main, FETCH_HEAD so
+   pull reuses this, or a raw SHA), so the tree merge + re-materialise path serves
+   both `merge` and `pull`.  Fast-forwards when HEAD is an ancestor (the common
+   pull), reports up-to-date, and otherwise makes a real merge commit — with
+   record-level conflicts surfaced by finish_merge. */
 void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 3) return;
     ensure_init();
@@ -2042,29 +2069,49 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[1], name, sizeof name);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
-    git_object *ho = NULL;
+    git_object *ho = NULL, *to = NULL;
     git_commit *ours = NULL, *theirs = NULL;
-    git_reference *br = NULL;
+    git_annotated_commit *ann = NULL;
     git_index *mindex = NULL;
+    int64_t nw = 0, nd = 0;
     int rc = git_revparse_single(&ho, repo, "HEAD");
     if (rc == 0) rc = git_commit_lookup(&ours, repo, git_object_id(ho));
-    if (rc == 0) rc = git_branch_lookup(&br, repo, name, GIT_BRANCH_LOCAL);
-    if (rc == 0)
-        rc = git_commit_lookup(&theirs, repo,
-                               git_reference_target(br));
-    if (rc == 0)
-        rc = git_merge_commits(&mindex, repo, ours, theirs, NULL);
-    if (rc == 0) {
+    if (rc == 0) rc = git_revparse_single(&to, repo, name);
+    if (rc == 0) rc = git_commit_lookup(&theirs, repo, git_object_id(to));
+    if (rc != 0) { fail(argv[2], "no such revision"); goto done; }
+
+    git_merge_analysis_t an = GIT_MERGE_ANALYSIS_NONE;
+    git_merge_preference_t pref = GIT_MERGE_PREFERENCE_NONE;
+    if (git_annotated_commit_lookup(&ann, repo, git_object_id(to)) == 0) {
+        const git_annotated_commit *heads[1] = {ann};
+        git_merge_analysis(&an, &pref, repo, heads, 1);
+    }
+
+    if (an & GIT_MERGE_ANALYSIS_UP_TO_DATE) {
+        mv_set_str(argv[2], "already up to date", 18);
+    } else if (an & GIT_MERGE_ANALYSIS_FASTFORWARD) {
+        if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd) != 0) {
+            fail(argv[2], "fast-forward");
+        } else {
+            char out[300];
+            snprintf(out, sizeof out,
+                     "fast-forward (%lld record(s) updated, %lld removed)",
+                     (long long)nw, (long long)nd);
+            mv_set_str(argv[2], out, (int64_t)strlen(out));
+        }
+    } else if (git_merge_commits(&mindex, repo, ours, theirs, NULL) == 0) {
         char msg[300];
-        snprintf(msg, sizeof msg, "Merge branch '%s'", name);
+        snprintf(msg, sizeof msg, "Merge '%s'", name);
         finish_merge(ctx, repo, rp, mindex, ours, theirs, msg, argv[2]);
     } else {
         fail(argv[2], "merge");
     }
+done:
     if (mindex) git_index_free(mindex);
-    if (br) git_reference_free(br);
+    if (ann) git_annotated_commit_free(ann);
     if (theirs) git_commit_free(theirs);
     if (ours) git_commit_free(ours);
+    if (to) git_object_free(to);
     if (ho) git_object_free(ho);
     git_repository_free(repo);
 }

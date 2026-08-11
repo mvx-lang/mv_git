@@ -410,7 +410,7 @@ static int ask_create_account(const char *acct) {
 static int engine_sub(const char *sub) {
     static const char *ops[] = {
         "init", "add", "rm", "commit", "status", "log", "diff", "show",
-        "branch", "checkout", "merge", "cherry-pick", "restore",
+        "branch", "checkout", "merge", "cherry-pick", "restore", "pull",
         "diff-setup", NULL};
     for (int i = 0; ops[i]; i++)
         if (strcmp(sub, ops[i]) == 0) return 1;
@@ -686,6 +686,20 @@ static int engine_run(const char *acct, const char *sub,
     } else if (!strcmp(sub, "restore")) {
         if (p0) out = mv_git_restore(ctx, repo, p0);
         else out = strdup("usage: mvx-git restore <file>");
+    } else if (!strcmp(sub, "pull")) {
+        /* pull = fetch (system git — its transport/credential handling) then an
+           engine merge of FETCH_HEAD.  The merge does the tree merge and
+           RE-MATERIALISES records into the account (fast-forward or a real merge
+           with record-level conflicts).  Plain `git pull` can't: our working tree
+           is the NATIVE form, which git would see as dirty and refuse. */
+        const char *remote = p0 ? p0 : "origin";
+        char *fa[6]; int fn = 0;
+        fa[fn++] = "git"; fa[fn++] = "fetch"; fa[fn++] = (char *)remote;
+        if (p1) fa[fn++] = (char *)p1;
+        fa[fn] = NULL;
+        fprintf(stderr, "mvx-git: fetching from %s\n", remote);
+        if (run(fa) != 0) out = strdup("pull: git fetch failed");
+        else out = mv_git_merge(ctx, repo, "FETCH_HEAD");
     }
 
     print_out(out);
