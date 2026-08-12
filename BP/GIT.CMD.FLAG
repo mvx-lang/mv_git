@@ -7,22 +7,15 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-*
-* git's bundled cut-down cmd (GIT.CMD.*), used when the full mv_cmd is not
-* installed.  BP/GIT probes GIT.HAS("cmd") and dispatches through the real CMD.*
-* when it is, else through these — resolved by name (CALL @), so there is no
-* catalog-override to reason about.
 * /**
-*  * @file GIT.CMD.INIT
+*  * @file GIT.CMD.FLAG
 *  * @version 1.0
 *  */
-* CMD.INIT(name, description) — begin defining a command.
-SUBROUTINE GIT.CMD.INIT(NAME, DESC)
+* CMD.FLAG(subcommand, short, long, takes-value, default, help) — declare one
+* option on a subcommand.  CMD.RUN parses the sentence against the declared flags
+* (via the getopt package) before dispatching, and the handler reads them back
+* with GETOPT.VAL / GETOPT.HAS / GETOPT.ARG.  takes-value 0 is a boolean flag.
+SUBROUTINE GIT.CMD.FLAG(SUB, SHORT, LONG, TAKESVAL, DFLT, HELP)
 COMMON /CMDPKG/ CNAME, CDESC, CSUBS, CDESCS, CHANDLERS, CFLAGS
-CNAME = NAME
-CDESC = DESC
-CSUBS = ""
-CDESCS = ""
-CHANDLERS = ""
-CFLAGS = ""
+CFLAGS<-1> = OCONV(SUB, "MCU") : @VM : SHORT : @VM : LONG : @VM : TAKESVAL : @VM : DFLT : @VM : HELP
 RETURN

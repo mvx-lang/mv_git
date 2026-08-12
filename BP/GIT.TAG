@@ -12,28 +12,23 @@
 *  * @version 1.0
 *  */
 SUBROUTINE GIT.TAG
-CALL GIT.SENT(S)
 * GIT TAG                     list tags
 * GIT TAG name {commit}       lightweight tag at commit (HEAD if omitted)
 * GIT TAG -a name -m message  annotated tag at HEAD
 * GIT TAG -d name             delete a tag
-A = FIELD(S, " ", 3)
-OP = "list" ; NM = "" ; TGT = "" ; MSG = ""
+* Options are decoded by the cmd dispatch (GIT.CMD.FLAG a/m/d); read them here.
+CALL GIT.CMD.HAS("a", HASA) ; CALL GIT.CMD.VAL("a", ANM)
+CALL GIT.CMD.HAS("d", HASD) ; CALL GIT.CMD.VAL("d", DNM)
+CALL GIT.CMD.VAL("m", MSG)
+CALL GIT.CMD.ARG(1, ARG1) ; CALL GIT.CMD.ARG(2, ARG2)
+OP = "list" ; NM = "" ; TGT = ""
 BEGIN CASE
-   CASE A = ""
-      OP = "list"
-   CASE A = "-d" OR A = "DELETE"
-      OP = "delete" ; NM = FIELD(S, " ", 4)
-   CASE A = "-a"
-      OP = "add" ; NM = FIELD(S, " ", 4)
-      * message is everything after "-m " (quotes trimmed)
-      MP = INDEX(S, " -m ", 1)
-      IF MP THEN
-         MSG = TRIM(S[MP + 4, LEN(S) - MP - 3])
-         IF MSG[1, 1] = '"' THEN MSG = MSG[2, LEN(MSG) - 2]
-      END
-   CASE 1
-      OP = "add" ; NM = A ; TGT = FIELD(S, " ", 4)
+   CASE HASD
+      OP = "delete" ; NM = DNM
+   CASE HASA
+      OP = "add" ; NM = ANM
+   CASE ARG1 # ""
+      OP = "add" ; NM = ARG1 ; TGT = ARG2
 END CASE
 IF OP # "list" AND NM = "" THEN
    PRINT "usage: GIT TAG {name {commit} | -a name -m msg | -d name}"
