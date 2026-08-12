@@ -12,21 +12,25 @@
 *  * @version 4.1
 *  */
 SUBROUTINE GIT.ADD
-CALL GIT.SENT(S)
+* -A/--all stages every changed record (also '.'); DICT addresses a dictionary;
+* otherwise a positional file {record}.  Flags are decoded by the cmd dispatch
+* (GIT.CMD.FLAG A/o).  The udt Model-B ADD re-reads the raw sentence itself.
 $IFDEF MVX
-A = FIELD(S, " ", 3)
-IF A = "-A" OR A = "--all" OR A = "." THEN
+CALL GIT.CMD.HAS("all", ALLF)
+CALL GIT.CMD.ARG(1, A1)
+IF ALLF OR A1 = "." THEN
    OUT = ""
    CALL GITADDALL(".git", OUT)
    PRINT OUT
    RETURN
 END
-IF A = "DICT" THEN
-   FN = FIELD(S, " ", 4):".DICT"
-   ID = FIELD(S, " ", 5)
+IF A1 = "DICT" THEN
+   CALL GIT.CMD.ARG(2, DF)
+   FN = DF : ".DICT"
+   CALL GIT.CMD.ARG(3, ID)
 END ELSE
-   FN = A
-   ID = FIELD(S, " ", 4)
+   FN = A1
+   CALL GIT.CMD.ARG(2, ID)
 END
 IF FN = ".DICT" OR FN = "" THEN
    PRINT "usage: GIT ADD {DICT} file {record}"
@@ -36,6 +40,7 @@ OUT = ""
 CALL GITADD(".git", FN, ID, OUT)
 PRINT OUT
 $ELSE
+CALL GIT.SENT(S)
 REPO = @PATH : "/.git"
 CALL GITUDT.ADD(REPO, S)
 $ENDIF

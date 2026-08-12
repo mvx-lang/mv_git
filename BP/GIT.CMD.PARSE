@@ -1,0 +1,89 @@
+* getopt — declarative command-line option parsing for MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.CMD.PARSE
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.CMD.PARSE(SPEC, SENTENCE, SKIP)
+COMMON /GETOPT/ GO.NAMES, GO.VALS, GO.HAS, GO.ARGS, GO.ERR
+GO.NAMES = "" ; GO.VALS = "" ; GO.HAS = "" ; GO.ARGS = "" ; GO.ERR = ""
+NOPT = 0 ; IF SPEC # "" THEN NOPT = DCOUNT(SPEC, @AM)
+FOR K = 1 TO NOPT
+   GO.NAMES<K> = SPEC<K,1> : @VM : SPEC<K,2>
+   GO.VALS<K> = SPEC<K,4>
+   GO.HAS<K> = 0
+NEXT K
+CALL GIT.CMD.TOKENS(SENTENCE, TOKS)
+NT = 0 ; IF TOKS # "" THEN NT = DCOUNT(TOKS, @AM)
+POSONLY = 0 ; I = SKIP + 1
+LOOP
+   IF I > NT THEN EXIT
+   T = TOKS<I>
+   BEGIN CASE
+      CASE POSONLY
+         GO.ARGS<-1> = T
+      CASE T = "--"
+         POSONLY = 1
+      CASE LEN(T) >= 2 AND T[1, 2] = "--"
+         BODY = T[3, LEN(T) - 2]
+         EPOS = INDEX(BODY, "=", 1)
+         IF EPOS > 0 THEN
+            NM = BODY[1, EPOS - 1] ; VL = BODY[EPOS + 1, LEN(BODY) - EPOS] ; HASVL = 1
+         END ELSE
+            NM = BODY ; VL = "" ; HASVL = 0
+         END
+         ISLONG = 1 ; GOSUB 500
+      CASE T[1, 1] = "-" AND LEN(T) >= 2
+         NM = T[2, 1] ; REST = T[3, LEN(T) - 2]
+         IF REST # "" THEN
+            VL = REST ; HASVL = 1
+         END ELSE
+            VL = "" ; HASVL = 0
+         END
+         ISLONG = 0 ; GOSUB 500
+      CASE 1
+         GO.ARGS<-1> = T
+   END CASE
+   I = I + 1
+REPEAT
+RETURN
+500
+* resolve option NM (ISLONG picks the spec column) and apply
+   POS = 0
+   FOR K = 1 TO NOPT
+      IF ISLONG THEN
+         IF SPEC<K,2> = NM THEN POS = K
+      END ELSE
+         IF SPEC<K,1> = NM THEN POS = K
+      END
+   NEXT K
+   IF POS = 0 THEN
+      GO.ERR = "unknown option '" : NM : "'"
+      RETURN
+   END
+   IF SPEC<POS,3> THEN
+      IF NOT(HASVL) THEN
+         IF I < NT THEN
+            I = I + 1 ; VL = TOKS<I>
+         END ELSE
+            GO.ERR = "option '" : NM : "' needs a value"
+            RETURN
+         END
+      END
+      IF GO.HAS<POS> THEN
+         GO.VALS<POS> = GO.VALS<POS> : @VM : VL
+      END ELSE
+         GO.VALS<POS> = VL
+      END
+   END ELSE
+      GO.VALS<POS> = "1"
+   END
+   GO.HAS<POS> = 1
+   RETURN

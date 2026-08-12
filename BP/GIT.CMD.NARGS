@@ -1,0 +1,17 @@
+* getopt — declarative command-line option parsing for MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.CMD.NARGS
+*  * @version 1.0
+*  */
+SUBROUTINE GIT.CMD.NARGS(CNT)
+COMMON /GETOPT/ GO.NAMES, GO.VALS, GO.HAS, GO.ARGS, GO.ERR
+IF GO.ARGS = "" THEN CNT = 0 ELSE CNT = DCOUNT(GO.ARGS, @AM)
+RETURN

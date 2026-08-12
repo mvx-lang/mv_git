@@ -42,14 +42,17 @@ $ENDIF
 * is chosen by name (CALL @), so there is no catalog-override to reason about.
 CALL GIT.HAS("cmd", HASCMD)
 IF HASCMD THEN PFX = "CMD." ELSE PFX = "GIT.CMD."
-CI = PFX : "INIT" ; CA = PFX : "ADD" ; CR = PFX : "RUN"
+CI = PFX : "INIT" ; CA = PFX : "ADD" ; CR = PFX : "RUN" ; CF = PFX : "FLAG"
 CALL @CI("GIT", "version-control hash-file records")
 CALL @CA("INIT", "create the record repository", "GIT.INIT")
 CALL @CA("ADD", "stage records (file {id})", "GIT.ADD")
+CALL @CF("ADD", "A", "all", 0, "", "stage every changed record")
+CALL @CF("ADD", "o", "open", 0, "", "open (portable) format")
 CALL @CA("RM", "unstage a record (file id)", "GIT.RM")
 CALL @CA("IGNORE", "keep records out of history (pattern)", "GIT.IGNORE")
 CALL @CA("STATUS", "show staged / changed records", "GIT.STATUS")
 CALL @CA("COMMIT", "commit staged records (-m msg)", "GIT.COMMIT")
+CALL @CF("COMMIT", "m", "message", 1, "", "commit message")
 CALL @CA("LOG", "commit history", "GIT.LOG")
 CALL @CA("DIFF", "unstaged record changes {file}", "GIT.DIFF")
 CALL @CA("SHOW", "committed content of a record (file id)", "GIT.SHOW")
@@ -66,4 +69,7 @@ CALL @CA("PUSH", "push to a remote ({remote} {refspec})", "GIT.PUSH")
 CALL @CA("REMOTE", "list or configure remotes ({add|set-url|remove} name {url})", "GIT.REMOTE")
 CALL @CA("CONFIG", "get or set repo config (key {value})", "GIT.CONFIG")
 CALL @CA("TAG", "list or manage tags (name {commit} | -a name -m msg | -d name)", "GIT.TAG")
+CALL @CF("TAG", "a", "annotate", 1, "", "create an annotated tag (name)")
+CALL @CF("TAG", "m", "message", 1, "", "annotation message")
+CALL @CF("TAG", "d", "delete", 1, "", "delete a tag (name)")
 CALL @CR
