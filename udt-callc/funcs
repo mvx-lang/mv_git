@@ -17,4 +17,5 @@ GITRM:string:3:string,string,string
 GITSHOW:string:3:string,string,string
 GITMERGE:string:2:string,string
 GITCHERRYPICK:string:2:string,string
+GITSWITCH:string:2:string,string
 GITPING:string:1:string

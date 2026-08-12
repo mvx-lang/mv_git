@@ -14,7 +14,7 @@
 SUBROUTINE GITUDT.CHECKOUT(REPO)
 $IFNDEF MVX
    AM = CHAR(254)
-   NREST = 0 ; NFC = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
+   NREST = 0 ; NFC = 0 ; NDEL = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
    IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)
    R = CALLC GITFILES(REPO)
    OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
@@ -57,6 +57,39 @@ $IFNDEF MVX
       NREST += 1
 NEXTREC:
    NEXT I
+*  pass 2b - delete live records no longer in HEAD (branch switch / merge removals).
+*  Data files only, and never the %-prefixed controls (%FILE%/%INDEXES%).  For each
+*  data file HEAD touches, build its HEAD id-set and DELETE any live id not in it.
+   DONE = AM
+   FOR I = 1 TO NP
+      P = PATHS<I> ; LP = LEN(P)
+      SL = INDEX(P, "/", 1)
+      IF SL = 0 THEN GOTO NEXTDEL
+      FN = P[1, SL-1] ; LFN = LEN(FN)
+      IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN GOTO NEXTDEL   ;* skip dictionaries
+      IF INDEX(DONE, AM:FN:AM, 1) # 0 THEN GOTO NEXTDEL         ;* file already handled
+      DONE = DONE : FN : AM
+      HW = AM
+      FOR J = 1 TO NP
+         Q = PATHS<J> ; LQ = LEN(Q) ; SQ = INDEX(Q, "/", 1)
+         IF SQ > 0 THEN
+            IF Q[1, SQ-1] = FN THEN
+               QID = Q[SQ+1, LQ]
+               IF QID # "" AND QID[1, 1] # "%" THEN HW = HW : QID : AM
+            END
+         END
+      NEXT J
+      OPEN FN TO DV ELSE GOTO NEXTDEL
+      SELECT DV TO 9
+      LOOP
+         READNEXT LID FROM 9 ELSE EXIT
+         IF INDEX(HW, AM:LID:AM, 1) = 0 THEN
+            DELETE DV, LID
+            NDEL += 1
+         END
+      REPEAT
+NEXTDEL:
+   NEXT I
 *  pass 3 - DETECT index changes only (#11)
    IXWANT = ""
    FOR I = 1 TO NP
@@ -77,6 +110,7 @@ NEXTREC:
       END
    NEXT I
    PRINT NREST : " record(s) restored across " : NFC : " file(s)"
+   IF NDEL > 0 THEN PRINT NDEL : " stale record(s) removed"
    GOSUB IXPROMPT
    RETURN
 *  If any file's indexes changed, list them and ask before rebuilding (#11).

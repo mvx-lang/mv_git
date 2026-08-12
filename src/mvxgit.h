@@ -123,6 +123,7 @@ char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,
                    const char *id);
 char *mv_git_branch(mv_ctx *ctx, const char *repo, const char *name);
 char *mv_git_checkout(mv_ctx *ctx, const char *repo, const char *name);
+char *mv_git_switch(mv_ctx *ctx, const char *repo, const char *name);
 char *mv_git_merge(mv_ctx *ctx, const char *repo, const char *branch);
 char *mv_git_cherrypick(mv_ctx *ctx, const char *repo, const char *commit);
 char *mv_git_restore(mv_ctx *ctx, const char *repo, const char *file);

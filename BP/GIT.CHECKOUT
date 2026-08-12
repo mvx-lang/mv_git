@@ -24,6 +24,12 @@ CALL GITCHECKOUT(".git", NM, OUT)
 PRINT OUT
 $ELSE
 REPO = @PATH : "/.git"
-CALL GITUDT.CHECKOUT(REPO)
+IF NM # "" THEN
+   R = CALLC GITSWITCH(REPO, NM)             ;* move HEAD to the branch (git side)
+   OSREAD MSG FROM REPO : "/gitmsg" ELSE MSG = ""
+   PRINT MSG
+   IF MSG[1, 8] # "switched" THEN RETURN     ;* no such branch — HEAD unchanged
+END
+CALL GITUDT.CHECKOUT(REPO)                   ;* re-materialise the (new) HEAD natively
 $ENDIF
 RETURN

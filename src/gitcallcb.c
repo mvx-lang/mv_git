@@ -227,6 +227,14 @@ char *GITCHERRYPICK(char *repo, char *commit) {
     mv_ctx_destroy(ctx);
     return emit(repo, r);
 }
+/* GITSWITCH(repo, name) — move HEAD to branch `name` (git ref + index only, no
+   record materialise); the verb then re-materialises the new HEAD natively. */
+char *GITSWITCH(char *repo, char *name) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_switch(ctx, rp(repo), name ? name : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
 
 /* GITPING(path) — write the marker "callc-ok" to <path>/gitmsg (no git work).  A
    disabled CALLC silently no-ops — no error, no side effect — so the verb probes
