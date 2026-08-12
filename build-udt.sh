@@ -84,7 +84,7 @@ ACCT="$STAGE/git"
 mkdir -p "$ACCT/BP" "$ACCT/udt-callc"
 # The GIT verb is one $IFDEF source in BP/GIT: MVX takes the CMD-dispatch branch,
 # UniData takes the $ELSE (Model B) branch — so udt compiles the same file.
-cp BP/GIT "$ACCT/BP/GIT"
+cp BP/* "$ACCT/BP/"                 # the GIT verb + its whole handler/sub set
 cp BP/GIT "$ACCT/GIT.udt.b"
 # PLATFORM.H — the compile-time platform defines BP/GIT $INCLUDEs (as `$INCLUDE
 # BP.INC PLATFORM.H`) — is deliberately NOT shipped here.  On UniData the BP.INC

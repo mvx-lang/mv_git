@@ -13,6 +13,7 @@
 *  */
 * GIT IGNORE pattern — keep matching records out of history.
 SUBROUTINE GIT.IGNORE
+$IFDEF MVX
 PAT = FIELD(TRIM(SENTENCE()), " ", 3, 99)
 IF PAT = "" THEN
    PRINT "usage: GIT IGNORE pattern"
@@ -30,4 +31,7 @@ END
 IG<-1> = PAT
 WRITE IG ON ACC, "GITIGNORE"
 PRINT "ignoring ":PAT
+$ELSE
+PRINT "GIT IGNORE: not yet available on UniData"
+$ENDIF
 RETURN

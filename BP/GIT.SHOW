@@ -12,6 +12,7 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.SHOW
+$IFDEF MVX
 S = TRIM(SENTENCE())
 FN = FIELD(S, " ", 3)
 ID = FIELD(S, " ", 4)
@@ -24,4 +25,7 @@ CALL GITSHOW(".git", FN, ID, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+PRINT "GIT SHOW: not yet available on UniData"
+$ENDIF
 RETURN

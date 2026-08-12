@@ -28,9 +28,10 @@ $IFNDEF MVX
          OSREAD TY FROM REPO : "/gitcat" ELSE TY = ""
          TY = TRIM(TY)
          IF TY = "DIR" THEN
-            EXECUTE "CREATE.FILE ":BASE:" DIRECTORY" CAPTURING JUNK
+            EXECUTE "CREATE.FILE DIR ":BASE CAPTURING JUNK
          END ELSE
-            EXECUTE "CREATE.FILE ":BASE:" DYNAMIC" CAPTURING JUNK
+            MODL = FIELD(TY, " ", 2) ; IF NUM(MODL) = 0 THEN MODL = "11"
+            EXECUTE "CREATE.FILE ":BASE:" ":MODL:",2" CAPTURING JUNK
          END
          NFC += 1
       END

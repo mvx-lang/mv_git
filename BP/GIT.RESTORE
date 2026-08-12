@@ -12,6 +12,7 @@
 *  * @version 4.1
 *  */
 SUBROUTINE GIT.RESTORE
+$IFDEF MVX
 S = TRIM(SENTENCE())
 A = FIELD(S, " ", 3)
 IF A = "DICT" THEN
@@ -26,4 +27,7 @@ END
 OUT = ""
 CALL GITRESTORE(".git", FN, OUT)
 PRINT OUT
+$ELSE
+PRINT "GIT RESTORE: not yet available on UniData"
+$ENDIF
 RETURN

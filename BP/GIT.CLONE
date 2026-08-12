@@ -25,7 +25,7 @@ OUT = ""
 CALL GITCLONE(URL, DIR, REF, OUT)
 PRINT OUT
 $ELSE
-PERFORM "UDT.OPTIONS 88 ON"
+PERFORM "UDT.OPTIONS 88 ON"  ;* once per invocation; better: enable in the login PROC (mv_git#25)
 REPO = @PATH : "/.git"
 R = CALLC GITCLONE(REPO, URL, DIR, REF)
 CALL GITUDT.SHOW(REPO)

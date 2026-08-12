@@ -12,6 +12,7 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.RM
+$IFDEF MVX
 S = TRIM(SENTENCE())
 FN = FIELD(S, " ", 3)
 ID = FIELD(S, " ", 4)
@@ -22,4 +23,7 @@ END
 OUT = ""
 CALL GITRM(".git", FN, ID, OUT)
 PRINT OUT
+$ELSE
+PRINT "GIT RM: not yet available on UniData"
+$ENDIF
 RETURN

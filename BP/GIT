@@ -26,7 +26,7 @@
 $INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 MVPK = ""                            ;* init GIT.HAS's per-run lock-probe cache
-* --- MVX: CMD-framework dispatch (the engine does the work) ------------------
+* --- cmd-framework dispatch (picks the installed cmd, else the bundled GIT.CMD.*)
 * git bundles a cut-down cmd as GIT.CMD.*; when the mvpkg-installed cmd is present
 * GIT.HAS("cmd") is true and we dispatch through the real CMD.* instead.  The set
 * is chosen by name (CALL @), so there is no catalog-override to reason about.
