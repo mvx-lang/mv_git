@@ -12,7 +12,8 @@
 *  * @version 4.1
 *  */
 SUBROUTINE GIT.ADD
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
+$IFDEF MVX
 A = FIELD(S, " ", 3)
 IF A = "-A" OR A = "--all" OR A = "." THEN
    OUT = ""
@@ -34,4 +35,9 @@ END
 OUT = ""
 CALL GITADD(".git", FN, ID, OUT)
 PRINT OUT
+$ELSE
+PERFORM "UDT.OPTIONS 88 ON"
+REPO = @PATH : "/.git"
+CALL GITUDT.ADD(REPO, S)
+$ENDIF
 RETURN
