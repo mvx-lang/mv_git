@@ -8,16 +8,16 @@
 *
 * SPDX-License-Identifier: GPL-2.0-only
 *
-* Bundled fallback copy of cmd so git runs standalone.  When the full mv_cmd
-* is installed its catalog entry overrides this copy (UniData: a global
-* CATALOG overwrite; mvx: the account LIB loads before a package library), so
-* GIT calls CMD.* normally and gets whichever is present.
+* git's bundled cut-down cmd (GIT.CMD.*), used when the full mv_cmd is not
+* installed.  BP/GIT probes GIT.HAS("cmd") and dispatches through the real CMD.*
+* when it is, else through these — resolved by name (CALL @), so there is no
+* catalog-override to reason about.
 * /**
-*  * @file CMD.INIT
+*  * @file GIT.CMD.INIT
 *  * @version 1.0
 *  */
 * CMD.INIT(name, description) — begin defining a command.
-SUBROUTINE CMD.INIT(NAME, DESC)
+SUBROUTINE GIT.CMD.INIT(NAME, DESC)
 COMMON /CMDPKG/ CNAME, CDESC, CSUBS, CDESCS, CHANDLERS
 CNAME = NAME
 CDESC = DESC
