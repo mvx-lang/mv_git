@@ -7,12 +7,12 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.COMMIT
- * @version 4.0
- */
+* /**
+*  * @file GIT.COMMIT
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.COMMIT
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 A3 = FIELD(S, " ", 3)
 IF A3 = "-m" THEN
    MSG = FIELD(S, " ", 4, 99)
@@ -23,7 +23,14 @@ IF MSG = "" THEN
    PRINT "usage: GIT COMMIT -m message"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITCOMMIT(".git", MSG, OUT)
 PRINT OUT
+$ELSE
+PERFORM "UDT.OPTIONS 88 ON"
+REPO = @PATH : "/.git"
+R = CALLC GITCOMMIT(REPO, MSG)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

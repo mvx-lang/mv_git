@@ -7,15 +7,23 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.BRANCH
- * @version 1.0
- */
+* /**
+*  * @file GIT.BRANCH
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.BRANCH
-NM = FIELD(TRIM(SENTENCE()), " ", 3)
+CALL GIT.SENT(S)
+NM = FIELD(S, " ", 3)
+$IFDEF MVX
 OUT = ""
 CALL GITBRANCH(".git", NM, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+PERFORM "UDT.OPTIONS 88 ON"
+REPO = @PATH : "/.git"
+R = CALLC GITBRANCH(REPO, NM)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

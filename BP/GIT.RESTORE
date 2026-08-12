@@ -7,10 +7,10 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.RESTORE
- * @version 4.1
- */
+* /**
+*  * @file GIT.RESTORE
+*  * @version 4.1
+*  */
 SUBROUTINE GIT.RESTORE
 S = TRIM(SENTENCE())
 A = FIELD(S, " ", 3)

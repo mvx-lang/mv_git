@@ -7,10 +7,10 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.SHOW
- * @version 4.0
- */
+* /**
+*  * @file GIT.SHOW
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.SHOW
 S = TRIM(SENTENCE())
 FN = FIELD(S, " ", 3)

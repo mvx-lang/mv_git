@@ -7,10 +7,10 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.IMPORT
- * @version 1.0
- */
+* /**
+*  * @file GIT.IMPORT
+*  * @version 1.0
+*  */
 * GIT IMPORT file — import a hash file from its directory file (after a
 * pull or checkout changed it).
 SUBROUTINE GIT.IMPORT

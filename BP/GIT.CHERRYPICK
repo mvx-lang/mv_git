@@ -7,10 +7,10 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.CHERRYPICK
- * @version 1.0
- */
+* /**
+*  * @file GIT.CHERRYPICK
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.CHERRYPICK
 CM = FIELD(TRIM(SENTENCE()), " ", 3)
 IF CM = "" THEN

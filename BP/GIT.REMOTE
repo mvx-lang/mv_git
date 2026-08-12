@@ -7,18 +7,25 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.REMOTE
- * @version 1.0
- */
+* /**
+*  * @file GIT.REMOTE
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.REMOTE
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 ACT = FIELD(S, " ", 3)
 NM = FIELD(S, " ", 4)
 URL = FIELD(S, " ", 5)
+$IFDEF MVX
 OUT = ""
 CALL GITREMOTE(".git", ACT, NM, URL, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+PERFORM "UDT.OPTIONS 88 ON"
+REPO = @PATH : "/.git"
+R = CALLC GITREMOTE(REPO, ACT, NM, URL)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

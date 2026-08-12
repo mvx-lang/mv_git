@@ -7,12 +7,12 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.TAG
- * @version 1.0
- */
+* /**
+*  * @file GIT.TAG
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.TAG
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 * GIT TAG                     list tags
 * GIT TAG name {commit}       lightweight tag at commit (HEAD if omitted)
 * GIT TAG -a name -m message  annotated tag at HEAD
@@ -39,9 +39,16 @@ IF OP # "list" AND NM = "" THEN
    PRINT "usage: GIT TAG {name {commit} | -a name -m msg | -d name}"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITTAG(".git", OP, NM, TGT, MSG, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+PERFORM "UDT.OPTIONS 88 ON"
+REPO = @PATH : "/.git"
+R = CALLC GITTAG(REPO, OP, NM, TGT, MSG)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN
