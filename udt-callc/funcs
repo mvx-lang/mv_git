@@ -13,4 +13,8 @@ GITPUSH:string:3:string,string,string
 GITREMOTE:string:4:string,string,string,string
 GITCONFIG:string:3:string,string,string
 GITTAG:string:5:string,string,string,string,string
+GITRM:string:3:string,string,string
+GITSHOW:string:3:string,string,string
+GITMERGE:string:2:string,string
+GITCHERRYPICK:string:2:string,string
 GITPING:string:1:string

@@ -14,14 +14,18 @@
 * GIT IMPORT file — import a hash file from its directory file (after a
 * pull or checkout changed it).
 SUBROUTINE GIT.IMPORT
-$IFDEF MVX
-FN = FIELD(TRIM(SENTENCE()), " ", 3)
+CALL GIT.SENT(S)
+FN = FIELD(S, " ", 3)
 IF FN = "" THEN
    PRINT "usage: GIT IMPORT file"
    RETURN
 END
+$IFDEF MVX
 EXECUTE "IMPORT ":FN
 $ELSE
-PRINT "GIT IMPORT: not yet available on UniData"
+* UniData writes hash-file records directly (no directory-file intermediate to
+* import from as on MVX), so re-materialise FN's records from HEAD instead.
+REPO = @PATH : "/.git"
+CALL GITUDT.RESTORE(REPO, FN)
 $ENDIF
 RETURN

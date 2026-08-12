@@ -1,0 +1,48 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GITUDT.RESTORE
+*  * @version 1.0
+*  */
+* GITUDT.RESTORE(repo, fn) — the UniData (Model B) RESTORE: re-materialise file
+* FN's records from HEAD onto the current session (native WRITE, so it reaches a
+* hash file, which the mv_write path cannot).  C reads the git objects via
+* GITFILES/GITCAT; the writes are native.  Scoped to FN, unlike GITUDT.CHECKOUT
+* which materialises the whole tree.  FN may be a dictionary (name ending .DICT).
+SUBROUTINE GITUDT.RESTORE(REPO, FN)
+$IFNDEF MVX
+   AM = CHAR(254)
+   LFN = LEN(FN)
+   IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
+      OPEN "DICT", FN[1, LFN-5] TO FV ELSE
+         PRINT "GIT RESTORE: cannot open dictionary of " : FN[1, LFN-5]
+         RETURN
+      END
+   END ELSE
+      OPEN FN TO FV ELSE
+         PRINT "GIT RESTORE: cannot open " : FN
+         RETURN
+      END
+   END
+   R = CALLC GITFILES(REPO)
+   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   NP = DCOUNT(PATHS, AM)
+   PFX = FN : "/" ; LPF = LEN(PFX)
+   NR = 0
+   FOR I = 1 TO NP
+      P = PATHS<I>
+      IF LEN(P) > LPF AND P[1, LPF] = PFX THEN
+         ID = P[LPF+1, LEN(P)]
+         IF ID # "" AND ID[1, 1] # "%" THEN     ;* skip the %FILE%/%INDEXES% controls
+            R = CALLC GITCAT(REPO, P)
+            OSREAD REC FROM REPO : "/gitcat" ELSE REC = ""
+            WRITE REC ON FV, ID
+            NR += 1
+         END
+      END
+   NEXT I
+   PRINT NR : " record(s) restored to " : FN
+$ENDIF
+RETURN
