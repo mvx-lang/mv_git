@@ -1,0 +1,24 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.HAS
+*  * @version 1.0
+*  */
+* GIT.HAS(name, found) — found = 1 if package `name` is installed via mvpkg, else
+* 0.  Cheap: mvpkg's presence is the MVPKG.LOCK record in the account VOC; cache
+* that check in COMMON /GITENV/ so VOC is opened at most once per run, and only
+* when mvpkg is present defer to the real MVPKG.HAS for the per-package answer.
+* Lets GIT pick an installed cmd over its bundled GIT.CMD.* with no catalog games.
+SUBROUTINE GIT.HAS(NAME, FOUND)
+COMMON /GITENV/ MVPK
+FOUND = 0
+IF MVPK = "" THEN
+   MVPK = "0"
+   OPEN "VOC" TO GHVOC THEN
+      READ GHREC FROM GHVOC, "MVPKG.LOCK" THEN MVPK = "1"
+   END
+END
+IF MVPK = "1" THEN CALL MVPKG.HAS(NAME, FOUND)
+RETURN

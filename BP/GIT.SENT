@@ -1,0 +1,18 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.SENT
+*  * @version 1.0
+*  */
+* GIT.SENT(s) — s = the current verb sentence, portably: mvx reads SENTENCE(),
+* UniData reads @SENTENCE.  Handlers call this so the one platform difference in
+* fetching the sentence lives in a single place.
+SUBROUTINE GIT.SENT(S)
+$IFDEF MVX
+   S = TRIM(SENTENCE())
+$ELSE
+   S = TRIM(@SENTENCE)
+$ENDIF
+RETURN

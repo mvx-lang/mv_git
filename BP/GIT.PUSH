@@ -7,15 +7,21 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.PUSH
- * @version 1.0
- */
+* /**
+*  * @file GIT.PUSH
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.PUSH
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 REM = FIELD(S, " ", 3)
 SPEC = FIELD(S, " ", 4)
+$IFDEF MVX
 OUT = ""
 CALL GITPUSH(".git", REM, SPEC, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITPUSH(REPO, REM, SPEC)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

@@ -194,3 +194,55 @@ char *GITTAG(char *repo, char *op, char *name, char *target, char *message) {
     mv_ctx_destroy(ctx);
     return emit(repo, r);
 }
+
+/* --- record ops and history rewriting ---------------------------------------
+   RM and SHOW are pure git-object ops (index remove, blob read): a thin bridge.
+   MERGE and CHERRY-PICK do the git ref work here (moving HEAD); the verb then
+   re-materialises the new HEAD *natively* via GITUDT.CHECKOUT — the mv_write
+   materialise these engine subs also run cannot reach a UniData hash file, only
+   the native WRITE loop can, so we let the ref op stand and re-materialise in
+   BASIC.  RESTORE is likewise done natively in BASIC (GITUDT.RESTORE), so it
+   needs no bridge at all. */
+char *GITRM(char *repo, char *file, char *id) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_rm(ctx, rp(repo), file ? file : "", id ? id : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITSHOW(char *repo, char *file, char *id) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_show(ctx, rp(repo), file ? file : "", id ? id : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITMERGE(char *repo, char *name) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_merge(ctx, rp(repo), name ? name : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+char *GITCHERRYPICK(char *repo, char *commit) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_cherrypick(ctx, rp(repo), commit ? commit : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+/* GITSWITCH(repo, name) — move HEAD to branch `name` (git ref + index only, no
+   record materialise); the verb then re-materialises the new HEAD natively. */
+char *GITSWITCH(char *repo, char *name) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_switch(ctx, rp(repo), name ? name : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
+/* GITPING(path) — write the marker "callc-ok" to <path>/gitmsg (no git work).  A
+   disabled CALLC silently no-ops — no error, no side effect — so the verb probes
+   with this and, if the marker does not come back, fails with instructions to
+   build libu2callc.so with the GIT* functions (UniData 8.3.2 needs no UDT.OPTIONS
+   to use CallC) rather than silently doing nothing. */
+char *GITPING(char *path) {
+    char *m = (char *)malloc(9);
+    if (m) memcpy(m, "callc-ok", 9);
+    return emit(path, m);
+}

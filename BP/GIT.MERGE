@@ -7,19 +7,27 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.MERGE
- * @version 1.0
- */
+* /**
+*  * @file GIT.MERGE
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.MERGE
-NM = FIELD(TRIM(SENTENCE()), " ", 3)
+CALL GIT.SENT(S)
+NM = FIELD(S, " ", 3)
 IF NM = "" THEN
    PRINT "usage: GIT MERGE branch"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITMERGE(".git", NM, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITMERGE(REPO, NM)
+CALL GITUDT.SHOW(REPO)                ;* the merge result (fast-forward / conflict)
+CALL GITUDT.CHECKOUT(REPO)           ;* re-materialise the merged HEAD natively
+$ENDIF
 RETURN

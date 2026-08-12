@@ -2138,6 +2138,36 @@ void mvx_sub_GITCHECKOUT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[2], out, (int64_t)strlen(out));
 }
 
+/* GITSWITCH(repo, name, out) — move HEAD to local branch `name` and reset the
+   index to its tree, but do NOT materialize records.  The UniData CHECKOUT uses
+   this and then re-materializes the new HEAD natively (GITUDT.CHECKOUT), because
+   mv_write cannot reach a UniData hash file — only the native WRITE loop can.  On
+   MVX the ordinary GITCHECKOUT (switch + materialize in one) is used instead. */
+void mvx_sub_GITSWITCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], name[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], name, sizeof name);
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
+    git_reference *br = NULL;
+    if (git_branch_lookup(&br, repo, name, GIT_BRANCH_LOCAL) != 0) {
+        git_repository_free(repo);
+        fail(argv[2], "no such branch");
+        return;
+    }
+    git_repository_set_head(repo, git_reference_name(br));
+    git_reference_free(br);
+    git_tree *t = head_tree(repo);
+    if (t) { sync_index(repo, rp, t); git_tree_free(t); }
+    git_repository_free(repo);
+    char out[300];
+    snprintf(out, sizeof out, "switched to %s", name);
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
+}
+
 /* Commit a merged/cherry-picked index and materialize it. */
 static void finish_merge(mv_ctx *ctx, git_repository *repo,
                          const char *rp, git_index *mindex,
@@ -2932,6 +2962,10 @@ char *mv_git_branch(mv_ctx *ctx, const char *repo, const char *name) {
 char *mv_git_checkout(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITCHECKOUT, ctx, a, 2);
+}
+char *mv_git_switch(mv_ctx *ctx, const char *repo, const char *name) {
+    const char *a[] = {repo, name};
+    return run_sub(mvx_sub_GITSWITCH, ctx, a, 2);
 }
 char *mv_git_merge(mv_ctx *ctx, const char *repo, const char *branch) {
     const char *a[] = {repo, branch};

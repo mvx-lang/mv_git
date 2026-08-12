@@ -7,12 +7,12 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.CLONE
- * @version 1.0
- */
+* /**
+*  * @file GIT.CLONE
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.CLONE
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 URL = FIELD(S, " ", 3)
 DIR = FIELD(S, " ", 4)
 REF = FIELD(S, " ", 5)
@@ -20,7 +20,13 @@ IF URL = "" OR DIR = "" THEN
    PRINT "usage: GIT CLONE url dir {ref}"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITCLONE(URL, DIR, REF, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITCLONE(REPO, URL, DIR, REF)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

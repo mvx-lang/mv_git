@@ -7,14 +7,19 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.STATUS
- * @version 4.0
- */
+* /**
+*  * @file GIT.STATUS
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.STATUS
+$IFDEF MVX
 OUT = ""
 CALL GITSTATUS(".git", OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+REPO = @PATH : "/.git"
+CALL GITUDT.STATUS(REPO)
+$ENDIF
 RETURN

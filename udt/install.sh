@@ -127,8 +127,33 @@ UDTHOME="$UDTHOME" PATH="$UDTHOME/bin:$PATH" sh "$HERE/udt-callc-build.sh" add "
 # with 'Copy catalog file error'.  We run as the operator now but still have sudo
 # — hand it back first (a fresh install is a harmless no-op).
 sudo chown "$OWNER:$GROUP" "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null || true
-say "compiling + globally cataloging the GIT verb"
-( cd "$HERE" && printf 'BASIC BP GIT\nCATALOG BP GIT FORCE\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
+
+# 3.5) register the BP.INC include file and write the platform header GIT compiles
+#      against.  BP/GIT begins with `$INCLUDE BP.INC PLATFORM.H`; UniData resolves
+#      that only when BP.INC is a VOC-registered directory-file, so CREATE.FILE DIR
+#      makes the directory + its VOC pointer (it errors harmlessly on a re-install),
+#      then we write the UDT defines.  Must precede the catalog below.
+say "registering BP.INC + writing PLATFORM.H (UDT platform defines)"
+( cd "$HERE" && printf 'CREATE.FILE DIR BP.INC\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
+printf '%s\n' \
+  '* PLATFORM.H - UniData (UDT) platform defines, written by install.sh.' \
+  '$DEFINE MV' \
+  '$DEFINE UDT' > "$HERE/BP.INC/PLATFORM.H"
+
+say "compiling + globally cataloging the GIT verb + its handler set"
+# The verb dispatches (via cmd) to GIT.* handlers, which delegate the heavy udt
+# ops to GITUDT.*; GIT.HAS/GIT.SENT/GIT.CMD.* round it out.  All must be compiled
+# + globally cataloged so the verb resolves them in every account.
+# Compile + CATALOG one program per udt invocation.  A bulk `BASIC BP <all>` can
+# segfault udt on a large set, and a single session with many CATALOGs after a
+# bulk BASIC does not reliably catalog them all (the subs get skipped) — so the
+# verb then can't resolve GIT.HAS / the handlers.  One program per udt is slower
+# but robust.
+GITBP="$(cd "$HERE/BP" && ls 2>/dev/null | tr '\n' ' ')"
+( cd "$HERE"
+  for gn in $GITBP; do
+    printf 'BASIC BP %s\nCATALOG BP %s FORCE\n' "$gn" "$gn" | LANG="$LANG_OK" TERM=dumb "$UDT" >/dev/null 2>&1
+  done ) || true
 if ls "$UDTHOME"/sys/CTLG/*/GIT >/dev/null 2>&1; then
   say "GIT cataloged globally -> $(ls "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null | head -1)"
 else

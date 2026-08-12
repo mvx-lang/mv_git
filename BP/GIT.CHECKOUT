@@ -7,12 +7,14 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.CHECKOUT
- * @version 1.0
- */
+* /**
+*  * @file GIT.CHECKOUT
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.CHECKOUT
-NM = FIELD(TRIM(SENTENCE()), " ", 3)
+CALL GIT.SENT(S)
+NM = FIELD(S, " ", 3)
+$IFDEF MVX
 IF NM = "" THEN
    PRINT "usage: GIT CHECKOUT branch"
    RETURN
@@ -20,4 +22,14 @@ END
 OUT = ""
 CALL GITCHECKOUT(".git", NM, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+IF NM # "" THEN
+   R = CALLC GITSWITCH(REPO, NM)             ;* move HEAD to the branch (git side)
+   OSREAD MSG FROM REPO : "/gitmsg" ELSE MSG = ""
+   PRINT MSG
+   IF MSG[1, 8] # "switched" THEN RETURN     ;* no such branch — HEAD unchanged
+END
+CALL GITUDT.CHECKOUT(REPO)                   ;* re-materialise the (new) HEAD natively
+$ENDIF
 RETURN

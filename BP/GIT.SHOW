@@ -7,21 +7,27 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.SHOW
- * @version 4.0
- */
+* /**
+*  * @file GIT.SHOW
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.SHOW
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 FN = FIELD(S, " ", 3)
 ID = FIELD(S, " ", 4)
 IF FN = "" OR ID = "" THEN
    PRINT "usage: GIT SHOW file record"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITSHOW(".git", FN, ID, OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITSHOW(REPO, FN, ID)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

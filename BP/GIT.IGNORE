@@ -7,27 +7,39 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.IGNORE
- * @version 1.0
- */
+* /**
+*  * @file GIT.IGNORE
+*  * @version 1.0
+*  */
 * GIT IGNORE pattern — keep matching records out of history.
 SUBROUTINE GIT.IGNORE
-PAT = FIELD(TRIM(SENTENCE()), " ", 3, 99)
+CALL GIT.SENT(S)
+PAT = FIELD(S, " ", 3, 99)
 IF PAT = "" THEN
    PRINT "usage: GIT IGNORE pattern"
    RETURN
 END
+$IFDEF MVX
 OPEN "." TO ACC ELSE
    PRINT "cannot open the account directory"
    RETURN
 END
 READ IG FROM ACC, "GITIGNORE" ELSE IG = ""
+$ELSE
+* the account-root GITIGNORE record is an OS file under @PATH (same content as
+* MVX's "." dir-file record — 0xFE-separated patterns) so ADD can stage it.
+IGF = @PATH : "/GITIGNORE"
+OSREAD IG FROM IGF ELSE IG = ""
+$ENDIF
 LOCATE(PAT, IG; POS) THEN
    PRINT PAT:" already ignored"
    RETURN
 END
 IG<-1> = PAT
+$IFDEF MVX
 WRITE IG ON ACC, "GITIGNORE"
+$ELSE
+OSWRITE IG ON IGF
+$ENDIF
 PRINT "ignoring ":PAT
 RETURN

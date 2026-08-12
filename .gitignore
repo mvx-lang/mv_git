@@ -12,3 +12,5 @@ BP.O.DICT/
 *.dylib
 *.so
 udt-callc/*.o
+# PLATFORM.H is a per-platform build artifact (mkpkg.sh / build-udt.sh write it)
+BP.INC/PLATFORM.H

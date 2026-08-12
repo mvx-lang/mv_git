@@ -7,19 +7,25 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.RM
- * @version 4.0
- */
+* /**
+*  * @file GIT.RM
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.RM
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 FN = FIELD(S, " ", 3)
 ID = FIELD(S, " ", 4)
 IF FN = "" THEN
    PRINT "usage: GIT RM file {record}"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITRM(".git", FN, ID, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITRM(REPO, FN, ID)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

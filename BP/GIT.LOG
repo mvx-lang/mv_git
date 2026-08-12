@@ -7,14 +7,20 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.LOG
- * @version 4.0
- */
+* /**
+*  * @file GIT.LOG
+*  * @version 4.0
+*  */
 SUBROUTINE GIT.LOG
+$IFDEF MVX
 OUT = ""
 CALL GITLOG(".git", "20", OUT)
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITLOG(REPO, "20")
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

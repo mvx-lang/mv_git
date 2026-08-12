@@ -7,13 +7,20 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.FETCH
- * @version 1.0
- */
+* /**
+*  * @file GIT.FETCH
+*  * @version 1.0
+*  */
 SUBROUTINE GIT.FETCH
-REM = FIELD(TRIM(SENTENCE()), " ", 3)
+CALL GIT.SENT(S)
+REM = FIELD(S, " ", 3)
+$IFDEF MVX
 OUT = ""
 CALL GITFETCH(".git", REM, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+R = CALLC GITFETCH(REPO, REM)
+CALL GITUDT.SHOW(REPO)
+$ENDIF
 RETURN

@@ -1,0 +1,24 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GITUDT.REQUIRECALLC
+*  * @version 1.0
+*  */
+* GITUDT.REQUIRECALLC(ok) — ok = 1 if UniData CallC is enabled for this session.
+* A disabled CALLC silently no-ops (no error), so probe with GITPING: it writes the
+* marker "callc-ok" to @PATH/gitmsg only when CallC actually runs.  On MVX ok is
+* always 1 (no CallC involved).  The probe is a plain function call (not PERFORM),
+* so it does not disturb @SENTENCE.
+SUBROUTINE GITUDT.REQUIRECALLC(OK)
+OK = 1
+$IFNDEF MVX
+   OK = 0
+   PROBE = @PATH : "/gitmsg"
+   OSWRITE "" ON PROBE          ;* clear first — a stale marker would false-positive
+   R = CALLC GITPING(@PATH)     ;* writes "callc-ok" only if CallC actually runs
+   OSREAD M FROM PROBE ELSE M = ""
+   IF M[1, 8] = "callc-ok" THEN OK = 1
+$ENDIF
+RETURN

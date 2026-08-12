@@ -7,12 +7,12 @@
 * the extent permitted by law; see the LICENSE file for details.
 *
 * SPDX-License-Identifier: GPL-2.0-only
-/**
- * @file GIT.RESTORE
- * @version 4.1
- */
+* /**
+*  * @file GIT.RESTORE
+*  * @version 4.1
+*  */
 SUBROUTINE GIT.RESTORE
-S = TRIM(SENTENCE())
+CALL GIT.SENT(S)
 A = FIELD(S, " ", 3)
 IF A = "DICT" THEN
    FN = FIELD(S, " ", 4):".DICT"
@@ -23,7 +23,12 @@ IF FN = ".DICT" OR FN = "" THEN
    PRINT "usage: GIT RESTORE {DICT} file"
    RETURN
 END
+$IFDEF MVX
 OUT = ""
 CALL GITRESTORE(".git", FN, OUT)
 PRINT OUT
+$ELSE
+REPO = @PATH : "/.git"
+CALL GITUDT.RESTORE(REPO, FN)
+$ENDIF
 RETURN
