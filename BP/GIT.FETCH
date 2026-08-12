@@ -19,7 +19,6 @@ OUT = ""
 CALL GITFETCH(".git", REM, OUT)
 PRINT OUT
 $ELSE
-PERFORM "UDT.OPTIONS 88 ON"  ;* once per invocation; better: enable in the login PROC (mv_git#25)
 REPO = @PATH : "/.git"
 R = CALLC GITFETCH(REPO, REM)
 CALL GITUDT.SHOW(REPO)

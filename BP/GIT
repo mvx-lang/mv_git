@@ -26,6 +26,15 @@
 $INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 MVPK = ""                            ;* init GIT.HAS's per-run lock-probe cache
+$IFNDEF MVX
+CALL GITUDT.REQUIRECALLC(CCOK)       ;* the udt handlers need CallC; fail clearly if off
+IF NOT(CCOK) THEN
+   PRINT "GIT: CallC is not enabled for this UniData session."
+   PRINT "     Add  UDT.OPTIONS 88 ON  to your account login PROC (the LOGIN"
+   PRINT "     paragraph) so every session has it, or run it once before GIT."
+   STOP
+END
+$ENDIF
 * --- cmd-framework dispatch (picks the installed cmd, else the bundled GIT.CMD.*)
 * git bundles a cut-down cmd as GIT.CMD.*; when the mvpkg-installed cmd is present
 * GIT.HAS("cmd") is true and we dispatch through the real CMD.* instead.  The set

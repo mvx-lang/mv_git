@@ -194,3 +194,13 @@ char *GITTAG(char *repo, char *op, char *name, char *target, char *message) {
     mv_ctx_destroy(ctx);
     return emit(repo, r);
 }
+
+/* GITPING(path) — write the marker "callc-ok" to <path>/gitmsg (no git work).  A
+   disabled CALLC silently no-ops — no error, no side effect — so the verb probes
+   with this and, if the marker does not come back, fails with instructions to
+   enable CallC (UDT.OPTIONS 88 ON) rather than silently doing nothing. */
+char *GITPING(char *path) {
+    char *m = (char *)malloc(9);
+    if (m) memcpy(m, "callc-ok", 9);
+    return emit(path, m);
+}

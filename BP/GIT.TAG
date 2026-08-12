@@ -46,7 +46,6 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
-PERFORM "UDT.OPTIONS 88 ON"  ;* once per invocation; better: enable in the login PROC (mv_git#25)
 REPO = @PATH : "/.git"
 R = CALLC GITTAG(REPO, OP, NM, TGT, MSG)
 CALL GITUDT.SHOW(REPO)

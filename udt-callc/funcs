@@ -13,3 +13,4 @@ GITPUSH:string:3:string,string,string
 GITREMOTE:string:4:string,string,string,string
 GITCONFIG:string:3:string,string,string
 GITTAG:string:5:string,string,string,string,string
+GITPING:string:1:string
