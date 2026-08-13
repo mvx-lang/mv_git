@@ -27,7 +27,16 @@ $INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 MVPK = ""                            ;* init GIT.HAS's per-run lock-probe cache
 $IFNDEF MVX
-CALL GITUDT.REQUIRECALLC(CCOK)       ;* the udt handlers need CallC; fail clearly if not
+* the udt handlers need CallC; probe it and fail clearly if it is disabled.  A
+* disabled CALLC silently no-ops (no error), so GITPING writes the marker
+* "callc-ok" to @PATH/gitmsg only when CallC actually runs — a plain function
+* call (not PERFORM), so it does not disturb @SENTENCE.
+CCOK = 0
+PROBE = @PATH : "/gitmsg"
+OSWRITE "" ON PROBE                  ;* clear first — a stale marker would false-positive
+R = CALLC GITPING(@PATH)             ;* writes "callc-ok" only if CallC actually runs
+OSREAD M FROM PROBE ELSE M = ""
+IF M[1, 8] = "callc-ok" THEN CCOK = 1
 IF NOT(CCOK) THEN
    PRINT "GIT: UniData CallC is not available (its git functions return nothing)."
    PRINT "     Run the git install so libu2callc.so is built with the GIT* CallC"
