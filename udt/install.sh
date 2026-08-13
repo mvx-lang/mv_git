@@ -149,7 +149,9 @@ say "compiling + globally cataloging the GIT verb + its handler set"
 # bulk BASIC does not reliably catalog them all (the subs get skipped) — so the
 # verb then can't resolve GIT.HAS / the handlers.  One program per udt is slower
 # but robust.
-GITBP="$(cd "$HERE/BP" && ls 2>/dev/null | tr '\n' ' ')"
+# Files only: BP/ can also hold a generated include DIRECTORY (BP/BP.INC, written
+# by mkpkg beside the sources), which is not a program to compile.
+GITBP="$(cd "$HERE/BP" 2>/dev/null && for f in *; do [ -f "$f" ] && printf '%s ' "$f"; done)"
 ( cd "$HERE"
   for gn in $GITBP; do
     printf 'BASIC BP %s\nCATALOG BP %s FORCE\n' "$gn" "$gn" | LANG="$LANG_OK" TERM=dumb "$UDT" >/dev/null 2>&1

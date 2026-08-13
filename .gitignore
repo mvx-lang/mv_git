@@ -12,5 +12,7 @@ BP.O.DICT/
 *.dylib
 *.so
 udt-callc/*.o
-# PLATFORM.H is a per-platform build artifact (mkpkg.sh / build-udt.sh write it)
-BP.INC/PLATFORM.H
+# PLATFORM.H is a per-platform build artifact (mkpkg.sh / build-udt.sh write it),
+# generated both at the package root and beside the BP sources — the pattern is
+# unanchored so it covers BP.INC/ and BP/BP.INC/ alike.
+**/PLATFORM.H
