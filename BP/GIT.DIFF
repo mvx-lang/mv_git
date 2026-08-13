@@ -21,7 +21,60 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
+* UniData (Model B) DIFF: for each committed record that differs from the live
+* one, print the changed attributes (-committed / +working).  Same session-only
+* compare as STATUS; a non-empty file arg limits it to one file.
 REPO = @PATH : "/.git"
-CALL GITUDT.DIFF(REPO, FN)
+DFILE = FN                          ;* the file filter (FN below is the loop's current file)
+AM = CHAR(254) ; LF = CHAR(10)
+FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NDF = 0
+R = CALLC GITFILES(REPO)
+OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+NP = DCOUNT(PATHS, AM)
+FOR I = 1 TO NP
+   P = PATHS<I> ; LP = LEN(P)
+   IF P = ".mv-account" OR P = ".udt" OR P = ".mvx" THEN GOTO NEXTD
+   IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN GOTO NEXTD
+   SL = INDEX(P, "/", 1) ; IF SL = 0 THEN GOTO NEXTD
+   FN = P[1, SL-1] ; RID = P[SL+1, LP]
+   IF DFILE # "" AND FN # DFILE THEN GOTO NEXTD
+   R = CALLC GITCAT(REPO, P)
+   OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+   GOSUB OPENREC ; LV = ""
+   IF ROK THEN
+      READ LV FROM RV, RID ELSE LV = ""
+   END
+   GOSUB SAMEREC
+   IF NOT(SAME) THEN
+      PRINT "diff " : P
+      NAT = DCOUNT(CB, AM) ; NBT = DCOUNT(LV, AM)
+      MX = NAT ; IF NBT > MX THEN MX = NBT
+      FOR A = 1 TO MX
+         OA = CB<A> ; NW = LV<A>
+         IF OA # NW THEN
+            IF OA # "" THEN PRINT "-" : OA
+            IF NW # "" THEN PRINT "+" : NW
+         END
+      NEXT A
+      NDF += 1
+   END
+NEXTD:
+NEXT I
+IF NDF = 0 THEN PRINT "no changes"
+RETURN
+OPENREC:
+   ROK = 0 ; LFN = LEN(FN)
+   IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
+      OPEN "DICT", FN[1, LFN-5] TO RV THEN ROK = 1
+   END ELSE
+      OPEN FN TO RV THEN ROK = 1
+   END
+   RETURN
+SAMEREC:
+   IF INDEX(LV, CHAR(0), 1) > 0 THEN SAME = 1 ; RETURN
+   GLV = LV ; CONVERT AM TO LF IN GLV
+   GCB = CB ; CONVERT AM TO LF IN GCB
+   SAME = (GLV = GCB)
+   RETURN
 $ENDIF
 RETURN
