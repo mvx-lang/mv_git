@@ -113,8 +113,11 @@ NEXTREC:
       LOOP
          READNEXT LID FROM 9 ELSE EXIT
          IF INDEX(HW, AM:LID:AM, 1) = 0 THEN
-            DELETE DV, LID
-            NDEL += 1
+            GOSUB KEEPCHK
+            IF KEEP = 0 THEN
+               DELETE DV, LID
+               NDEL += 1
+            END
          END
       REPEAT
 NEXTDEL:
@@ -141,6 +144,23 @@ NEXTDEL:
    PRINT NREST : " record(s) restored across " : NFC : " file(s)"
    IF NDEL > 0 THEN PRINT NDEL : " stale record(s) removed"
    GOSUB IXPROMPT
+   RETURN
+* KEEPCHK — is this live record one that must NEVER be deleted as "stale"?
+* Open format deliberately DROPS the VOC pointer records (GIT.ADD: V/K, F/LF/DF/
+* DIR, Q/X/R) as machine-specific, so they are absent from HEAD by design — and
+* pass 2b, which deletes whatever HEAD does not carry, would therefore delete the
+* account's verbs and file pointers and leave it unable to run a command.  Skip
+* those types.  Safe in both formats: a pointer that IS captured is in HEAD, so it
+* was never a delete candidate in the first place.  Mirrors GIT.ADD's drop list —
+* the two must stay in step.
+KEEPCHK:
+   KEEP = 0
+   IF FN # "VOC" THEN RETURN
+   READ KR FROM DV, LID ELSE RETURN
+   KT = TRIM(KR<1>)
+   IF KT = "V" OR KT = "K" THEN KEEP = 1
+   IF KT = "F" OR KT = "LF" OR KT = "DF" OR KT = "DIR" THEN KEEP = 1
+   IF KT = "Q" OR KT = "X" OR KT = "R" THEN KEEP = 1
    RETURN
 *  If any file's indexes changed, list them and ask before rebuilding (#11).
 IXPROMPT:
