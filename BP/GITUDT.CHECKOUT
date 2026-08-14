@@ -13,7 +13,7 @@
 * (#11) and, if any, prompt to rebuild.
 SUBROUTINE GITUDT.CHECKOUT(REPO)
 $IFNDEF MVX
-   AM = CHAR(254)
+   AM = CHAR(254) ; LF = CHAR(10)
    NREST = 0 ; NFC = 0 ; NDEL = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
    IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)
    R = CALLC GITFILES(REPO)
@@ -36,6 +36,35 @@ $IFNDEF MVX
          NFC += 1
       END
    NEXT I
+*  pass 1b - restore the account's Q-pointers from the %QPOINTERS% control.
+*  They are account attributes with nothing to re-derive them from (unlike the
+*  file and verb pointers, which come back from %FILE% and cataloging), so
+*  without this a materialised account loses them.  One
+*  "name<TAB>account<TAB>file" line each; the target account has to exist here,
+*  which is the same condition as when the pointer was written by hand.
+   NQR = 0
+   FOR I = 1 TO NP
+      IF PATHS<I> = "%QPOINTERS%" THEN
+         R = CALLC GITCAT(REPO, "%QPOINTERS%")
+         OSREAD QPG FROM REPO : "/gitcat" ELSE QPG = ""
+         OPEN "VOC" TO QVF THEN
+            NQL = DCOUNT(QPG, LF)
+            FOR QI = 1 TO NQL
+               QL = FIELD(QPG, LF, QI)
+               IF TRIM(QL) # "" THEN
+                  QID = FIELD(QL, CHAR(9), 1)
+                  QACC = FIELD(QL, CHAR(9), 2)
+                  QFIL = FIELD(QL, CHAR(9), 3)
+                  IF QID # "" AND QACC # "" THEN
+                     WRITE ("Q" : AM : QACC : AM : QFIL) ON QVF, QID
+                     NQR += 1
+                  END
+               END
+            NEXT QI
+         END
+      END
+   NEXT I
+   IF NQR > 0 THEN PRINT NQR : " Q-pointer(s) restored"
 *  pass 2 - WRITE every record (skip the descriptor and the %FILE% controls)
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)

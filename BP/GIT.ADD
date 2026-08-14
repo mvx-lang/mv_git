@@ -97,10 +97,37 @@ ADDALL:
       NFILES += 1
    NEXT K
    IF OPENFMT THEN
+      * The account descriptor — its identity, not a backend choice.  (It used to
+      * record "hash = lmdb", an MVX driver name that means nothing here and is
+      * not even what MVX itself writes; the materialising side picks the backend.)
       NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
-      DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
+      DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF
       R = CALLC GITSTAGEBLOB(REPO, ".mv-account", DESC)
+      GOSUB QPSTAGE
    END
+   RETURN
+* Q-pointers are account ATTRIBUTES worth carrying: each names another account
+* and a file in it, so it restores anywhere the target exists.  The other VOC
+* pointer types are dropped in open format and legitimately re-derived — files
+* from their %FILE% control, verbs by cataloging — but a Q-pointer has nothing to
+* re-derive it from, so without this it is simply lost on materialise.
+* One "name<TAB>account<TAB>file" line each, in a %QPOINTERS% control beside them.
+QPSTAGE:
+   QPG = "" ; NQP = 0
+   OPEN "VOC" TO QPF ELSE RETURN
+   SELECT QPF
+   LOOP WHILE READNEXT QID DO
+      READ QREC FROM QPF, QID THEN
+         IF QREC<1>[1, 1] = "Q" THEN
+            QACC = TRIM(QREC<2>) ; QFIL = TRIM(QREC<3>)
+            IF QACC # "" THEN
+               QPG := QID : CHAR(9) : QACC : CHAR(9) : QFIL : LF
+               NQP += 1
+            END
+         END
+      END
+   REPEAT
+   IF NQP > 0 THEN R = CALLC GITSTAGEBLOB(REPO, "%QPOINTERS%", QPG)
    RETURN
 FILECLASS:
    CTL = "hash"
