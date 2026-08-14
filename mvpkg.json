@@ -1,14 +1,42 @@
 {
   "name": "mvx-lang/git",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "git for hash-file records (branch/merge)",
   "license": "GPL-2.0-only",
-  "systems": ["mvx", "udt"],
-  "dependencies": ["mvx-lang/cmd"],
-  "clibs": ["libgit2.so:>=1.7,<2.8"],
-  "shell": ["sudo", "chown", "cp", "install", "mkdir", "gcc", "udt-callc-build", "git", "ldd", "ldconfig", "id", "ls", "awk", "od"],
+  "systems": [
+    "mvx",
+    "udt"
+  ],
+  "dependencies": [
+    "mvx-lang/cmd"
+  ],
+  "clibs": [
+    "libgit2.so:>=1.7,<2.8"
+  ],
+  "shell": [
+    "sudo",
+    "chown",
+    "cp",
+    "install",
+    "mkdir",
+    "gcc",
+    "udt-callc-build",
+    "git",
+    "ldd",
+    "ldconfig",
+    "id",
+    "ls",
+    "awk",
+    "od"
+  ],
   "deploy": {
-    "verbs": ["GIT"],
-    "fallback": { "cmd": ["CMD.BP"] }
+    "verbs": [
+      "GIT"
+    ],
+    "fallback": {
+      "cmd": [
+        "CMD.BP"
+      ]
+    }
   }
 }
