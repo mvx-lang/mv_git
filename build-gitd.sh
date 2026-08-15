@@ -38,3 +38,15 @@ $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
     -o "$OUT/mvgitd" $LG2_LIBS
 
 echo "built $OUT/mvgitd"
+
+# uv-git — the shell-side entry point.  It drives the in-session GIT verb rather
+# than reaching records from C, because on UniVerse it cannot: GCI is licensed
+# and dead in the TE, and InterCall is a client SDK not available for Linux.  It
+# still links the engine, for `uv-git textconv`, which is pure git-object work
+# and so needs no session — hence the same recordless backend as mvgitd.
+$CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
+    -I"$SRC" $LG2_CFLAGS \
+    "$SRC/uv-git.c" "$SRC/gitd_rt.c" "$SRC/mvxgit.c" \
+    -o "$OUT/uv-git" $LG2_LIBS
+
+echo "built $OUT/uv-git"
