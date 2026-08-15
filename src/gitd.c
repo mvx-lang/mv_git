@@ -52,12 +52,16 @@
 #include <unistd.h>
 
 /* How long the server lingers with no sessions before exiting, and how long a
-   child waits on a silent client before giving up.  Both bound the "finish what
-   it is doing and log out" behaviour without depending on a clean logout, which
-   may never come — a killed session leaves a FIFO behind, and a FIFO outlives
-   the process that served it. */
+   child waits on a silent client before giving up.  These are BACKSTOPS, not the
+   mechanism: a child normally leaves as soon as it notices its session has gone
+   (see session_alive), and these bound the case where that check cannot help —
+   a client that is alive but has stopped talking.  A killed session leaves a
+   FIFO behind either way, since a FIFO outlives the process that served it. */
 #define IDLE_EXIT_SECS    300
 #define SESSION_IDLE_SECS 900
+
+/* How often a child looks up to see whether its session is still there. */
+#define LIVENESS_POLL_SECS 5
 
 static char g_dir[MVG_PATH_MAX];      /* run directory, 0700 */
 static char g_token[MVG_TOKEN_LEN + 1];
@@ -411,6 +415,17 @@ static int send_err(int fd, int status, const char *msg) {
     return send_rsp(fd, status, msg, (long)strlen(msg));
 }
 
+/* Is the session that asked for this child still there?  kill(pid, 0) tests for
+   the process without touching it; EPERM counts as alive, since a process we may
+   not signal still exists.  A pid of 0 means the caller did not tell us (an
+   older client, or a platform where it cannot know), and then the answer is
+   always "alive" — the timers alone govern, exactly as before. */
+static int session_alive(long pid) {
+    if (pid <= 0) return 1;
+    if (kill((pid_t)pid, 0) == 0) return 1;
+    return errno == EPERM;
+}
+
 static void free_args(args *g) {
     for (int i = 0; i < g->n; i++) free(g->a[i]);
     free(g->a); free(g->l);
@@ -423,8 +438,15 @@ static void free_args(args *g) {
  * child moves there before serving anything, because the engine's model is that
  * the current directory IS the account and the repository is `.git` inside it —
  * exactly how mvx-git and udt-git run.  Without this the daemon would serve from
- * wherever it happened to be started first, which is nobody's account. */
-static void serve_session(const char *sid, const char *cwd) {
+ * wherever it happened to be started first, which is nobody's account.
+ *
+ * `spid` is the session process itself, and it is how "exit when the user logs
+ * out" actually works.  There is no other signal available: the pipes are held
+ * O_RDWR so that a client closing between commands does not end the session,
+ * and that same choice means a client's close delivers no EOF.  So the child
+ * watches the process instead — when it is gone, wrap up at once rather than
+ * sitting out the idle timer. */
+static void serve_session(const char *sid, const char *cwd, long spid) {
     char reqp[MVG_PATH_MAX], rspp[MVG_PATH_MAX], leaf[256];
 
     snprintf(leaf, sizeof leaf, "s%s.req", sid); pathcat(reqp, sizeof reqp, leaf);
@@ -445,10 +467,21 @@ static void serve_session(const char *sid, const char *cwd) {
     int rsp = open(rspp, O_RDWR);
     if (rsp < 0) { close(req); return; }
 
+    time_t idle_deadline = time(NULL) + SESSION_IDLE_SECS;
+
     for (;;) {
+        /* Wait in short hops rather than one long sleep, so a logout is noticed
+           within LIVENESS_POLL_SECS instead of whenever the idle timer happens
+           to expire.  The deadline is absolute, so hopping does not extend it. */
         struct pollfd pfd = { .fd = req, .events = POLLIN };
-        int pr = poll(&pfd, 1, SESSION_IDLE_SECS * 1000);
-        if (pr <= 0) break;                        /* idle out, or poll failure */
+        int pr = poll(&pfd, 1, LIVENESS_POLL_SECS * 1000);
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) {
+            if (!session_alive(spid)) break;       /* the user has gone */
+            if (time(NULL) >= idle_deadline) break;/* alive but silent: backstop */
+            continue;
+        }
+        idle_deadline = time(NULL) + SESSION_IDLE_SECS;
 
         char hdr[MVG_REQ_HDR];
         int rr = read_full(req, hdr, sizeof hdr);
@@ -575,7 +608,11 @@ static void server_loop(int lockfd) {
     signal(SIGTERM, on_term);
     signal(SIGINT,  on_term);
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN);           /* children are fire-and-forget */
+    /* SIG_DFL, not SIG_IGN: the default disposition still lets a finished child
+       become a zombie, which is what lets us reap it and keep an accurate count.
+       SIG_IGN would discard them silently and leave us unable to tell whether
+       anyone is still working. */
+    signal(SIGCHLD, SIG_DFL);
 
     /* O_RDWR keeps a writer on the control FIFO at all times, so poll() blocks
        rather than spinning on EOF between clients. */
@@ -585,14 +622,23 @@ static void server_loop(int lockfd) {
     time_t last = time(NULL);
     char line[MVG_PATH_MAX + 64];       /* HELLO + session key + account path */
     size_t used = 0;
+    int children = 0;
 
     while (!g_stop) {
         struct pollfd pfd = { .fd = ctl, .events = POLLIN };
         int pr = poll(&pfd, 1, 10 * 1000);
         if (pr < 0) { if (errno == EINTR) continue; break; }
 
+        /* Reap anything that has finished, so `children` is a true count. */
+        while (children > 0 && waitpid(-1, NULL, WNOHANG) > 0) children--;
+
         if (pr == 0) {
-            if (time(NULL) - last >= IDLE_EXIT_SECS) break;   /* idle: go away */
+            /* Idle out only when nobody is working.  Leaving while a child is
+               mid-operation would drop the lock and unlink the control FIFO, and
+               the next session would then start a SECOND server — so "one
+               process per user" would quietly stop holding, and two children
+               could run concurrent index batches in the same account. */
+            if (children == 0 && time(NULL) - last >= IDLE_EXIT_SECS) break;
             continue;
         }
 
@@ -608,15 +654,24 @@ static void server_loop(int lockfd) {
         line[used] = '\0';
         used = 0;
 
-        /* The only control verb: HELLO <sid> <cwd>, whose pipes --connect has
-           already created.  The cwd is the session's account directory, which
-           the child enters before serving.  A child owns the session from
-           here. */
+        /* The only control verb: HELLO <sid> <pid> <cwd>, whose pipes --connect
+           has already created.  `pid` is the session process, watched so the
+           child can leave when the user logs out; `cwd` is the account
+           directory, which the child enters before serving.  The path is taken
+           as the whole remainder, so a directory containing spaces survives.
+           A child owns the session from here. */
         if (strncmp(line, "HELLO ", 6) != 0) continue;
         char *sid = line + 6;
         if (!*sid) continue;
-        char *cwd = strchr(sid, ' ');
-        if (cwd) *cwd++ = '\0';
+        char *rest = strchr(sid, ' ');
+        long spid = 0;
+        char *cwd = NULL;
+        if (rest) {
+            *rest++ = '\0';
+            spid = strtol(rest, NULL, 10);
+            cwd = strchr(rest, ' ');
+            if (cwd) cwd++;
+        }
 
         pid_t pid = fork();
         if (pid == 0) {
@@ -627,9 +682,10 @@ static void server_loop(int lockfd) {
                write HELLO into a control FIFO with no reader and block. */
             close(ctl);
             close(lockfd);
-            serve_session(sid, cwd);
+            serve_session(sid, cwd, spid);
             _exit(0);
         }
+        if (pid > 0) children++;
     }
 
     unlink(ctlp);
@@ -707,7 +763,7 @@ static void ensure_server(void) {
 /* --connect <sid>: ensure a server, create this session's pipes, announce it.
    The pipes are made HERE rather than by the server so that when this command
    returns, the session can open them immediately with no second rendezvous. */
-static int do_connect(const char *sid) {
+static int do_connect(const char *sid, long spid) {
     ensure_token();
     ensure_server();
 
@@ -740,7 +796,7 @@ static int do_connect(const char *sid) {
     int ctl = open(ctlp, O_WRONLY);
     if (ctl < 0) die(ctlp);
     char msg[MVG_PATH_MAX + 64];
-    int n = snprintf(msg, sizeof msg, "HELLO %s %s\n", key, cwd);
+    int n = snprintf(msg, sizeof msg, "HELLO %s %ld %s\n", key, spid, cwd);
     if (write_full(ctl, msg, (size_t)n) != 1) die(ctlp);
     close(ctl);
 
@@ -766,7 +822,7 @@ static int do_stop(void) {
 
 static void usage(void) {
     fprintf(stderr,
-        "usage: mvgitd --connect <session-id> | --serve | --stop | --status\n"
+        "usage: mvgitd --connect <session-id> [session-pid] | --serve | --stop | --status\n"
         "\n"
         "The per-user background process that runs libgit2 for a BASIC session.\n"
         "Started lazily by the GIT verb; exits by itself once idle.\n"
@@ -779,7 +835,13 @@ int main(int argc, char **argv) {
 
     if (strcmp(argv[1], "--connect") == 0) {
         if (argc < 3) { usage(); return 2; }
-        return do_connect(argv[2]);
+        /* The optional third argument is the SESSION's pid — the process the
+           child should watch, so it can leave when the user logs out.  The
+           caller supplies it because we cannot infer it reliably: this command
+           is run by a shell the session forked, so our own parent is that
+           shell, not the session.  Omitted, the timers alone govern. */
+        long spid = (argc > 3) ? strtol(argv[3], NULL, 10) : 0;
+        return do_connect(argv[2], spid);
     }
     if (strcmp(argv[1], "--serve") == 0) {
         ensure_token();

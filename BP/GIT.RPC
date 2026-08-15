@@ -124,7 +124,13 @@ CONNECT:
 *     pipe, token — so the session never has to know the run-state layout, and
 *     there is no environment lookup to do (UniVerse BASIC has no GETENV).
 *     It must run before the OPENSEQs below: OPENSEQ on a missing FIFO fails.
-      EXECUTE "SH -c 'mvgitd --connect " : SID : "'" CAPTURING CONN
+*
+*     $PPID is passed as the session's process id, and it is how the background
+*     process knows to leave when we do.  The shell we fork here is our own
+*     child, so ITS parent is this session — which the shell knows as $PPID and
+*     BASIC has no way to ask for directly.  Single quotes keep it from BASIC;
+*     the shell expands it.
+      EXECUTE "SH -c 'mvgitd --connect " : SID : " $PPID'" CAPTURING CONN
       IF CONN<4> = "" THEN
          STATUS = 1
          RESULT = "the git background process would not start: " : CONN<1>
