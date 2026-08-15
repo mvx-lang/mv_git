@@ -30,9 +30,7 @@
       OK = 0
       PROBE = @PATH : "/gitmsg"
       OSWRITE "" ON PROBE          ;* clear first — a stale marker would false-positive
-      DIM AV(8) ; MAT AV = ""
-      AV(1) = @PATH
-      CALL GIT.OBJ("PING", MAT AV, 1, M)
+      CALL GIT.OBJ("PING", 1, @PATH, "", "", "", "", M)
       IF M[1, 8] = "callc-ok" THEN OK = 1
       IF NOT(OK) THEN
          WHY = "GIT: UniData CallC is not available (its git functions return nothing)."
@@ -44,8 +42,7 @@
 *
       $IFDEF UV
       OK = 0
-      DIM AV(8) ; MAT AV = ""
-      CALL GIT.OBJ("PING", MAT AV, 0, M)
+      CALL GIT.OBJ("PING", 0, "", "", "", "", "", M)
       IF M[1, 7] = "gitd-ok" THEN OK = 1
       IF NOT(OK) THEN
          WHY = "GIT: the git background process is not answering."

@@ -1,4 +1,4 @@
-      SUBROUTINE GIT.RPC(OP, MAT ARGV, NARGS, STATUS, RESULT)
+      SUBROUTINE GIT.RPC(OP, NARGS, A1, A2, A3, A4, A5, STATUS, RESULT)
 *
 * mv_git — record-git for MultiValue.
 * Copyright (C) 2026 Gordon Heydon.
@@ -13,20 +13,20 @@
 * Model B split as the UniData CallC bridge.
 *
 *   OP      the opcode, e.g. "STATUS", "STAGE", "COMMIT"
-*   ARGV    a DIMENSIONED array of the arguments, in the opcode's order.  The
-*           caller DIMs it (8 elements covers every opcode; TAG needs the most,
-*           at 5) and fills ARGV(1)..ARGV(NARGS).
-*   NARGS   how many of them are filled (0 is legal, e.g. PING)
+*   NARGS   how many arguments follow are meaningful (0 is legal, e.g. PING)
+*   A1..A5  the arguments in the opcode's order; 5 covers every opcode (TAG
+*           needs the most).  Pass "" for the ones the opcode does not use.
 *   STATUS  0 on success; otherwise the protocol's error code, and RESULT
 *           carries the message
 *   RESULT  the reply body — engine output (@AM-separated) or raw content
 *
-* WHY A MATRIX AND NOT AN @AM-SEPARATED STRING.  Record content contains
-* attribute marks — that is what a record IS — so an @AM-separated argument
-* list splits a record at its own marks and silently stages the first attribute
-* only.  It is the same rule the wire protocol obeys with length prefixes: no
-* byte is safe as a separator here.  A dimensioned array has no separator at
-* all, which is why it is the right shape for this interface.
+* WHY SEPARATE ARGUMENTS AND NOT AN @AM-SEPARATED STRING.  Record content
+* contains attribute marks — that is what a record IS — so an @AM-separated
+* argument list splits a record at its own marks and silently stages the first
+* attribute only.  It is the same rule the wire protocol obeys with length
+* prefixes: no byte is safe as a separator here.  Separate parameters have no
+* separator at all.  They are scalars rather than a dimensioned array because
+* UniData cannot subscript a MAT parameter — see GIT.OBJ.
 *
 * THE READS ARE EXACT-COUNT, DELIBERATELY.  READBLK does not short-return at
 * EOF on a FIFO: OPENSEQ holds the pipe read/write, so the reader is also a
@@ -62,7 +62,14 @@
 *     the ENCODED length, which is what the far end must read off the pipe.
       BODY = ""
       FOR AI = 1 TO NARGS
-         AV = OCONV(ARGV(AI), "MX")
+         BEGIN CASE
+         CASE AI = 1 ; RAW = A1
+         CASE AI = 2 ; RAW = A2
+         CASE AI = 3 ; RAW = A3
+         CASE AI = 4 ; RAW = A4
+         CASE 1      ; RAW = A5
+         END CASE
+         AV = OCONV(RAW, "MX")
          BODY = BODY : FMT(LEN(AV), "R%10") : AV
       NEXT AI
 *

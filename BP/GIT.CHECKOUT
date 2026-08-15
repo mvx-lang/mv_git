@@ -23,11 +23,9 @@ OUT = ""
 CALL GITCHECKOUT(".git", NM, OUT)
 PRINT OUT
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
 IF NM # "" THEN
-   AV(1) = REPO ; AV(2) = NM
-   CALL GIT.OBJ("SWITCH", MAT AV, 2, OBJOUT)             ;* move HEAD to the branch (git side)
+   CALL GIT.OBJ("SWITCH", 2, REPO, NM, "", "", "", OBJOUT)             ;* move HEAD to the branch (git side)
    MSG = OBJOUT
    PRINT MSG
    IF MSG[1, 8] # "switched" THEN RETURN     ;* no such branch — HEAD unchanged

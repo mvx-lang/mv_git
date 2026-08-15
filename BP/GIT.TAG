@@ -41,10 +41,8 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-AV(1) = REPO ; AV(2) = OP ; AV(3) = NM ; AV(4) = TGT ; AV(5) = MSG
-CALL GIT.OBJ("TAG", MAT AV, 5, OBJOUT)
+CALL GIT.OBJ("TAG", 5, REPO, OP, NM, TGT, MSG, OBJOUT)
 CALL GIT.ECHO(OBJOUT)
 $ENDIF
 RETURN

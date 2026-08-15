@@ -24,10 +24,8 @@ OUT = ""
 CALL GITRM(".git", FN, ID, OUT)
 PRINT OUT
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-AV(1) = REPO ; AV(2) = FN ; AV(3) = ID
-CALL GIT.OBJ("RM", MAT AV, 3, OBJOUT)
+CALL GIT.OBJ("RM", 3, REPO, FN, ID, "", "", OBJOUT)
 CALL GIT.ECHO(OBJOUT)
 $ENDIF
 RETURN

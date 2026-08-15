@@ -19,10 +19,8 @@ OUT = ""
 CALL GITFETCH(".git", REM, OUT)
 PRINT OUT
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-AV(1) = REPO ; AV(2) = REM
-CALL GIT.OBJ("FETCH", MAT AV, 2, OBJOUT)
+CALL GIT.OBJ("FETCH", 2, REPO, REM, "", "", "", OBJOUT)
 CALL GIT.ECHO(OBJOUT)
 $ENDIF
 RETURN

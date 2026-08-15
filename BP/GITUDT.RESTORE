@@ -13,7 +13,6 @@
 * which materialises the whole tree.  FN may be a dictionary (name ending .DICT).
 SUBROUTINE GITUDT.RESTORE(REPO, FN)
 $IFNDEF MVX
-   DIM AV(8) ; MAT AV = ""   ;* argument vector for GIT.OBJ
    AM = CHAR(254)
    LFN = LEN(FN)
    IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
@@ -27,8 +26,7 @@ $IFNDEF MVX
          RETURN
       END
    END
-   AV(1) = REPO
-   CALL GIT.OBJ("FILES", MAT AV, 1, PATHS)
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    PFX = FN : "/" ; LPF = LEN(PFX)
    NR = 0
@@ -37,8 +35,7 @@ $IFNDEF MVX
       IF LEN(P) > LPF AND P[1, LPF] = PFX THEN
          ID = P[LPF+1, LEN(P)]
          IF ID # "" AND ID[1, 1] # "%" THEN     ;* skip the %FILE%/%INDEXES% controls
-            AV(1) = REPO ; AV(2) = P
-            CALL GIT.OBJ("CAT", MAT AV, 2, REC)
+            CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", REC)
             WRITE REC ON FV, ID
             NR += 1
          END

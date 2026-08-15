@@ -20,10 +20,8 @@ OUT = ""
 CALL GITPULL(".git", REM, BR, OUT)
 PRINT OUT
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-AV(1) = REPO ; AV(2) = REM ; AV(3) = BR
-CALL GIT.OBJ("PULL", MAT AV, 3, OBJOUT)
+CALL GIT.OBJ("PULL", 3, REPO, REM, BR, "", "", OBJOUT)
 CALL GIT.ECHO(OBJOUT)
 $ENDIF
 RETURN

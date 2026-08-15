@@ -25,10 +25,8 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
-DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-AV(1) = REPO ; AV(2) = NM
-CALL GIT.OBJ("MERGE", MAT AV, 2, OBJOUT)
+CALL GIT.OBJ("MERGE", 2, REPO, NM, "", "", "", OBJOUT)
 CALL GIT.ECHO(OBJOUT)                ;* the merge result (fast-forward / conflict)
 CALL GITUDT.CHECKOUT(REPO)           ;* re-materialise the merged HEAD natively
 $ENDIF

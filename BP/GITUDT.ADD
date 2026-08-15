@@ -13,7 +13,6 @@
 * Records go into the batched CallC index (GITSTAGE); GIT COMMIT flushes it.
 SUBROUTINE GITUDT.ADD(REPO, S)
 $IFNDEF MVX
-   DIM AV(8) ; MAT AV = ""   ;* argument vector for GIT.OBJ
    AM = CHAR(254) ; VM = CHAR(253) ; LF = CHAR(10)
    ARG3 = FIELD(S, " ", 3)
    OPENFMT = 0
@@ -59,8 +58,7 @@ ADDALL:
       GOSUB STAGEDICT
       IF OPENFMT THEN
          GOSUB FILECLASS
-         AV(1) = REPO ; AV(2) = FILE:".DICT/%FILE%" ; AV(3) = CTL
-         CALL GIT.OBJ("STAGEBLOB", MAT AV, 3, OBJOUT)
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
          GOSUB IXSTAGE
       END
       NFILES += 1
@@ -68,8 +66,7 @@ ADDALL:
    IF OPENFMT THEN
       NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
       DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
-      AV(1) = REPO ; AV(2) = ".mv-account" ; AV(3) = DESC
-      CALL GIT.OBJ("STAGEBLOB", MAT AV, 3, OBJOUT)
+      CALL GIT.OBJ("STAGEBLOB", 3, REPO, ".mv-account", DESC, "", "", OBJOUT)
    END
    RETURN
 FILECLASS:
@@ -89,8 +86,7 @@ IXSTAGE:
       IXL = INDICES(IXVAR)
       IF IXL # "" THEN
          IXG = IXL ; CONVERT AM TO LF IN IXG
-         AV(1) = REPO ; AV(2) = FILE:".DICT/%INDEXES%" ; AV(3) = IXG
-         CALL GIT.OBJ("STAGEBLOB", MAT AV, 3, OBJOUT)
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, FILE:".DICT/%INDEXES%", IXG, "", "", OBJOUT)
       END
    END
    RETURN
@@ -111,8 +107,7 @@ STAGEDATA:
             IF RT="Q" OR RT="X" OR RT="R" THEN DROP = 1
          END
          IF NOT(DROP) THEN
-            AV(1) = REPO ; AV(2) = FILE ; AV(3) = RID ; AV(4) = RREC
-            CALL GIT.OBJ("STAGE", MAT AV, 4, OBJOUT)
+            CALL GIT.OBJ("STAGE", 4, REPO, FILE, RID, RREC, "", OBJOUT)
             NSTAGED += 1
          END
       END
@@ -123,8 +118,7 @@ STAGEDICT:
    SELECT DCF
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DCF, RID THEN
-         AV(1) = REPO ; AV(2) = FILE:".DICT" ; AV(3) = RID ; AV(4) = RREC
-         CALL GIT.OBJ("STAGE", MAT AV, 4, OBJOUT)
+         CALL GIT.OBJ("STAGE", 4, REPO, FILE:".DICT", RID, RREC, "", OBJOUT)
          NSTAGED += 1
       END
    REPEAT
