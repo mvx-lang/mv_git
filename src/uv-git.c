@@ -121,6 +121,15 @@ int main(int argc, char **argv) {
     fprintf(sf, "%s\nQUIT\n", sentence);
     fclose(sf);
 
+    /* A driver never wants curses.  UniVerse already treats a session with no
+       terminal as a phantom — @TTY reports "phantom" and @USERNO is negative
+       even with stdin merely redirected — so a LOGIN paragraph carrying the
+       usual non-interactive guard exits by itself, which is the behaviour we
+       want rather than something to suppress.  Forcing a dumb terminal is the
+       belt to that braces: it stops anything that runs anyway from trying to
+       paint a screen, which would otherwise land in our output. */
+    setenv("TERM", "dumb", 1);
+
     char cmd[4096];
     snprintf(cmd, sizeof cmd, "%s < %s", UV_BIN, script);
     FILE *uv = popen(cmd, "r");
@@ -130,14 +139,46 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Print only what the verb itself produced, using UniVerse's own command
+       echo as the fence: a session reading from a pipe echoes each command
+       after its prompt (">GIT ADD TESTF"), so output starts after the echo of
+       our sentence and ends at the next prompt (the echo of QUIT).
+
+       This matters because a LOGIN paragraph runs BEFORE our sentence, and it
+       cannot be assumed well behaved.  The usual one guards on a
+       non-interactive session and exits silently — UniVerse reports @TTY as
+       "phantom" here even with stdin merely redirected, so that guard does
+       fire — but an unguarded one prints its banner or menu straight into what
+       a caller is trying to parse.  Anything it prints lands before the echo
+       and is therefore outside the fence.
+
+       Markers of our own would have been cleaner, but there is no portable TCL
+       verb to emit one: DISPLAY works inside a paragraph and is not a verb at
+       the prompt in this flavour. */
     char line[4096];
+    int inside = 0, saw_end = 0;
     while (fgets(line, sizeof line, uv)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-        if (!is_noise(line)) printf("%s\n", line);
+
+        if (line[0] == '>' || line[0] == ':') {          /* a prompt + its echo */
+            if (!inside && strstr(line, sentence)) inside = 1;   /* ours starts here */
+            else if (inside) { inside = 0; saw_end = 1; }        /* next prompt ends it */
+            continue;
+        }
+        if (inside && !is_noise(line)) printf("%s\n", line);
     }
+
+    /* No closing marker means the session did not reach the end of our script —
+       a LOGIN paragraph that prompted and swallowed it, or a session that died.
+       Say so, rather than let a silent empty result read as success. */
+    if (!saw_end)
+        fprintf(stderr, "uv-git: the UniVerse session did not run the command"
+                        " (a LOGIN paragraph that prompts will consume it from"
+                        " stdin before the verb is reached)\n");
 
     int rc = pclose(uv);
     unlink(script);
+    if (!saw_end) return 1;
     return rc == 0 ? 0 : 1;
 }
