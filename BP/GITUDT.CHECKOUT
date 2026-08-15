@@ -81,9 +81,12 @@ NEXTREC:
          END
       NEXT J
       OPEN FN TO DV ELSE GOTO NEXTDEL
-      SELECT DV TO 9
+*     A select-list VARIABLE, not the numbered list 9: UniVerse rejects
+*     `SELECT DV TO 9` ("option 'S' requires variable name"), while both
+*     platforms accept a variable, so this is the portable spelling.
+      SELECT DV TO DLIST
       LOOP
-         READNEXT LID FROM 9 ELSE EXIT
+         READNEXT LID FROM DLIST ELSE EXIT
          IF INDEX(HW, AM:LID:AM, 1) = 0 THEN
             DELETE DV, LID
             NDEL += 1
