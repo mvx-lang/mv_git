@@ -27,12 +27,13 @@ $INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 MVPK = ""                            ;* init GIT.HAS's per-run lock-probe cache
 $IFNDEF MVX
-CALL GITUDT.REQUIRECALLC(CCOK)       ;* the udt handlers need CallC; fail clearly if not
-IF NOT(CCOK) THEN
-   PRINT "GIT: UniData CallC is not available (its git functions return nothing)."
-   PRINT "     Run the git install so libu2callc.so is built with the GIT* CallC"
-   PRINT "     functions and registered under \$UDTHOME/bin.  (UniData 8.3.2 needs"
-   PRINT "     no UDT.OPTIONS to use CallC.)"
+* Off MVX the git objects live outside this session — CallC on UniData, the
+* background process on UniVerse — and both fail silently when absent, so probe
+* once and fail with that platform's own remedy rather than letting the first
+* real operation quietly do nothing.
+CALL GIT.REQUIREOBJ(OBJOK, OBJWHY)
+IF NOT(OBJOK) THEN
+   CALL GIT.ECHO(OBJWHY)
    STOP
 END
 $ENDIF

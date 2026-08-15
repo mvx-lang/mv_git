@@ -25,9 +25,11 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
+DIM AV(8) ; MAT AV = ""            ;* argument vector for GIT.OBJ
 REPO = @PATH : "/.git"
-R = CALLC GITCHERRYPICK(REPO, CM)
-CALL GITUDT.SHOW(REPO)                ;* the cherry-pick result
+AV(1) = REPO ; AV(2) = CM
+CALL GIT.OBJ("CHERRYPICK", MAT AV, 2, OBJOUT)
+CALL GIT.ECHO(OBJOUT)                ;* the cherry-pick result
 CALL GITUDT.CHECKOUT(REPO)           ;* re-materialise the new HEAD natively
 $ENDIF
 RETURN

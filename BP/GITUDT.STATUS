@@ -13,10 +13,11 @@
 * %FILE% control compares by CLASS only (the modulo is a sticky default, mvx#8).
 SUBROUTINE GITUDT.STATUS(REPO)
 $IFNDEF MVX
+   DIM AV(8) ; MAT AV = ""   ;* argument vector for GIT.OBJ
    AM = CHAR(254) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
-   R = CALLC GITFILES(REPO)
-   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   AV(1) = REPO
+   CALL GIT.OBJ("FILES", MAT AV, 1, PATHS)
    NP = DCOUNT(PATHS, AM)
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)
@@ -30,8 +31,8 @@ $IFNDEF MVX
          SL = INDEX(P, "/", 1)
          IF SL > 0 THEN
             FN = P[1, SL-1] ; RID = P[SL+1, LP]
-            R = CALLC GITCAT(REPO, P)
-            OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+            AV(1) = REPO ; AV(2) = P
+            CALL GIT.OBJ("CAT", MAT AV, 2, CB)
             GOSUB OPENREC
             IF ROK THEN
                READ LV FROM RV, RID THEN
@@ -50,8 +51,8 @@ $IFNDEF MVX
    RETURN
 CTLSTAT:
    CHG = 0
-   R = CALLC GITCAT(REPO, P)
-   OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+   AV(1) = REPO ; AV(2) = P
+   CALL GIT.OBJ("CAT", MAT AV, 2, CB)
    CCL = TRIM(FIELD(CB, " ", 1))
    IF CCL[1,3] = "DIR" THEN CCL = "DIR" ELSE CCL = "hash"
    FILE = BASE ; GOSUB FILECLASS
