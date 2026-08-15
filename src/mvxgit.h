@@ -32,11 +32,16 @@
      - default (mvx-git): the MVX runtime, libmvxrt (mvx_runtime.h).
      - MVXGIT_UDT (udt-git): the same names over Rocket UniData's InterCall API
        (udtgit_rt.h / udtgit_rt.c).
+     - MVXGIT_GITD (mvgitd): no record layer at all (gitd_rt.h / gitd_rt.c) —
+       the background process does git-object work for a session that keeps its
+       own records, so the primitives abort if ever reached.  See gitd_rt.h.
 
    The engine body is identical either way; only genuine behavioural
    differences (UniData has no on-disk descriptor, generates %INDEXES%
    virtually) are guarded inline with #ifdef MVXGIT_UDT. */
-#if defined(MVXGIT_UDT)
+#if defined(MVXGIT_GITD)
+#  include "gitd_rt.h"
+#elif defined(MVXGIT_UDT)
 #  include "udtgit_rt.h"
 #else
 #  include "mvx_runtime.h"
@@ -102,6 +107,12 @@ void mv_git_batch_end(void);
    and WRITE records on its own platform (the UniData in-session GIT verb). */
 char *mv_git_headfiles(mv_ctx *ctx, const char *repo);
 char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path);
+/* As mv_git_catpath, but reporting the content's true byte length.  Record
+   content is arbitrary bytes and may contain NULs, so a caller able to carry an
+   explicit length must use this instead of measuring with strlen — otherwise a
+   binary record is silently truncated on the way back out. */
+char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
+                         int64_t *outlen);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);

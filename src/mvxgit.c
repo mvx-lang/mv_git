@@ -2831,7 +2831,13 @@ void mv_git_batch_end(void) {
     if (g_brepo) { git_repository_free(g_brepo); g_brepo = NULL; }
 }
 
-static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
+/* Run an engine subroutine and return its output.  When `outlen` is non-NULL the
+   true byte length comes back through it, which matters for anything that can
+   carry binary: a committed record may contain NULs, so a caller that measures
+   the result with strlen would truncate it and lose data silently.  Text-output
+   callers pass NULL and use the NUL terminator as before. */
+static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
+                         int64_t *outlen) {
     mv_value vals[8];
     mv_value *argv[8];
     for (int i = 0; i < n; i++) {
@@ -2849,8 +2855,13 @@ static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
     if (!r) mv_fatal("out of memory in git");
     memcpy(r, p, (size_t)len);
     r[len] = '\0';
+    if (outlen) *outlen = len;
     for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
     return r;
+}
+
+static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
+    return run_sub_len(fn, ctx, args, n, NULL);
 }
 
 char *mv_git_init(mv_ctx *ctx, const char *repo) {
@@ -2916,6 +2927,16 @@ char *mv_git_headfiles(mv_ctx *ctx, const char *repo) {
 char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path) {
     const char *a[] = {repo, path};
     return run_sub(mvx_sub_GITCAT, ctx, a, 2);
+}
+
+/* As mv_git_catpath, but reporting the content's true length.  A committed
+   record is arbitrary bytes and may contain NULs, so a caller that has a way to
+   carry an explicit length (the background process's framed pipe) must use this
+   rather than measure the result with strlen and silently truncate. */
+char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
+                         int64_t *outlen) {
+    const char *a[] = {repo, path};
+    return run_sub_len(mvx_sub_GITCAT, ctx, a, 2, outlen);
 }
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
