@@ -272,7 +272,15 @@ static opres op_ping(const args *g) {
  * the command is over. */
 static opres op_flush(const args *g) {
     (void)g;
+    long skipped = mv_git_batch_skipped();
     mv_git_batch_end();
+    if (skipped > 0) {
+        char m[160];
+        snprintf(m, sizeof m,
+                 "%ld record(s) NOT staged: their id cannot be a git path "
+                 "(contains '/', or is '.' or '..')", skipped);
+        return ok(dup_str(m));
+    }
     return ok(NULL);
 }
 

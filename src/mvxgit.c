@@ -1065,7 +1065,20 @@ void mvx_sub_GITCOMMIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_object *headobj = NULL;
     git_commit *parent = NULL;
     int rc = git_index_write_tree_to(&tree_oid, index, repo);
-    if (rc == 0) rc = git_tree_lookup(&tree, repo, &tree_oid);
+    if (rc != 0) {
+        /* Say what actually failed.  The HEAD probe below is EXPECTED to fail on
+           a first commit, and libgit2 keeps that message in giterr_last(), so
+           reporting the last error here blames a missing HEAD for a problem that
+           is usually an unstorable path in the index. */
+        const git_error *e = git_error_last();
+        char m[512];
+        snprintf(m, sizeof m, "cannot build a tree from the staged index: %s",
+                 (e && e->message) ? e->message : "unknown");
+        fail(argv[2], m);
+        git_index_free(index); git_repository_free(repo);
+        return;
+    }
+    rc = git_tree_lookup(&tree, repo, &tree_oid);
 
     if (git_revparse_single(&headobj, repo, "HEAD") == 0 &&
         git_commit_lookup(&parent, repo, git_object_id(headobj)) == 0 &&
@@ -2792,9 +2805,15 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 static git_repository *g_brepo;
 static git_index *g_bindex;
 
+/* How many records the current batch had to skip because their id cannot be a
+   git path.  Reported to the user rather than swallowed — a record that is not
+   versioned is something they need to know about. */
+static long g_batch_skipped = 0;
+
 int mv_git_batch_begin(const char *repo) {
     ensure_init();
     if (g_bindex) return 1;                     /* already open in this session */
+    g_batch_skipped = 0;
     if (repo_open(repo, &g_brepo, &g_bindex) != 0) return 0;
     return 1;
 }
@@ -2802,9 +2821,33 @@ int mv_git_batch_begin(const char *repo) {
 /* Stage one blob at git `path`.  translate != 0 turns attribute marks
    (@AM = 0xFE) into newlines (records); 0 stores `content` verbatim (the
    open-account controls, .mv-account). */
+/* Can `path` be stored by git?  Record ids are arbitrary MV strings and git
+   paths are not: a component may not be empty, "." or "..".  An id containing
+   "/" splits into components, and an id that IS "/" produces an empty one.
+   That matters far beyond the one record — git cannot build a tree containing
+   it, so a single bad id fails the ENTIRE commit ("index cache-tree records
+   empty sub-tree") and everything staged alongside it is lost. */
+static int path_storable(const char *path) {
+    if (!path || !*path) return 0;
+    const char *p = path;
+    while (*p) {
+        const char *slash = strchr(p, '/');
+        size_t n = slash ? (size_t)(slash - p) : strlen(p);
+        if (n == 0) return 0;                                   /* empty component */
+        if (n == 1 && p[0] == '.') return 0;                    /* "." */
+        if (n == 2 && p[0] == '.' && p[1] == '.') return 0;     /* ".." */
+        if (!slash) break;
+        p = slash + 1;
+    }
+    return 1;
+}
+
+long mv_git_batch_skipped(void) { return g_batch_skipped; }
+
 void mv_git_batch_add(const char *path, const char *content, int64_t len,
                       int translate) {
     if (!g_bindex) return;
+    if (!path_storable(path)) { g_batch_skipped++; return; }
     const char *buf = content;
     char *tmp = NULL;
     int64_t bl = len;

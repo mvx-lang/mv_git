@@ -31,6 +31,9 @@ $IFNDEF MVX
 *  COMMIT, which reads it from disk in a separate process — so a batch still
 *  held in memory here is a commit of nothing there.
    CALL GIT.OBJ("FLUSH", 1, REPO, "", "", "", "", OBJOUT)
+*  A record whose id cannot be a git path is not versioned, so say so rather
+*  than let the count quietly disagree with what was committed.
+   IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)
    RETURN
 *  Stage the whole account: collect the local files from VOC first (drain the VOC
 *  select before opening any file), then stage each file's data + dictionary (+

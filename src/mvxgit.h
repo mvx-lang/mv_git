@@ -101,6 +101,10 @@ int  mv_git_batch_begin(const char *repo);
 void mv_git_batch_add(const char *path, const char *content, int64_t len,
                       int translate);
 void mv_git_batch_end(void);
+/* How many records the batch skipped because their id cannot be a git path (an
+   id containing "/", or one that is "." or "..").  A skipped record is NOT
+   versioned, so a front-end must tell the user rather than let it pass. */
+long mv_git_batch_skipped(void);
 
 /* Checkout side (git -> account): list every blob path in HEAD, and fetch one
    blob's content with attribute marks restored, so a driver can create files
