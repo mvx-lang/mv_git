@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mv_git — comprehensive git test suite, driven through the GIT verb so it runs
-# identically on MVX (mvx-git) and, once the ops are ported, UniData (udt-git).
+# identically on MVX (mvx-git), UniData (udt-git) and UniVerse (uv-git).
 # Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
 #
 # Assertion-based (not golden files), so it is platform-agnostic and legible in
@@ -9,7 +9,8 @@
 #   MVX      = the TCL / runtime            (mvx  |  udt-git's host — see below)
 #   MVXC     = the BASIC compiler           (mvx-basic)      [MVX builds only]
 #   GITPKG   = path to the built git package (has LIB/ + VOC/ + BP/ cataloged)
-#   PLATFORM = mvx | udt                    (default mvx)
+#   PLATFORM = mvx | udt | uv               (default mvx)
+#   UVGIT    = the uv-git binary            [PLATFORM=uv only]
 #   SKIP_NET = 1 to skip network ops (clone/fetch/pull/push) — e.g. a libgit2
 #              built without https, or an offline runner
 #
@@ -46,6 +47,33 @@ if [ "$PLATFORM" = mvx ]; then
            printf '%s\n' "$body" > "$b"
            "$MVXC" "$b" -o "$b.bin" >/dev/null 2>&1
            ( cd "$a" && MVXACCOUNT=. "$b.bin" ) >/dev/null 2>&1; }
+elif [ "$PLATFORM" = uv ]; then
+  # uv: accounts are UniVerse accounts and GIT is cataloged LOCAL into each, so
+  # every account needs the package installed rather than picking up a global.
+  # An account is born on its first `uv` in the directory, which asks to update
+  # RELLEVEL and then for a flavour — Y and 3 (Pick), the flavour the packages
+  # target.  CREATE.FILE prompts for the DICT part and then the data part, six
+  # answers, with type 19 for a directory file.
+  #
+  # The verb sentence goes through uv-git rather than a raw session: it fences
+  # the verb's own output (GIT -M) so an account's LOGIN paragraph cannot mix
+  # its banner into what the assertions read.  That is the same path a user
+  # takes from the shell, so the tests exercise the shipped entry point.
+  : "${UVGIT:?set UVGIT to the uv-git binary}"
+  ACCT() { mkdir -p "$1"; ( cd "$1" && printf 'Y\n3\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
+  # The package directory IS an account, and install.sh installs into itself —
+  # so an account gets git by receiving a copy of the package and running it
+  # there.  That is exactly what a user does with the tarball, and it means each
+  # test account is independently installed rather than sharing a global verb.
+  LINK() { cp -r "$GITPKG"/* "$1"/ 2>/dev/null
+           ( cd "$1" && ./install.sh ) >/dev/null 2>&1; }
+  CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\nsrc\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  # strip the leading verb: uv-git takes the subcommand, not the whole sentence
+  GITV() { local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
+  CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
+  SEED() { local a="$1" body="$2"
+           printf '%s\n' "$body" > "$a/BP/SEEDT"
+           ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
   ACCT() { "$UDT_NEWACCT" "$1"; }             # provided by the udt runner env
