@@ -614,6 +614,13 @@ typedef struct {
     char description[256];
     char hash[32];        /* default hash backend; empty -> "lmdb" on open form */
     int  openaccount;     /* open-form version; 0 if the source carried none */
+    char flavour[32];     /* VOC flavour, UniVerse only (mv_git#15).  A UniVerse
+                             account is created with a flavour — PICK, IN2,
+                             Ideal … — and it governs how the account's own VOC
+                             behaves.  Recreating an account without it produces
+                             something that looks right and behaves differently,
+                             so it has to travel with the descriptor.  Empty for
+                             platforms that have no such notion. */
     char permits[2048];   /* vendor permit/deny lines, verbatim (each \n-terminated) */
 } acct_desc;
 
@@ -671,6 +678,8 @@ static void desc_parse(const char *buf, size_t len, acct_desc *d) {
             snprintf(d->hash, sizeof d->hash, "%s", val);
         else if (strcasecmp(key, "openaccount") == 0)
             d->openaccount = atoi(val);
+        else if (strcasecmp(key, "flavour") == 0 || strcasecmp(key, "flavor") == 0)
+            snprintf(d->flavour, sizeof d->flavour, "%s", val);
     }
 }
 
@@ -687,6 +696,10 @@ static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    /* Only emitted when the source had one, so an account from a platform with
+       no flavour does not acquire a meaningless field. */
+    if (n > 0 && (size_t)n < cap && d->flavour[0])
+        n += snprintf(out + n, cap - (size_t)n, "flavour = %s\n", d->flavour);
     /* vendor permit/deny lines travel with the account (the package's declared
        shell surface); the local admin layer stays in .mvx-private. */
     if (n > 0 && (size_t)n < cap && d->permits[0])
@@ -705,6 +718,12 @@ static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    /* Carried here too, even though MVX has no flavour of its own: an account
+       that passes through MVX — cloned, worked on, pushed back — must not lose
+       it, or returning to UniVerse would recreate the account with the wrong
+       VOC behaviour.  Preservation, not use. */
+    if (n > 0 && (size_t)n < cap && d->flavour[0])
+        n += snprintf(out + n, cap - (size_t)n, "flavour = %s\n", d->flavour);
     if (n > 0 && (size_t)n < cap && d->permits[0])
         n += snprintf(out + n, cap - (size_t)n, "%s", d->permits);
     return n;
