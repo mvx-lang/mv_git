@@ -73,6 +73,11 @@
       REPO = A1
       ISCAT = 0
       BEGIN CASE
+*     FLUSH has no CallC entry point, so it is a no-op here and the udt path is
+*     unchanged.  Whether UniData needs the same flush is a real question — its
+*     GIT ADD and GIT COMMIT are separate processes too — but it is one to
+*     answer on UniData rather than change in passing.
+      CASE OP = "FLUSH"      ; R = ""
       CASE OP = "PING"       ; R = CALLC GITPING(REPO)
       CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
       CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)

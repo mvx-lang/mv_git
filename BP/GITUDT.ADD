@@ -27,6 +27,10 @@ $IFNDEF MVX
       GOSUB STAGEDATA
       PRINT NSTAGED : " record(s) staged"
    END
+*  Write the staged index to disk before returning.  It is the handover to
+*  COMMIT, which reads it from disk in a separate process — so a batch still
+*  held in memory here is a commit of nothing there.
+   CALL GIT.OBJ("FLUSH", 1, REPO, "", "", "", "", OBJOUT)
    RETURN
 *  Stage the whole account: collect the local files from VOC first (drain the VOC
 *  select before opening any file), then stage each file's data + dictionary (+

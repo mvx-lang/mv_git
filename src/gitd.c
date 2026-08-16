@@ -258,6 +258,24 @@ static opres op_ping(const args *g) {
     return ok(dup_str("gitd-ok"));
 }
 
+/* FLUSH — write the accumulated index to disk now.
+ *
+ * Staging is batched: mv_git_batch_add builds an in-memory index and only
+ * mv_git_batch_end writes it (git_index_write).  That index is the handover to
+ * commit, which opens the repo itself and reads it from DISK — so it must be
+ * written before the staging command returns.  Nothing else does it in time:
+ * commit is a separate command, and where a background process serves one
+ * session per command it is a different process with an empty index of its own.
+ *
+ * Flushing per request instead would mean an index write per record, so the
+ * verb calls this once when it has finished staging — the only point that knows
+ * the command is over. */
+static opres op_flush(const args *g) {
+    (void)g;
+    mv_git_batch_end();
+    return ok(NULL);
+}
+
 static opres op_init(const args *g) {
     mv_git_batch_end();                   /* discard any stale open batch */
     mv_ctx *ctx = mv_ctx_create();
@@ -357,6 +375,7 @@ static const struct {
     opres     (*fn)(const args *);
 } OPS[] = {
     { "PING",        0, op_ping       },
+    { "FLUSH",       1, op_flush      },
     { "INIT",        1, op_init       },
     { "STAGE",       4, op_stage      },
     { "STAGEBLOB",   3, op_stageblob  },
