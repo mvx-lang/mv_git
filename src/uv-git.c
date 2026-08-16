@@ -104,6 +104,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* A UniVerse account is identified by its VOC; a directory without one is
+       not an account and no session will help there.  Saying so plainly beats
+       the alternative, which is starting a session that fails for a reason
+       having nothing to do with the real problem. */
+    if (access("VOC", F_OK) != 0) {
+        fprintf(stderr,
+            "uv-git: %s is not a UniVerse account (no VOC).\n"
+            "        uv-git works on accounts, where records are the working "
+            "tree.\n"
+            "        For an ordinary directory of files, use git itself.\n",
+            account);
+        return 1;
+    }
+
     /* Build the sentence the verb will see.  GIT is the verb; the rest is its
        command and arguments, in the order given. */
     /* -M asks the verb for machine output: it prints a fence around its own
@@ -170,10 +184,15 @@ int main(int argc, char **argv) {
        Either way, whatever LOGIN prints arrives before both fences and is
        outside them. */
     char line[4096];
-    int inside = 0, saw_end = 0, fenced = 0;
+    int inside = 0, saw_end = 0, fenced = 0, no_verb = 0;
     while (fgets(line, sizeof line, uv)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
+
+        /* The account exists but has no GIT verb.  UniVerse reports this on the
+           way past, and it is worth catching by name: it is not a git failure
+           but a missing installation, and the user needs to be told which. */
+        if (strstr(line, "is not in your VOC")) { no_verb = 1; continue; }
 
         /* Preferred: the verb's own fence.  Once seen, it governs alone — the
            echo heuristic below is abandoned, since the verb's word about where
@@ -187,6 +206,18 @@ int main(int argc, char **argv) {
             continue;
         }
         if (inside && !is_noise(line)) printf("%s\n", line);
+    }
+
+    if (no_verb) {
+        fprintf(stderr,
+            "uv-git: git is not set up in this account — the GIT verb is not "
+            "in its VOC.\n"
+            "        Install it there (the package's install.sh catalogs the "
+            "verb and its\n"
+            "        handlers), then try again.\n");
+        pclose(uv);
+        unlink(script);
+        return 1;
     }
 
     /* No closing marker means the session did not reach the end of our script —
