@@ -62,11 +62,16 @@ fi
 [ -e VOC ] || { echo "install.sh: could not create the account (no VOC)" >&2; exit 1; }
 
 # ---- the BASIC source and include files ------------------------------------
-# CREATE.FILE prompts for the DICT part and then the data part — six answers,
-# with type 19 (directory) for the data — so both are fed positionally.  An
-# existing file just reports itself and the answers fall through harmlessly.
+# CREATE.FILE asks SEVEN questions, not six: modulo, separation and file type
+# for the DICTionary, the same three for the DATA part, and then a FILE
+# DESCRIPTION.  That last one is the trap — UniVerse stores it in VOC attribute
+# 1 as "F <description>", and code that compares attribute 1 to "F" (as the
+# account scan does) then cannot see the file at all.  So the description is
+# answered with an empty line, leaving a clean "F".
+#   dict: modulo 1, separation 2, type 3 (hashed)
+#   data: modulo 1, separation 2, type 19 (directory — it holds source items)
 mkfile() {
-    printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\nsrc\nQUIT\n' "$1" | uv >/dev/null 2>&1 || true
+    printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$1" | uv >/dev/null 2>&1 || true
 }
 
 # BP arrives as a plain directory of sources, which is NOT yet a UniVerse file:

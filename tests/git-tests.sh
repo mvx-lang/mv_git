@@ -52,8 +52,7 @@ elif [ "$PLATFORM" = uv ]; then
   # every account needs the package installed rather than picking up a global.
   # An account is born on its first `uv` in the directory, which asks to update
   # RELLEVEL and then for a flavour — Y and 3 (Pick), the flavour the packages
-  # target.  CREATE.FILE prompts for the DICT part and then the data part, six
-  # answers, with type 19 for a directory file.
+  # target.
   #
   # The verb sentence goes through uv-git rather than a raw session: it fences
   # the verb's own output (GIT -M) so an account's LOGIN paragraph cannot mix
@@ -67,7 +66,10 @@ elif [ "$PLATFORM" = uv ]; then
   # test account is independently installed rather than sharing a global verb.
   LINK() { cp -r "$GITPKG"/* "$1"/ 2>/dev/null
            ( cd "$1" && ./install.sh ) >/dev/null 2>&1; }
-  CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\nsrc\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  # Seven answers, and the seventh is a FILE DESCRIPTION which UniVerse stores
+  # in VOC attribute 1 as "F <description>" — leave it EMPTY or the account
+  # scan, which matches attribute 1 against "F", cannot see the file.
+  CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   # strip the leading verb: uv-git takes the subcommand, not the whole sentence
   GITV() { local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }

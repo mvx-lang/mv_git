@@ -44,7 +44,13 @@ ADDALL:
    SELECT VOCF
    LOOP WHILE READNEXT VID DO
       READ VREC FROM VOCF, VID THEN
-         VT = VREC<1>
+*        Attribute 1 is the TYPE, but it is not always the type ALONE: UniVerse
+*        appends the file description a user may give at CREATE.FILE time, so a
+*        described file reads "F Customer master" and an exact match against
+*        "F" makes it invisible to this scan — the file is simply never staged,
+*        with no error.  Take the first token, and trim, so a description (or a
+*        trailing space from an empty one) cannot hide a file from GIT ADD -A.
+         VT = TRIM(FIELD(VREC<1>, " ", 1))
          IF VT = "F" OR VT = "DIR" THEN
             DP = VREC<2> ; DD = VREC<3> ; LOC = 1
             IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
