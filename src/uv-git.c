@@ -48,6 +48,11 @@
 
 #define UV_BIN "uv"
 
+/* The fence the verb prints around its own output in machine mode (GIT -M).
+   Must match BP/GIT. */
+#define GIT_BEGIN "<<<GIT-BEGIN>>>"
+#define GIT_END   "<<<GIT-END>>>"
+
 /* UniVerse greets every session and prompts between commands.  None of that is
    the verb's output, so it is filtered — a caller piping `uv-git status` into
    something else should see what GIT printed and nothing more. */
@@ -101,8 +106,12 @@ int main(int argc, char **argv) {
 
     /* Build the sentence the verb will see.  GIT is the verb; the rest is its
        command and arguments, in the order given. */
+    /* -M asks the verb for machine output: it prints a fence around its own
+       output so we can find it exactly, rather than inferring where it starts.
+       See BP/GIT.  A verb too old to know the flag treats it as an unknown
+       subcommand, so the echo fence below stays as the fallback. */
     char sentence[8192];
-    snprintf(sentence, sizeof sentence, "GIT");
+    snprintf(sentence, sizeof sentence, "GIT -M");
     for (; i < argc; i++)
         append_arg(sentence, sizeof sentence, argv[i]);
 
@@ -139,31 +148,42 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Print only what the verb itself produced, using UniVerse's own command
-       echo as the fence: a session reading from a pipe echoes each command
-       after its prompt (">GIT ADD TESTF"), so output starts after the echo of
-       our sentence and ends at the next prompt (the echo of QUIT).
+    /* Print only what the verb itself produced.  This matters because a LOGIN
+       paragraph runs BEFORE our sentence and cannot be assumed well behaved:
+       the usual one guards on a non-interactive session and exits silently
+       (UniVerse reports @TTY as "phantom" here even with stdin merely
+       redirected, so that guard does fire), but an unguarded one prints its
+       banner or menu straight into what a caller is trying to parse.
 
-       This matters because a LOGIN paragraph runs BEFORE our sentence, and it
-       cannot be assumed well behaved.  The usual one guards on a
-       non-interactive session and exits silently — UniVerse reports @TTY as
-       "phantom" here even with stdin merely redirected, so that guard does
-       fire — but an unguarded one prints its banner or menu straight into what
-       a caller is trying to parse.  Anything it prints lands before the echo
-       and is therefore outside the fence.
+       Two fences, preferred first:
 
-       Markers of our own would have been cleaner, but there is no portable TCL
-       verb to emit one: DISPLAY works inside a paragraph and is not a verb at
-       the prompt in this flavour. */
+         1. The verb's own, from `GIT -M` — it PRINTs <<<GIT-BEGIN>>> before
+            dispatching and <<<GIT-END>>> after.  An explicit contract rather
+            than an inference, and it comes from BASIC, where a program can
+            always CRT a literal; there is no TCL verb that reliably echoes one
+            (DISPLAY is a paragraph statement, not a verb, in this flavour).
+         2. Failing that, UniVerse's command echo: a session reading a pipe
+            echoes each command after its prompt (">GIT -M ADD TESTF"), so the
+            output lies between that echo and the next prompt.  Kept for a verb
+            too old to know -M, which treats the flag as an unknown subcommand.
+
+       Either way, whatever LOGIN prints arrives before both fences and is
+       outside them. */
     char line[4096];
-    int inside = 0, saw_end = 0;
+    int inside = 0, saw_end = 0, fenced = 0;
     while (fgets(line, sizeof line, uv)) {
         size_t n = strlen(line);
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
 
-        if (line[0] == '>' || line[0] == ':') {          /* a prompt + its echo */
-            if (!inside && strstr(line, sentence)) inside = 1;   /* ours starts here */
-            else if (inside) { inside = 0; saw_end = 1; }        /* next prompt ends it */
+        /* Preferred: the verb's own fence.  Once seen, it governs alone — the
+           echo heuristic below is abandoned, since the verb's word about where
+           its output begins beats anything inferred from the display. */
+        if (strcmp(line, GIT_BEGIN) == 0) { fenced = 1; inside = 1; saw_end = 0; continue; }
+        if (fenced && strcmp(line, GIT_END) == 0) { inside = 0; saw_end = 1; continue; }
+
+        if (!fenced && (line[0] == '>' || line[0] == ':')) {  /* prompt + its echo */
+            if (!inside && strstr(line, sentence)) inside = 1;
+            else if (inside) { inside = 0; saw_end = 1; }
             continue;
         }
         if (inside && !is_noise(line)) printf("%s\n", line);

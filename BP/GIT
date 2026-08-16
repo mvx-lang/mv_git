@@ -26,6 +26,27 @@
 $INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 MVPK = ""                            ;* init GIT.HAS's per-run lock-probe cache
+* --- machine mode (-M): fence the output so a caller can find it ------------
+* A program driving this verb — uv-git, which runs it inside a `uv` session —
+* has to separate our output from everything else the session emits: the logon
+* banner, the prompts, and whatever an account's LOGIN paragraph decides to
+* print.  Scraping by content is guesswork, so with -M the verb marks its own
+* boundaries and the caller keeps only what falls between them.
+*
+* The markers come from BASIC rather than TCL deliberately: there is no verb at
+* the TCL prompt that reliably echoes a literal (DISPLAY is a paragraph
+* statement, not a verb, in this flavour), but a program can always CRT one.
+*
+* The flag is stripped here and the cleaned sentence handed to GIT.SENT, so
+* every handler parses what it would have without it.
+COMMON /GITMACH/ GMACH, GSENT
+GMACH = 0 ; GSENT = ""
+CALL GIT.SENT(MSENT)
+IF FIELD(MSENT, " ", 2) = "-M" THEN
+   GMACH = 1
+   GSENT = FIELD(MSENT, " ", 1) : " " : FIELD(MSENT, " ", 3, 99)
+   PRINT "<<<GIT-BEGIN>>>"
+END
 $IFNDEF MVX
 * Off MVX the git objects live outside this session — CallC on UniData, the
 * background process on UniVerse — and both fail silently when absent, so probe
@@ -74,3 +95,7 @@ CALL @CF("TAG", "a", "annotate", 1, "", "create an annotated tag (name)")
 CALL @CF("TAG", "m", "message", 1, "", "annotation message")
 CALL @CF("TAG", "d", "delete", 1, "", "delete a tag (name)")
 CALL @CR
+* The closing fence.  Its ABSENCE is meaningful to the caller: it means the verb
+* did not finish — a handler that STOPped, or a session that never reached us —
+* so an empty result cannot be mistaken for a clean run.
+IF GMACH THEN PRINT "<<<GIT-END>>>"
