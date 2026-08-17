@@ -33,12 +33,26 @@
  * uvgit_rt.c implementing the mv_* primitives over ic_universe_session() — a
  * near-mechanical port of udtgit_rt.c — and this driver retires.
  *
+ * TWO PATHS, chosen by what the directory actually is:
+ *
+ *   an ACCOUNT (it has a VOC)   drive the in-session verb, which owns the
+ *                               records; git objects go out to mvgitd
+ *   an ORDINARY DIRECTORY       serve it here, directly against libgit2 —
+ *                               no session, because there is nothing a session
+ *                               could contribute to a directory of plain files
+ *
+ * The second is not a courtesy: a repository may hold ordinary files beside its
+ * accounts, and refusing to work on them would make uv-git useless for exactly
+ * the repositories that need it most.  libgit2 is already linked (textconv needs
+ * it), so the plain path costs nothing.
+ *
  *   uv-git [-a account] <command> [args...]
  */
 
 #define _POSIX_C_SOURCE 200809L
 
 #include "mvxgit.h"
+#include <git2.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -79,6 +93,105 @@ static void append_arg(char *buf, size_t cap, const char *arg) {
     snprintf(buf + used, cap - used, " %s%s%s", q, arg, q);
 }
 
+/* status for a plain directory, straight from libgit2.
+ *
+ * The engine's mv_git_status cannot serve this: it compares LIVE RECORDS against
+ * HEAD, so it calls mv_open and — in this binary, built against the recordless
+ * backend — aborts.  That abort is the backend working as intended (it announces
+ * a wrong assumption rather than misbehaving quietly), and it caught this very
+ * mistake.  A directory of files has no records to compare, so the right answer
+ * is git's own status, which is what a user typing `uv-git status` there means.
+ *
+ * mv_git_diff is record-based for the same reason and has no plain equivalent
+ * here, so it is simply not offered — `git diff` is the tool for that. */
+static int plain_status(void) {
+    git_libgit2_init();
+    git_repository *repo = NULL;
+    if (git_repository_open(&repo, ".") != 0) {
+        fprintf(stderr, "uv-git: not a git repository\n");
+        return 1;
+    }
+    git_status_list *sl = NULL;
+    git_status_options o = GIT_STATUS_OPTIONS_INIT;
+    o.show  = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+    o.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED;
+    int rc = git_status_list_new(&sl, repo, &o);
+    if (rc != 0) {
+        const git_error *e = git_error_last();
+        fprintf(stderr, "uv-git: status: %s\n",
+                (e && e->message) ? e->message : "failed");
+        git_repository_free(repo);
+        return 1;
+    }
+    size_t n = git_status_list_entrycount(sl), shown = 0;
+    for (size_t k = 0; k < n; k++) {
+        const git_status_entry *se = git_status_byindex(sl, k);
+        const char *path = se->index_to_workdir ? se->index_to_workdir->old_file.path
+                                                : se->head_to_index->old_file.path;
+        const char *how = "?";
+        unsigned st = se->status;
+        if      (st & (GIT_STATUS_INDEX_NEW))                       how = "A";
+        else if (st & (GIT_STATUS_INDEX_MODIFIED))                  how = "M";
+        else if (st & (GIT_STATUS_INDEX_DELETED))                   how = "D";
+        else if (st & (GIT_STATUS_WT_MODIFIED))                     how = " M";
+        else if (st & (GIT_STATUS_WT_DELETED))                      how = " D";
+        else if (st & (GIT_STATUS_WT_NEW))                          how = "??";
+        printf(" %s %s\n", how, path);
+        shown++;
+    }
+    if (!shown) printf("nothing to commit, working tree clean\n");
+    git_status_list_free(sl);
+    git_repository_free(repo);
+    return 0;
+}
+
+/* Serve an ordinary directory: no session, no records, just git.
+ *
+ * The engine ops used here are disk-side ones — init, adddisk, commit, log —
+ * which touch no record primitives.  That set was established by RUNNING them
+ * against the recordless backend, not by reading: `status` was in the list
+ * until it aborted with "mv_open was called", because it compares live records
+ * against HEAD.  It is served by plain_status() instead, and `diff` is left out
+ * for the same reason.  Anything else is refused by name rather than attempted. */
+static int run_plain(int argc, char **argv, int i) {
+    const char *sub = argv[i++];
+    const char *a0 = (i     < argc) ? argv[i]     : "";
+    const char *a1 = (i + 1 < argc) ? argv[i + 1] : "";
+    mv_ctx *ctx = mv_ctx_create();
+    const char *repo = ".git";
+    char *out = NULL;
+
+    if      (!strcmp(sub, "init"))    out = mv_git_init(ctx, repo);
+    else if (!strcmp(sub, "status"))  { mv_ctx_destroy(ctx); return plain_status(); }
+    else if (!strcmp(sub, "log"))     out = mv_git_log(ctx, repo, *a0 ? a0 : "20");
+    else if (!strcmp(sub, "branch"))  out = mv_git_branch(ctx, repo, a0);
+    else if (!strcmp(sub, "config"))  out = mv_git_config(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "add"))     out = mv_git_adddisk(ctx, repo);
+    else if (!strcmp(sub, "commit")) {
+        /* -m <msg>, as git spells it */
+        const char *msg = a0;
+        if (!strcmp(a0, "-m")) msg = a1;
+        out = mv_git_commit(ctx, repo, msg);
+    } else {
+        fprintf(stderr,
+            "uv-git: '%s' needs a UniVerse account, and this is an ordinary "
+            "directory.\n"
+            "        Available here: init, add, commit, status, log, branch, "
+            "config.\n", sub);
+        mv_ctx_destroy(ctx);
+        return 2;
+    }
+
+    if (out) {
+        /* engine output is @AM-separated; render it as lines */
+        for (char *p = out; *p; p++) if ((unsigned char)*p == 0xFE) *p = '\n';
+        printf("%s\n", out);
+        free(out);
+    }
+    mv_ctx_destroy(ctx);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int i = 1;
     const char *account = ".";
@@ -104,19 +217,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* A UniVerse account is identified by its VOC; a directory without one is
-       not an account and no session will help there.  Saying so plainly beats
-       the alternative, which is starting a session that fails for a reason
-       having nothing to do with the real problem. */
-    if (access("VOC", F_OK) != 0) {
-        fprintf(stderr,
-            "uv-git: %s is not a UniVerse account (no VOC).\n"
-            "        uv-git works on accounts, where records are the working "
-            "tree.\n"
-            "        For an ordinary directory of files, use git itself.\n",
-            account);
-        return 1;
-    }
+    /* A UniVerse account is identified by its VOC.  Without one this is an
+       ordinary directory, and there is nothing a session could do for it — but
+       there is plenty git can, and we are already linked against libgit2 for
+       textconv.  So serve it directly rather than refusing: one binary, two
+       paths, chosen by what the directory actually is.  That mirrors how
+       mvx-git treats record files and plain files.
+       Ops that would need records are simply not offered here; the recordless
+       backend aborts loudly if one is ever reached, so a wrong assumption
+       announces itself instead of quietly doing the wrong thing. */
+    if (access("VOC", F_OK) != 0)
+        return run_plain(argc, argv, i);
 
     /* Build the sentence the verb will see.  GIT is the verb; the rest is its
        command and arguments, in the order given. */
