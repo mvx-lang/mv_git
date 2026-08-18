@@ -16,6 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,12 @@
 #define UV_BIN "uv"
 #endif
 
+/* A file the caller opened, remembered so it can be reopened if the session is
+   replaced.  The agent hands out handles in order, so replaying these in order
+   restores the same numbers and the caller's handles stay valid across a
+   reconnect it never sees. */
+typedef struct { char name[256]; char part[16]; } uvs_open_rec;
+
 struct uv_session {
     char  account[MVG_PATH_MAX];
     char  dir[MVG_PATH_MAX];        /* private run dir holding the two FIFOs */
@@ -37,15 +44,28 @@ struct uv_session {
     int   req;                      /* we write requests here      */
     int   rsp;                      /* we read replies here        */
     pid_t pid;                      /* the uv process              */
+    uvs_open_rec *opens;            /* replayed after a reconnect  */
+    int   nopens, capopens;
+    int   in_replay;                /* guard: no reconnect while reconnecting */
     struct uv_session *next;
 };
 
+/* Defined below; declared here because teardown and spawn both use the raw
+   exchange, and the reconnect logic sits between them. */
+static int call_raw(uv_session *s, const char *op, int nargs,
+                    const char *const *args, const long *lens,
+                    char **out, long *outlen);
+static void teardown(uv_session *s, int ask);
+
 static uv_session *g_sessions;
 static int g_jobs = 1;
+static int g_idle = 30;
 static int g_handlers_installed;
 
 void uvs_set_jobs(int n) { g_jobs = n > 0 ? n : 1; }
 int  uvs_jobs(void)      { return g_jobs; }
+void uvs_set_idle(int s) { g_idle = s > 0 ? s : 30; }
+int  uvs_idle(void)      { return g_idle; }
 const char *uvs_account(const uv_session *s) { return s ? s->account : ""; }
 
 /* --- hex, the wire encoding -------------------------------------------- */
@@ -96,11 +116,21 @@ static int write_all(int fd, const char *p, long n) {
     return 0;
 }
 
-/* Reads are for an exact count, for the same reason the BASIC side's are: a
-   FIFO held open read/write never reports EOF, so a short read is a partial
-   frame to be completed, not an end of stream. */
-static int read_all(int fd, char *p, long n) {
+/* Reads are for an exact count, for the same reason the BASIC side's are: a FIFO
+   held open read/write never reports EOF, so a short read is a partial frame to
+   be completed, not an end of stream.
+
+   And for that same reason every read is BOUNDED.  We hold the reply pipe
+   read/write ourselves, so an agent that has exited leaves us with a pipe that
+   will never deliver and never close — a plain blocking read there waits
+   forever.  poll() gives that a deadline; the caller then decides whether the
+   session is gone. */
+static int read_all(int fd, char *p, long n, int timeout_ms) {
     while (n > 0) {
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        int pr = poll(&pfd, 1, timeout_ms);
+        if (pr < 0) { if (errno == EINTR) continue; return -1; }
+        if (pr == 0) return -1;                    /* deadline */
         ssize_t r = read(fd, p, (size_t)n);
         if (r < 0) { if (errno == EINTR) continue; return -1; }
         if (r == 0) return -1;
@@ -144,24 +174,8 @@ void uvs_close(uv_session *s) {
 
     /* Ask, rather than kill.  A session that reaches QUIT and STOPs releases its
        licence; one that is signalled may not. */
-    if (s->req >= 0) {
-        uvs_call(s, "QUIT", 0, NULL, NULL, NULL, NULL);
-        close(s->req);
-        s->req = -1;
-    }
-    if (s->rsp >= 0) { close(s->rsp); s->rsp = -1; }
-
-    if (s->pid > 0) {
-        if (!reap(s->pid, 3000)) {
-            kill(s->pid, SIGTERM);
-            if (!reap(s->pid, 2000)) {
-                kill(s->pid, SIGKILL);
-                reap(s->pid, 1000);
-            }
-        }
-        s->pid = -1;
-    }
-    unlink_dir(s->dir);
+    teardown(s, 1);
+    free(s->opens);
     free(s);
 }
 
@@ -206,6 +220,145 @@ static void make_token(char *out) {
     out[MVG_TOKEN_LEN] = '\0';
 }
 
+/* Bring up the pipes, the run script and the uv process for an already-allocated
+   session, and prove the agent answers.  Split out of uvs_open because a session
+   that times out is rebuilt through exactly this path. */
+static int spawn(uv_session *s, char *err, size_t errcap) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    /* A private directory for the pipes: 0700, since the token travels through
+       it and a shared account means the OS uid cannot tell sessions apart. */
+    snprintf(s->dir, sizeof s->dir, "%s/uvgit-%ld-%s", tmp, (long)getpid(), s->token);
+    mkdir(s->dir, 0700);
+
+    char reqp[MVG_PATH_MAX + 8], rspp[MVG_PATH_MAX + 8], runp[MVG_PATH_MAX + 8];
+    snprintf(reqp, sizeof reqp, "%s/req", s->dir);
+    snprintf(rspp, sizeof rspp, "%s/rsp", s->dir);
+    snprintf(runp, sizeof runp, "%s/run", s->dir);
+    unlink(reqp); unlink(rspp);
+    if (mkfifo(reqp, 0600) != 0 || mkfifo(rspp, 0600) != 0) {
+        snprintf(err, errcap, "cannot create pipes in %s: %s", s->dir, strerror(errno));
+        return -1;
+    }
+
+    /* The session's whole script: run the agent, then leave.  QUIT is there for
+       the case where the agent STOPs early — without it the session would sit at
+       the TCL prompt holding a licence. */
+    FILE *rf = fopen(runp, "w");
+    if (!rf) {
+        snprintf(err, errcap, "cannot write %s: %s", runp, strerror(errno));
+        return -1;
+    }
+    fprintf(rf, "RUN BP GIT.AGENT %s %s %s %d\nQUIT\n", reqp, rspp, s->token, g_idle);
+    fclose(rf);
+
+    /* Open both ends read/write so neither open blocks waiting for a peer, and
+       so the pipe survives the agent closing its end between frames — the same
+       property UniVerse's own OPENSEQ has, which is why the protocol is
+       length-framed in the first place. */
+    s->req = open(reqp, O_RDWR);
+    s->rsp = open(rspp, O_RDWR);
+    if (s->req < 0 || s->rsp < 0) {
+        snprintf(err, errcap, "cannot open pipes: %s", strerror(errno));
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        snprintf(err, errcap, "fork: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        /* The child must not hold our ends of the pipes: it gets its own through
+           the agent's OPENSEQ, and an inherited fd would keep a pipe alive after
+           we closed it. */
+        close(s->req);
+        close(s->rsp);
+        if (chdir(s->account) != 0) _exit(127);
+        /* A driver never wants curses.  UniVerse already treats a session with no
+           terminal as a phantom, so a LOGIN paragraph's non-interactive guard
+           fires by itself; this stops anything that runs anyway from painting. */
+        setenv("TERM", "dumb", 1);
+        int in = open(runp, O_RDONLY);
+        if (in < 0) _exit(127);
+        dup2(in, STDIN_FILENO);
+        if (in != STDIN_FILENO) close(in);
+        /* The session's own chatter (banner, prompts, whatever LOGIN prints) is
+           not our protocol and must not be mistaken for it — the protocol has its
+           own pipes.  Discard it. */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
+        execlp(UV_BIN, UV_BIN, (char *)NULL);
+        _exit(127);
+    }
+    s->pid = pid;
+
+    /* Prove the agent is up before handing the session out.  Without this the
+       first real call would be where a missing or uncompiled agent surfaced, and
+       it would read as a record failure rather than a setup one. */
+    char *body = NULL;
+    int st = call_raw(s, "PING", 0, NULL, NULL, &body, NULL);
+    free(body);
+    if (st != MVG_OK) {
+        snprintf(err, errcap,
+                 "the account I/O agent did not answer in %s — is BP/GIT.AGENT "
+                 "compiled there?", s->account);
+        return -1;
+    }
+    return 0;
+}
+
+/* Drop the process and pipes of a session, keeping the session itself. */
+static void teardown(uv_session *s, int ask) {
+    if (ask && s->req >= 0)
+        call_raw(s, "QUIT", 0, NULL, NULL, NULL, NULL);
+    if (s->req >= 0) { close(s->req); s->req = -1; }
+    if (s->rsp >= 0) { close(s->rsp); s->rsp = -1; }
+    if (s->pid > 0) {
+        if (!reap(s->pid, 3000)) {
+            kill(s->pid, SIGTERM);
+            if (!reap(s->pid, 2000)) {
+                kill(s->pid, SIGKILL);
+                reap(s->pid, 1000);
+            }
+        }
+        s->pid = -1;
+    }
+    unlink_dir(s->dir);
+}
+
+/* Replace a session that has gone (idle timeout, or a session that died), and
+   make the new one look like the old: the files the caller opened are reopened
+   in the same order, so the handles it still holds keep working.
+
+   What CANNOT be replayed is a select list mid-scan — the agent's position in it
+   is gone.  In practice a scan in progress means the session was not idle, so
+   the timeout that triggers this cannot fire during one; a session that died for
+   another reason mid-scan will surface as a failed READNEXT rather than silently
+   short results. */
+static int reconnect(uv_session *s) {
+    if (s->in_replay) return -1;
+    s->in_replay = 1;
+    teardown(s, 0);
+    char err[512];
+    int rc = spawn(s, err, sizeof err);
+    for (int i = 0; rc == 0 && i < s->nopens; i++) {
+        const char *a[2];
+        int na = 0;
+        a[na++] = s->opens[i].name;
+        if (s->opens[i].part[0]) a[na++] = s->opens[i].part;
+        char *b = NULL;
+        if (call_raw(s, "OPEN", na, a, NULL, &b, NULL) != MVG_OK) rc = -1;
+        free(b);
+    }
+    s->in_replay = 0;
+    return rc;
+}
+
 uv_session *uvs_open(const char *account, char *err, size_t errcap) {
     install_handlers();
 
@@ -236,116 +389,23 @@ uv_session *uvs_open(const char *account, char *err, size_t errcap) {
     snprintf(s->account, sizeof s->account, "%s", real);
     make_token(s->token);
 
-    /* A private directory for the pipes: 0700, since the token travels through
-       it and a shared account means the OS uid cannot tell sessions apart. */
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !tmp[0]) tmp = "/tmp";
-    snprintf(s->dir, sizeof s->dir, "%s/uvgit-%ld-%s", tmp, (long)getpid(), s->token);
-    if (mkdir(s->dir, 0700) != 0) {
-        snprintf(err, errcap, "cannot create %s: %s", s->dir, strerror(errno));
+    if (spawn(s, err, errcap) != 0) {
+        teardown(s, 0);
+        free(s->opens);
         free(s);
         return NULL;
     }
-    char reqp[MVG_PATH_MAX + 8], rspp[MVG_PATH_MAX + 8], runp[MVG_PATH_MAX + 8];
-    snprintf(reqp, sizeof reqp, "%s/req", s->dir);
-    snprintf(rspp, sizeof rspp, "%s/rsp", s->dir);
-    snprintf(runp, sizeof runp, "%s/run", s->dir);
-    if (mkfifo(reqp, 0600) != 0 || mkfifo(rspp, 0600) != 0) {
-        snprintf(err, errcap, "cannot create pipes in %s: %s", s->dir, strerror(errno));
-        unlink_dir(s->dir);
-        free(s);
-        return NULL;
-    }
-
-    /* The session's whole script: run the agent, then leave.  QUIT is there for
-       the case where the agent STOPs early — without it the session would sit at
-       the TCL prompt holding a licence. */
-    FILE *rf = fopen(runp, "w");
-    if (!rf) {
-        snprintf(err, errcap, "cannot write %s: %s", runp, strerror(errno));
-        unlink_dir(s->dir);
-        free(s);
-        return NULL;
-    }
-    fprintf(rf, "RUN BP GIT.AGENT %s %s %s\nQUIT\n", reqp, rspp, s->token);
-    fclose(rf);
-
-    /* Open both ends read/write so neither open blocks waiting for a peer, and
-       so the pipe survives the agent closing its end between frames — the same
-       property UniVerse's own OPENSEQ has, which is why the protocol is
-       length-framed in the first place. */
-    s->req = open(reqp, O_RDWR);
-    s->rsp = open(rspp, O_RDWR);
-    if (s->req < 0 || s->rsp < 0) {
-        snprintf(err, errcap, "cannot open pipes: %s", strerror(errno));
-        if (s->req >= 0) close(s->req);
-        if (s->rsp >= 0) close(s->rsp);
-        unlink_dir(s->dir);
-        free(s);
-        return NULL;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        snprintf(err, errcap, "fork: %s", strerror(errno));
-        close(s->req); close(s->rsp);
-        unlink_dir(s->dir);
-        free(s);
-        return NULL;
-    }
-    if (pid == 0) {
-        /* The child must not hold our ends of the pipes: it gets its own through
-           the agent's OPENSEQ, and an inherited fd would keep a pipe alive after
-           we closed it. */
-        close(s->req);
-        close(s->rsp);
-        if (chdir(real) != 0) _exit(127);
-        /* A driver never wants curses.  UniVerse already treats a session with no
-           terminal as a phantom, so a LOGIN paragraph's non-interactive guard
-           fires by itself; this stops anything that runs anyway from painting. */
-        setenv("TERM", "dumb", 1);
-        int in = open(runp, O_RDONLY);
-        if (in < 0) _exit(127);
-        dup2(in, STDIN_FILENO);
-        if (in != STDIN_FILENO) close(in);
-        /* The session's own chatter (banner, prompts, whatever LOGIN prints) is
-           not our protocol and must not be mistaken for it — the protocol has
-           its own pipes.  Discard it. */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) close(devnull);
-        }
-        execlp(UV_BIN, UV_BIN, (char *)NULL);
-        _exit(127);
-    }
-    s->pid = pid;
     s->next = g_sessions;
     g_sessions = s;
-
-    /* Prove the agent is actually up before handing the session out.  Without
-       this the first real call would be where a missing or uncompiled agent
-       surfaced, and it would look like a record failure rather than a setup one. */
-    char *body = NULL;
-    long blen = 0;
-    int st = uvs_call(s, "PING", 0, NULL, NULL, &body, &blen);
-    free(body);
-    if (st != MVG_OK) {
-        snprintf(err, errcap,
-                 "the account I/O agent did not answer in %s — is BP/GIT.AGENT "
-                 "compiled there?", real);
-        uvs_close(s);
-        return NULL;
-    }
     return s;
 }
 
 /* --- one call ------------------------------------------------------------ */
 
-int uvs_call(uv_session *s, const char *op, int nargs,
-             const char *const *args, const long *lens,
-             char **out, long *outlen) {
+/* The wire exchange, with no opinion about a session that has gone away. */
+static int call_raw(uv_session *s, const char *op, int nargs,
+                    const char *const *args, const long *lens,
+                    char **out, long *outlen) {
     if (out) *out = NULL;
     if (outlen) *outlen = 0;
     if (!s || s->req < 0) return MVG_EPROTO;
@@ -386,8 +446,12 @@ int uvs_call(uv_session *s, const char *op, int nargs,
     }
     free(body);
 
+    /* Wait a good margin past the agent's own idle limit: if it is going to give
+       up it will have said so by then, and anything longer here is a session
+       that is genuinely gone rather than merely slow. */
+    int deadline = (g_idle + 15) * 1000;
     char rh[MVG_RSP_HDR + 1];
-    if (read_all(s->rsp, rh, MVG_RSP_HDR) != 0) return MVG_EPROTO;
+    if (read_all(s->rsp, rh, MVG_RSP_HDR, deadline) != 0) return MVG_ECLOSED;
     rh[MVG_RSP_HDR] = '\0';
     if (memcmp(rh, MVG_MAGIC, MVG_MAGIC_LEN) != 0) return MVG_EPROTO;
 
@@ -403,7 +467,7 @@ int uvs_call(uv_session *s, const char *op, int nargs,
     if (rlen > 0) {
         char *enc = malloc((size_t)rlen + 1);
         if (!enc) return MVG_EPROTO;
-        if (read_all(s->rsp, enc, rlen) != 0) { free(enc); return MVG_EPROTO; }
+        if (read_all(s->rsp, enc, rlen, deadline) != 0) { free(enc); return MVG_ECLOSED; }
         long dlen = 0;
         char *dec = hex_dec(enc, rlen, &dlen);
         free(enc);
@@ -414,7 +478,47 @@ int uvs_call(uv_session *s, const char *op, int nargs,
     return status;
 }
 
+/* Remember a file the caller opened, so a replacement session can reopen it. */
+static void remember_open(uv_session *s, int nargs, const char *const *args) {
+    if (s->in_replay || nargs < 1) return;
+    if (s->nopens >= s->capopens) {
+        int nc = s->capopens ? s->capopens * 2 : 8;
+        uvs_open_rec *no = realloc(s->opens, (size_t)nc * sizeof *no);
+        if (!no) return;
+        s->opens = no;
+        s->capopens = nc;
+    }
+    uvs_open_rec *r = &s->opens[s->nopens++];
+    snprintf(r->name, sizeof r->name, "%s", args[0]);
+    snprintf(r->part, sizeof r->part, "%s", nargs > 1 && args[1] ? args[1] : "");
+}
+
+int uvs_call(uv_session *s, const char *op, int nargs,
+             const char *const *args, const long *lens,
+             char **out, long *outlen) {
+    int st = call_raw(s, op, nargs, args, lens, out, outlen);
+
+    /* A session that has gone is not an error the caller should have to know
+       about: it timed out because nobody was using it, which is the point of the
+       timeout.  Replace it and repeat the request — once, so a genuinely broken
+       session fails rather than loops. */
+    if ((st == MVG_ECLOSED || st == MVG_EPROTO) && s && !s->in_replay &&
+        strcmp(op, "QUIT") != 0) {
+        if (out) { free(*out); *out = NULL; }
+        if (outlen) *outlen = 0;
+        if (reconnect(s) == 0)
+            st = call_raw(s, op, nargs, args, lens, out, outlen);
+    }
+    if (st == MVG_OK && strcmp(op, "OPEN") == 0)
+        remember_open(s, nargs, args);
+    return st;
+}
+
 int uvs_calls(uv_session *s, const char *op, int nargs,
               const char *const *args, char **out, long *outlen) {
     return uvs_call(s, op, nargs, args, NULL, out, outlen);
+}
+
+int uvs_keepalive(uv_session *s) {
+    return uvs_call(s, "NOP", 0, NULL, NULL, NULL, NULL);
 }

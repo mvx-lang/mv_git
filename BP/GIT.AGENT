@@ -44,11 +44,20 @@
 * exits cleanly — and uv-git asks even when it is itself interrupted, since it
 * handles SIGINT/SIGTERM before dying.
 *
-* NOT HANDLED YET (mv_git#48): a caller killed with SIGKILL cannot ask, and this
-* agent has no way to notice.  It is blocked in READBLK, and the FIFO gives it no
-* EOF to wake on — OPENSEQ holds the pipe read/write, which is the same property
-* that forces exact-count reads everywhere else here.  So the session waits, and
-* its licence stays held.  A heartbeat between frames is the likely answer.
+* AND IT GIVES UP ON ITS OWN.  A caller that is killed outright cannot ask, and a
+* caller that simply wanders off should not cost a licence either.  So the wait
+* for the next request is bounded: TIMEOUT arms the read, and if nothing arrives
+* within the idle limit the agent says goodbye and exits.  Verified on 14.2.1 —
+* TIMEOUT does apply to READBLK on a FIFO, failing after exactly the armed
+* seconds with STATUS() = 2.  That is what makes any of this possible: without it
+* the agent would block forever with no EOF to wake on, since OPENSEQ holds the
+* pipe read/write — the same property that forces exact-count reads everywhere
+* else here.
+*
+* The default is 30 seconds and the caller may set it.  NOP exists for a caller
+* that wants to hold a session it is not using yet: it resets the timer and does
+* nothing else.  If a session does time out there is nothing to recover — the
+* caller simply starts another one.
       $INCLUDE BP.INC PLATFORM.H
       AM = CHAR(254) ; VM = CHAR(253)
       MAGIC = "MVG1"
@@ -62,9 +71,11 @@
 *     from the END so this works whether it is RUN or cataloged as a verb.
       S = TRIM(@SENTENCE)
       NT = DCOUNT(S, " ")
-      REQP = FIELD(S, " ", NT - 2)
-      RSPP = FIELD(S, " ", NT - 1)
-      TOK  = FIELD(S, " ", NT)
+      REQP = FIELD(S, " ", NT - 3)
+      RSPP = FIELD(S, " ", NT - 2)
+      TOK  = FIELD(S, " ", NT - 1)
+      IDLE = FIELD(S, " ", NT) + 0
+      IF IDLE <= 0 THEN IDLE = 30
       IF REQP = "" OR RSPP = "" OR TOK = "" THEN
          CRT "GIT.AGENT: usage: GIT.AGENT <reqpipe> <rsppipe> <token>"
          STOP
@@ -84,6 +95,7 @@
       DIM FV(64)
       NFV = 0
       DONE = 0
+      IDLED = 0
 *
       LOOP UNTIL DONE DO
          GOSUB READREQ
@@ -91,6 +103,14 @@
          GOSUB DISPATCH
          GOSUB SENDRSP
       REPEAT
+*     Say why we are going, before we go.  The caller may be mid-request when the
+*     idle timer fires — it wrote just as we stopped reading — and a frame it can
+*     recognise turns that race into "start another session" rather than a read
+*     that never returns.
+      IF IDLED THEN
+         STATUS = 6 ; RESULT = "idle timeout"
+         GOSUB SENDRSP
+      END
       CLOSESEQ RQ
       CLOSESEQ RS
       STOP
@@ -98,7 +118,15 @@
 * ---- read one request ------------------------------------------------------
 READREQ:
       HDR = ""
-      READBLK HDR FROM RQ, REQ.HDR ELSE DONE = 1 ; RETURN
+*     Bound the wait for the NEXT request — this is the idle timer.  An unbounded
+*     read here is what would hold a licence forever behind a caller that died or
+*     simply lost interest.
+      TIMEOUT RQ, IDLE
+      READBLK HDR FROM RQ, REQ.HDR THEN
+         NULL
+      END ELSE
+         IDLED = 1 ; DONE = 1 ; RETURN
+      END
       IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN
       IF HDR[1, W.MAGIC] # MAGIC THEN DONE = 1 ; RETURN
       P = W.MAGIC + 1
@@ -108,7 +136,15 @@ READREQ:
       BLEN = HDR[P, W.LEN] + 0
       BODY = ""
       IF BLEN > 0 THEN
-         READBLK BODY FROM RQ, BLEN ELSE DONE = 1 ; RETURN
+*        The body follows its header immediately, so a wait HERE is a stalled
+*        transfer, not an idle session.  Armed generously and separately, so a
+*        short idle limit can never truncate a large record in flight.
+         TIMEOUT RQ, 300
+         READBLK BODY FROM RQ, BLEN THEN
+            NULL
+         END ELSE
+            DONE = 1 ; RETURN
+         END
       END
 *     The token is checked on EVERY request, not just at connect.  It tells
 *     apart sessions sharing one OS uid, and — the reason it is here rather than
@@ -142,6 +178,10 @@ DISPATCH:
             DONE = 1
          CASE OP = "PING"
             RESULT = "ok"
+         CASE OP = "NOP"
+*           Nothing to do, and that is exactly the point: answering resets the
+*           idle timer, so a caller can hold a session it is not yet using.
+            RESULT = ""
          CASE OP = "OPEN"
             GOSUB DO.OPEN
          CASE OP = "READ"

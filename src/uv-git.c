@@ -734,12 +734,25 @@ int main(int argc, char **argv) {
     int i = 1;
     const char *account = ".";
 
-    if (i < argc && strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
-        account = argv[i + 1];
-        i += 2;
+    /* Global switches, before the subcommand.  Both are about licences: how many
+       sessions this run may hold at once, and how long an unused one waits before
+       giving its licence back. */
+    while (i < argc) {
+        if (!strcmp(argv[i], "-a") && i + 1 < argc) {
+            account = argv[i + 1];
+            i += 2;
+        } else if ((!strcmp(argv[i], "-j") || !strcmp(argv[i], "--jobs")) &&
+                   i + 1 < argc) {
+            uvs_set_jobs(atoi(argv[i + 1]));
+            i += 2;
+        } else if (!strcmp(argv[i], "--idle-timeout") && i + 1 < argc) {
+            uvs_set_idle(atoi(argv[i + 1]));
+            i += 2;
+        } else break;
     }
     if (i >= argc) {
-        fprintf(stderr, "usage: uv-git [-a account] <command> [args]\n");
+        fprintf(stderr, "usage: uv-git [-a account] [-j jobs] "
+                        "[--idle-timeout secs] <command> [args]\n");
         return 2;
     }
 

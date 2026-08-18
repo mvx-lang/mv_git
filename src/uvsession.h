@@ -31,6 +31,19 @@ typedef struct uv_session uv_session;
 void uvs_set_jobs(int n);
 int  uvs_jobs(void);
 
+/* How long an idle session waits for its next request before giving up and
+   exiting, in seconds; 0 restores the default of 30.  A session is a licence, so
+   one nobody is using should not keep costing one — but reconnecting is not free
+   either, hence a window rather than closing after every call.  A session that
+   times out is reopened transparently on the next call, so this is a tuning
+   knob, not a behaviour change. */
+void uvs_set_idle(int seconds);
+int  uvs_idle(void);
+
+/* Reset a session's idle timer without doing anything else — for a caller that
+   knows it will want the session shortly but has nothing to ask yet. */
+int  uvs_keepalive(uv_session *s);
+
 /* Open a session in `account` and start the agent.  Returns NULL on failure,
    with a reason in `err`.  Re-opening an account that already has a live
    session returns the existing one. */

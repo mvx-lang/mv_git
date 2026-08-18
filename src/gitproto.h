@@ -98,6 +98,9 @@
 #define MVG_EOPCODE      3   /* unknown opcode                            */
 #define MVG_EARGS        4   /* wrong argument count for the opcode       */
 #define MVG_EFAIL        5   /* the engine reported a failure             */
+#define MVG_ECLOSED      6   /* the server is closing (idle timeout) — the
+                                request was NOT performed; open another
+                                session and repeat it                     */
 
 /* A single request may not exceed this; a guard against a desynchronised
    stream being read as a colossal length and exhausting memory. */
