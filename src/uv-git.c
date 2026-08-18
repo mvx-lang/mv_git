@@ -1225,6 +1225,47 @@ static int clone_cmd(int argc, char **argv, int i) {
         return 1;
     }
 
+    /* An UNBORN HEAD is not an error to give up on.  A remote whose default
+       branch differs from the one that actually carries the history — a bare
+       repo created with `master` as its default and then pushed `main` — leaves
+       the clone pointing at a branch that does not exist, and everything after
+       this reads as "there is nothing here".  git itself only warns.  Adopt a
+       branch that DOES exist, preferring the conventional names, and move HEAD
+       to it WITHOUT checking anything out: the records go into the account, and
+       the working tree must stay empty for the account to be creatable at all. */
+    if (system("git rev-parse --verify -q HEAD >/dev/null 2>&1") != 0) {
+        static const char *pref[] = { "main", "master", NULL };
+        char pick[256] = "";
+        for (int k = 0; pref[k] && !pick[0]; k++) {
+            char c[256];
+            snprintf(c, sizeof c,
+                     "git show-ref --verify -q refs/remotes/origin/%s", pref[k]);
+            if (system(c) == 0) snprintf(pick, sizeof pick, "%s", pref[k]);
+        }
+        if (!pick[0]) {
+            /* whatever the remote does have */
+            FILE *pp = popen("git for-each-ref --count=1 "
+                             "--format='%(refname:strip=3)' refs/remotes/origin/", "r");
+            if (pp) {
+                if (fgets(pick, sizeof pick, pp)) {
+                    size_t n = strlen(pick);
+                    while (n && (pick[n-1] == '\n' || pick[n-1] == '\r')) pick[--n] = '\0';
+                }
+                pclose(pp);
+            }
+        }
+        if (pick[0] && strcmp(pick, "HEAD") != 0) {
+            char c[600];
+            fprintf(stderr, "uv-git clone: the remote's HEAD names a branch that "
+                            "does not exist; using '%s'\n", pick);
+            snprintf(c, sizeof c, "git branch -q -f '%s' 'origin/%s' 2>/dev/null",
+                     pick, pick);
+            if (system(c) != 0) { /* reported below if HEAD stays unborn */ }
+            snprintf(c, sizeof c, "git symbolic-ref HEAD 'refs/heads/%s'", pick);
+            if (system(c) != 0) { /* likewise */ }
+        }
+    }
+
     /* What does the commit say this account is? */
     static const char *names[] = { ".mv-account", ".uv", ".mvx", ".udt", NULL };
     char *desc = NULL;
@@ -1234,6 +1275,46 @@ static int clone_cmd(int argc, char **argv, int i) {
         desc = head_blob(".git", names[k], &dlen);
         if (desc) dname = names[k];
     }
+    /* No descriptor does not settle it.  An account committed before anything
+       wrote one still HAS a VOC in its history, and a VOC is the account's own
+       statement that it is one — the same authority materialise consults.  Only
+       the flavour is then unknown, and that must be supplied rather than
+       guessed: an account built at the wrong flavour looks right and behaves
+       differently. */
+    if (!desc && head_blob(".git", "VOC", NULL) == NULL) {
+        git_libgit2_init();
+        git_repository *r = NULL;
+        int has_voc = 0;
+        if (git_repository_open(&r, ".git") == 0) {
+            git_object *t = NULL;
+            if (git_revparse_single(&t, r, "HEAD^{tree}") == 0) {
+                git_tree_entry *te = NULL;
+                if (git_tree_entry_bypath(&te, (git_tree *)t, "VOC") == 0) {
+                    has_voc = git_tree_entry_type(te) == GIT_OBJECT_TREE;
+                    git_tree_entry_free(te);
+                }
+                git_object_free(t);
+            }
+            git_repository_free(r);
+        }
+        if (has_voc && !want_flavour) {
+            fprintf(stderr,
+                "uv-git clone: this repository holds an account (its history has "
+                "a VOC) but\n"
+                "              does not say which VOC flavour it needs, and "
+                "UniVerse cannot be\n"
+                "              asked afterwards.  Re-run with --flavour=<name>, "
+                "e.g. --flavour=PICK.\n");
+            return 1;
+        }
+        if (has_voc) {
+            /* A flavour was given, so proceed without a descriptor. */
+            desc = strdup("");
+            dlen = 0;
+            dname = ".uv";
+        }
+    }
+
     if (!desc) {
         /* Not an MV account at all — an ordinary repository.  Check it out the
            ordinary way and leave it alone; refusing would make uv-git useless
@@ -1352,6 +1433,20 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: uv-git [-a account] [-j jobs] "
                         "[--idle-timeout secs] <command> [args]\n");
         return 2;
+    }
+
+    /* Fold the subcommand ONCE, here, so every dispatch below agrees about it.
+       A UniVerse sentence is case-insensitive and MV users type `GIT CLONE`;
+       run_account folds its own copy, so leaving these checks case-sensitive
+       meant an upper-case verb sailed past every one of them and arrived at
+       run_account as an "unknown command" it had just lowercased itself. */
+    {
+        static char subfold[64];
+        size_t k = 0;
+        for (; argv[i][k] && k < sizeof subfold - 1; k++)
+            subfold[k] = (char)tolower((unsigned char)argv[i][k]);
+        subfold[k] = '\0';
+        argv[i] = subfold;
     }
 
     /* textconv is a git diff filter — it renders a record blob legibly for the

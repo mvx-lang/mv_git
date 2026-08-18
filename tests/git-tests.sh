@@ -59,7 +59,13 @@ elif [ "$PLATFORM" = uv ]; then
   # its banner into what the assertions read.  That is the same path a user
   # takes from the shell, so the tests exercise the shipped entry point.
   : "${UVGIT:?set UVGIT to the uv-git binary}"
-  ACCT() { mkdir -p "$1"; ( cd "$1" && printf 'Y\n3\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
+  # An account that is going to be version-controlled says what it IS: the
+  # descriptor carries the VOC flavour, which UniVerse records nowhere readable
+  # and a clone therefore cannot recover any other way (mv_git#15, #52).  Real
+  # users get this from `uv-git adopt`; here it is written directly.
+  ACCT() { mkdir -p "$1"; ( cd "$1" && printf 'Y\n3\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+           printf '# UV account descriptor\nname = %s\nversion = 1\nflavour = PICK\n' \
+                  "$(basename "$1")" > "$1/.uv"; }
   # The package directory IS an account, and install.sh installs into itself —
   # so an account gets git by receiving a copy of the package and running it
   # there.  That is exactly what a user does with the tarball, and it means each
