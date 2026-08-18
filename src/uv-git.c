@@ -772,7 +772,38 @@ static int run_account(int argc, char **argv, int i) {
         if (repo_place(gd, sizeof gd, pfx, sizeof pfx) == 0) apply_stock(gd);
     }
 
-    if      (!strcmp(sub, "init"))     out = mv_git_init(ctx, repo);
+    if      (!strcmp(sub, "init")) {
+        out = mv_git_init(ctx, repo);
+        /* An account that is going to be version-controlled should SAY it is an
+           account.  Without a descriptor the commit carries no statement of what
+           it is, and a clone has to infer it from the presence of a VOC and then
+           ask for a flavour it could have been told (mv_git#52).
+           The flavour is left out when nothing supplies one rather than guessed:
+           an empty field is a question a clone can ask, a wrong one is an account
+           that looks right and behaves differently. */
+        if (!find_descriptor()) {
+            char nm[256] = "account", cwd[4096];
+            if (getcwd(cwd, sizeof cwd)) {
+                const char *b = strrchr(cwd, '/');
+                snprintf(nm, sizeof nm, "%s", b ? b + 1 : cwd);
+            }
+            const char *fl = NULL;
+            for (int k = i; k < argc; k++) {
+                if (!strncmp(argv[k], "--flavour=", 10))    fl = argv[k] + 10;
+                else if (!strncmp(argv[k], "--flavor=", 9)) fl = argv[k] + 9;
+            }
+            int fi = fl ? flavour_index(fl) : -1;
+            FILE *f = fopen(".uv", "wb");
+            if (f) {
+                fprintf(f, "# UV account descriptor\nname = %s\nversion = 1\n", nm);
+                if (fi >= 0) fprintf(f, "flavour = %s\n", uv_flavours[fi].name);
+                fclose(f);
+                fprintf(stderr, "uv-git: wrote .uv%s\n", fi >= 0 ? "" :
+                        " — it names no flavour; add `flavour = <name>` or pass "
+                        "--flavour so a clone need not ask");
+            }
+        }
+    }
     else if (!strcmp(sub, "status"))   out = mv_git_status(ctx, repo);
     else if (!strcmp(sub, "log"))      out = mv_git_log(ctx, repo, *a0 ? a0 : "20");
     else if (!strcmp(sub, "branch"))   out = mv_git_branch(ctx, repo, a0);
