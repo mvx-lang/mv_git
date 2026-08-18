@@ -49,6 +49,7 @@
 
 #include "mvxgit.h"
 #include "mvsession.h"
+#include "agent_src.h"   /* generated from BP/GIT.AGENT by build-gitd.sh */
 
 /* agent_rt.c: finish with the current account and give its licence back. */
 void mv_agent_release(void);
@@ -208,9 +209,9 @@ static const char *find_descriptor(void) {
  */
 
 /* Directory entries, sorted, NUL-separated in a single buffer. */
-typedef struct { char *d; size_t len, cap; int n; } names;
+typedef struct { char *d; size_t len, cap; int n; } names_t;
 
-static void names_add(names *v, const char *s) {
+static void names_add(names_t *v, const char *s) {
     size_t need = strlen(s) + 1;
     if (v->len + need > v->cap) {
         v->cap = (v->len + need) * 2 + 256;
@@ -222,7 +223,7 @@ static void names_add(names *v, const char *s) {
     v->n++;
 }
 
-static int names_has(const names *v, const char *s) {
+static int names_has(const names_t *v, const char *s) {
     for (size_t i = 0; i < v->len; i += strlen(v->d + i) + 1)
         if (!strcmp(v->d + i, s)) return 1;
     return 0;
@@ -230,7 +231,7 @@ static int names_has(const names *v, const char *s) {
 
 /* Snapshot the current directory's entries, skipping dotfiles — the descriptor
    and .git are ours, not UniVerse's, and must never be excluded. */
-static void snapshot(names *v) {
+static void snapshot(names_t *v) {
     memset(v, 0, sizeof *v);
     DIR *d = opendir(".");
     struct dirent *e;
@@ -250,7 +251,7 @@ static void snapshot(names *v) {
    and a bare `/VOC` rule would hide those too — silently, in status.  Verified
    against git: with `/VOC` alone, `VOC/BASIC` checks as ignored; with the
    negation after it, the file is ignored and the path is not. */
-static void exclude_new(const names *before, const names *now,
+static void exclude_new(const names_t *before, const names_t *now,
                         const char *gitdir, const char *prefix) {
     char path[4096];
     snprintf(path, sizeof path, "%s/info/exclude", gitdir);
@@ -491,7 +492,7 @@ static int adopt(int argc, char **argv, int i) {
         if (fi < 0) fi = flavour_index("PICK");
         fprintf(stderr, "uv-git adopt: creating a UniVerse account (%s)\n",
                 uv_flavours[fi].name);
-        names before, after;
+        names_t before, after;
         snapshot(&before);
         if (make_account(uv_flavours[fi].code) != 0) {
             fprintf(stderr, "uv-git adopt: the account was not created "
@@ -874,7 +875,7 @@ static int run_account(int argc, char **argv, int i) {
    account is stock precisely because nothing has been installed into it, so it
    cannot answer until this is done — and seeding it is cheaper and far more
    honest than trying to read a VOC without a session. */
-static int seed_agent(const char *agent_src) {
+static int seed_agent(void) {
     char cmd[512];
     /* CREATE.FILE is interactive; answer its prompts, with an EMPTY description
        (a described file reads "F <text>" and the account scan cannot see it). */
@@ -882,14 +883,11 @@ static int seed_agent(const char *agent_src) {
              "printf 'CREATE.FILE BP\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
              ">/dev/null 2>&1", mvs_shell());
     if (system(cmd) != 0) { /* prompts are noisy; the check below is the test */ }
-    FILE *in = fopen(agent_src, "rb");
-    if (!in) return -1;
+    /* From the copy compiled into this binary, not from disk: the account we are
+       seeding may be anywhere, and the package may be nowhere near it. */
     FILE *o = fopen("BP/GIT.AGENT", "wb");
-    if (!o) { fclose(in); return -1; }
-    char buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, o);
-    fclose(in);
+    if (!o) return -1;
+    fputs(GIT_AGENT_SRC, o);
     fclose(o);
     snprintf(cmd, sizeof cmd,
              "printf 'BASIC BP GIT.AGENT\nQUIT\n' | %s >/dev/null 2>&1",
@@ -899,13 +897,6 @@ static int seed_agent(const char *agent_src) {
 }
 
 static int build_stock(const char *flavour, const char *code, const char *out) {
-    /* Where our own agent's source lives, resolved before we leave the account. */
-    char agent_src[4096];
-    if (!realpath("BP/GIT.AGENT", agent_src)) {
-        fprintf(stderr, "uv-git: cannot find BP/GIT.AGENT to seed a stock "
-                        "account with; skipping the stock baseline\n");
-        return -1;
-    }
     char tmpl[] = "/tmp/uvstockXXXXXX";
     if (!mkdtemp(tmpl)) return -1;
     int rc = -1;
@@ -914,7 +905,7 @@ static int build_stock(const char *flavour, const char *code, const char *out) {
     fprintf(stderr, "uv-git: learning what a stock %s account holds "
                     "(once per clone)\n", flavour);
     int seeded = chdir(tmpl) == 0 && make_account(code) == 0 &&
-                 seed_agent(agent_src) == 0;
+                 seed_agent() == 0;
     if (!seeded)
         fprintf(stderr, "uv-git: could not stand up a stock %s account to learn "
                         "from; commits will carry the system's own VOC records "
@@ -1147,6 +1138,192 @@ static int run_accounts(const char *root, int argc, char **argv, int i) {
     return rc;
 }
 
+/* --- clone (mv_git#52) -----------------------------------------------------
+ *
+ * Cloning a UniVerse account is not "git clone, then fix it up", and trying it
+ * that way does not merely look untidy — it cannot work.  A native account's
+ * records commit at `VOC/<id>`, so an ordinary checkout writes a DIRECTORY
+ * called VOC full of record files, and UniVerse then cannot create its own VOC
+ * hash file because that name is taken.  The account can never be created, so
+ * the records can never be loaded.  The intermediate form blocks the thing it
+ * was supposed to become.
+ *
+ * So the checkout never happens.  Clone with --no-checkout, read what is needed
+ * out of the commit, build the account, and materialise the records straight
+ * from the git objects into it.  mvx-git already does exactly this, for the same
+ * reason: the open form never lands on disk.
+ *
+ * The flavour comes from the committed descriptor, so unlike `adopt` this
+ * usually needs to ask nothing — the repository already says what kind of
+ * account it is.  When it does not say, we ask exactly as adopt does, because
+ * guessing produces an account that looks right and behaves differently. */
+
+/* A blob from HEAD, malloc'd, or NULL.  The working tree is empty at this point
+   — that is the whole point — so anything we need must come from the objects. */
+static char *head_blob(const char *gitdir, const char *path, size_t *len) {
+    git_libgit2_init();
+    git_repository *repo = NULL;
+    char *out = NULL;
+    if (git_repository_open(&repo, gitdir) != 0) return NULL;
+    git_object *tree = NULL;
+    if (git_revparse_single(&tree, repo, "HEAD^{tree}") == 0) {
+        git_tree_entry *te = NULL;
+        if (git_tree_entry_bypath(&te, (git_tree *)tree, path) == 0) {
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
+                size_t n = (size_t)git_blob_rawsize(b);
+                out = malloc(n + 1);
+                if (out) {
+                    memcpy(out, git_blob_rawcontent(b), n);
+                    out[n] = '\0';
+                    if (len) *len = n;
+                }
+                git_blob_free(b);
+            }
+            git_tree_entry_free(te);
+        }
+        git_object_free(tree);
+    }
+    git_repository_free(repo);
+    return out;
+}
+
+static int clone_cmd(int argc, char **argv, int i) {
+    const char *url = (i + 1 < argc) ? argv[i + 1] : NULL;
+    const char *dir = (i + 2 < argc) ? argv[i + 2] : NULL;
+    const char *want_flavour = NULL;
+    for (int k = i + 1; k < argc; k++) {
+        if (!strncmp(argv[k], "--flavour=", 10))    want_flavour = argv[k] + 10;
+        else if (!strncmp(argv[k], "--flavor=", 9)) want_flavour = argv[k] + 9;
+    }
+    if (!url) {
+        fprintf(stderr, "usage: uv-git clone <url> [directory]\n");
+        return 2;
+    }
+    char dbuf[4096];
+    if (!dir) {
+        /* git's own rule: the last path component, without a trailing .git */
+        const char *base = strrchr(url, '/');
+        base = base ? base + 1 : url;
+        snprintf(dbuf, sizeof dbuf, "%s", base);
+        size_t n = strlen(dbuf);
+        if (n > 4 && !strcmp(dbuf + n - 4, ".git")) dbuf[n - 4] = '\0';
+        dir = dbuf;
+    }
+
+    /* --no-checkout: the records go into the account, never onto the disk. */
+    {
+        char cmd[8500];
+        snprintf(cmd, sizeof cmd, "git clone --no-checkout '%s' '%s'", url, dir);
+        if (system(cmd) != 0) {
+            fprintf(stderr, "uv-git clone: git clone failed\n");
+            return 1;
+        }
+    }
+    if (chdir(dir) != 0) {
+        fprintf(stderr, "uv-git clone: cannot enter %s: %s\n", dir, strerror(errno));
+        return 1;
+    }
+
+    /* What does the commit say this account is? */
+    static const char *names[] = { ".mv-account", ".uv", ".mvx", ".udt", NULL };
+    char *desc = NULL;
+    size_t dlen = 0;
+    const char *dname = NULL;
+    for (int k = 0; names[k] && !desc; k++) {
+        desc = head_blob(".git", names[k], &dlen);
+        if (desc) dname = names[k];
+    }
+    if (!desc) {
+        /* Not an MV account at all — an ordinary repository.  Check it out the
+           ordinary way and leave it alone; refusing would make uv-git useless
+           for the plain repositories that sit beside accounts. */
+        char co[64];
+        snprintf(co, sizeof co, "git checkout");
+        if (system(co) != 0) { /* git reports its own failure */ }
+        printf("cloned an ordinary repository (no MV account descriptor)\n");
+        return 0;
+    }
+
+    int fi = -1;
+    char have[64] = "";
+    if (want_flavour) fi = flavour_index(want_flavour);
+    else if (mv_git_desc_field(desc, dlen, "flavour", have, sizeof have))
+        fi = flavour_index(have);
+    if (fi < 0) {
+        char line[64];
+        fprintf(stderr,
+            "This repository does not say which VOC flavour its account needs,\n"
+            "and UniVerse cannot be asked afterwards: the flavour is fixed when\n"
+            "the account is created and is not recorded anywhere readable.\n\n");
+        for (int k = 0; k < NFLAVOURS; k++)
+            fprintf(stderr, "    %-8s %s\n", uv_flavours[k].name,
+                    uv_flavours[k].shown);
+        fprintf(stderr, "\n");
+        while (fi < 0) {
+            if (!ask("Flavour for this account [PICK]: ", line, sizeof line)) {
+                fprintf(stderr, "uv-git clone: no terminal to ask on — pass "
+                                "--flavour=<name>.\n");
+                free(desc);
+                return 1;
+            }
+            if (!line[0]) { fi = flavour_index("PICK"); break; }
+            fi = flavour_index(line);
+            if (fi < 0) fprintf(stderr, "  not a flavour: %s\n", line);
+        }
+    }
+
+    /* Build the account, and keep what UniVerse creates for it out of git. */
+    fprintf(stderr, "uv-git clone: creating a UniVerse account (%s)\n",
+            uv_flavours[fi].name);
+    names_t before, after;
+    snapshot(&before);
+    if (make_account(uv_flavours[fi].code) != 0) {
+        fprintf(stderr, "uv-git clone: the account was not created (no VOC); "
+                        "is `%s` on PATH?\n", mvs_shell());
+        free(desc);
+        return 1;
+    }
+    snapshot(&after);
+    {
+        char gd[4096], pfx[4096];
+        if (repo_place(gd, sizeof gd, pfx, sizeof pfx) == 0)
+            exclude_new(&before, &after, gd, pfx);
+    }
+    free(before.d);
+    free(after.d);
+
+    /* The descriptor itself is content: write it out as the commit has it, so
+       the working tree matches HEAD and status is clean. */
+    {
+        FILE *f = fopen(dname, "wb");
+        if (f) { fwrite(desc, 1, dlen, f); fclose(f); }
+    }
+    free(desc);
+
+    /* Nothing is installed yet, so nothing can answer — seed an agent first. */
+    if (seed_agent() != 0) {
+        fprintf(stderr, "uv-git clone: could not put an agent into the new "
+                        "account; the account exists but holds no records yet\n");
+        return 1;
+    }
+
+    /* Records, straight from the git objects into the account's files. */
+    mv_ctx *ctx = mv_ctx_create();
+    char *out = mv_git_materialize(ctx, ".git");
+    if (out) {
+        for (char *p = out; *p; p++) if ((unsigned char)*p == 0xFE) *p = '\n';
+        printf("%s\n", out);
+        free(out);
+    }
+    mv_ctx_destroy(ctx);
+    mv_agent_release();
+
+    printf("cloned into %s as a UniVerse account (%s flavour)\n",
+           dir, uv_flavours[fi].name);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int i = 1;
     const char *account = ".";
@@ -1230,6 +1407,17 @@ int main(int argc, char **argv) {
 
     /* adopt runs BEFORE the account test below, because the whole point is that
        this is not an account yet — a cloned tree has records on disk and no VOC. */
+    /* clone runs before every account test: there is no account yet, and after
+       this there will be one. */
+    if (strcmp(argv[i], "clone") == 0) {
+        if (chdir(account) != 0) {
+            fprintf(stderr, "uv-git: cannot enter %s: %s\n",
+                    account, strerror(errno));
+            return 1;
+        }
+        return clone_cmd(argc, argv, i);
+    }
+
     if (strcmp(argv[i], "adopt") == 0) {
         if (chdir(account) != 0) {
             fprintf(stderr, "uv-git: cannot enter %s: %s\n",

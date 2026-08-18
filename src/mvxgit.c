@@ -2315,6 +2315,72 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
    rather than a plain directory git tracks verbatim: a data file `<name>` has a
    `<name>.DICT/%FILE%` control; a dictionary `<name>.DICT` has its own
    `%FILE%`. */
+/* What the COMMIT'S OWN VOC calls a file.
+ *
+ * The %FILE% test below only works on a commit in the OPEN interchange form,
+ * which is the only form that carries those controls.  A NATIVE commit — a
+ * UniVerse or UniData account committed as itself — has none, so nothing was
+ * recognised as an MV file and a clone materialised exactly nothing while
+ * cheerfully reporting success.
+ *
+ * A native commit does carry its VOC, though, and a VOC record of type F or DIR
+ * is the account's own statement that a file exists.  That is the same authority
+ * the live side consults (mv_filelist reads the VOC); here it is read out of the
+ * tree, because at clone time there is no account yet to ask. */
+static nameset g_treefiles;
+static int g_treefiles_done;
+
+static void tree_files_reset(void) {
+    free(g_treefiles.n);
+    g_treefiles.n = NULL;
+    g_treefiles.c = g_treefiles.cap = 0;
+    g_treefiles_done = 0;
+}
+
+static void tree_files_load(git_repository *repo, git_tree *head) {
+    if (g_treefiles_done) return;
+    g_treefiles_done = 1;
+    git_tree_entry *ve = NULL;
+    if (git_tree_entry_bypath(&ve, head, "VOC") != 0) return;
+    git_tree *voc = NULL;
+    if (git_tree_lookup(&voc, repo, git_tree_entry_id(ve)) == 0) {
+        size_t n = git_tree_entrycount(voc);
+        for (size_t i = 0; i < n; i++) {
+            const git_tree_entry *te = git_tree_entry_byindex(voc, i);
+            if (git_tree_entry_type(te) != GIT_OBJECT_BLOB) continue;
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) != 0) continue;
+            const char *c = git_blob_rawcontent(b);
+            size_t bl = (size_t)git_blob_rawsize(b);
+            /* A committed record is stored TRANSLATED — attribute marks are
+               newlines — so attribute 1 is the first line, and its first token
+               is the type (UniVerse may append a description). */
+            size_t e = 0;
+            while (e < bl && c[e] != '\n') e++;
+            size_t t = 0;
+            while (t < e && c[t] != ' ' && c[t] != '\t') t++;
+            if ((t == 1 && c[0] == 'F') || (t == 3 && strncmp(c, "DIR", 3) == 0))
+                ns_add(&g_treefiles, git_tree_entry_name(te));
+            git_blob_free(b);
+        }
+        git_tree_free(voc);
+    }
+    git_tree_entry_free(ve);
+}
+
+static int tree_voc_says_file(const char *name) {
+    /* A dictionary subtree belongs to its base file. */
+    char base[300];
+    size_t ln = strlen(name);
+    if (ln > 5 && strcmp(name + ln - 5, ".DICT") == 0)
+        snprintf(base, sizeof base, "%.*s", (int)(ln - 5), name);
+    else
+        snprintf(base, sizeof base, "%s", name);
+    for (size_t i = 0; i < g_treefiles.c; i++)
+        if (!strcmp(g_treefiles.n[i], base)) return 1;
+    return 0;
+}
+
 static int tree_is_mv_file(git_tree *head, const char *name) {
     char path[600];
     size_t ln = strlen(name);
@@ -2325,9 +2391,9 @@ static int tree_is_mv_file(git_tree *head, const char *name) {
     git_tree_entry *te = NULL;
     if (git_tree_entry_bypath(&te, head, path) == 0) {
         git_tree_entry_free(te);
-        return 1;
+        return 1;                       /* open form: the control says so */
     }
-    return 0;
+    return tree_voc_says_file(name);    /* native form: the VOC says so */
 }
 
 /* Materialize the tracked MV files in a commit tree into their backends.  With
@@ -2378,6 +2444,10 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
         if (!owned) return;                 /* nothing committed for us yet */
         tree = owned;
     }
+    /* Learn what this commit calls a file before deciding which subtrees are
+       ones.  Reset first: a different tree may say something different. */
+    tree_files_reset();
+    tree_files_load(repo, tree);
     size_t n = git_tree_entrycount(tree);
     for (size_t i = 0; i < n; i++) {
         const git_tree_entry *te = git_tree_entry_byindex(tree, i);

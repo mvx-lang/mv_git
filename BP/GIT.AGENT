@@ -394,10 +394,14 @@ DO.CREATEFILE:
       IF KIND = "DIR" THEN
          DTYPE = 19 ; MODL = 1
       END ELSE
-*        Type 30 is a dynamic file, 18 an ordinary static hashed one.  The open
-*        form says which the source was; a bare "hash" means dynamic, which is
-*        the sane default for a file whose size is unknown.
-         IF DYN = "STATIC" THEN DTYPE = 18 ELSE DTYPE = 30
+*        18 is an ordinary static hashed file, and it is what this path can
+*        create.  Type 30 (dynamic) is REJECTED when answered into these
+*        prompts — verified on 14.2.1: CREATE.FILE re-asks and the stacked
+*        answers run out, leaving a half-built file with a dictionary and no
+*        data part.  So a file the commit calls dynamic is recreated static
+*        here rather than not at all; resizing it afterwards is a decision for
+*        whoever knows the data, and losing the file is not.
+         DTYPE = 18
       END
       DATA 1, 2, 3, MODL, 2, DTYPE, ""
       EXECUTE "CREATE.FILE " : NAME CAPTURING CFOUT
