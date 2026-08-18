@@ -52,6 +52,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "mvxgit.h"
+#include "uvsession.h"
 #include <git2.h>
 
 #include <ctype.h>
@@ -343,6 +344,31 @@ static int make_account(const char *code) {
     int rc = system(cmd);
     (void)rc;
     return access("VOC", F_OK) == 0 ? 0 : -1;
+}
+
+/* One agent call, rendered for a person: the reply as lines, or the status. */
+static int agent_one(uv_session *ses, const char *op, int na, const char *const *a) {
+    char *body = NULL;
+    long blen = 0;
+    int st = uvs_calls(ses, op, na, a, &body, &blen);
+    if (st != 0) {
+        fprintf(stderr, "status %d%s%.*s\n", st, blen ? ": " : "",
+                (int)blen, body ? body : "");
+        free(body);
+        return 1;
+    }
+    if (body) {
+        /* record and list text is @AM/@VM separated; show the structure */
+        for (long k = 0; k < blen; k++) {
+            unsigned char c = (unsigned char)body[k];
+            if (c == 0xFE) body[k] = '\n';
+            else if (c == 0xFD) body[k] = '|';
+        }
+        fwrite(body, 1, (size_t)blen, stdout);
+        free(body);
+    }
+    fputc('\n', stdout);
+    return 0;
 }
 
 /* Where we are in the repository: `gitdir` receives the real git directory
@@ -722,6 +748,51 @@ int main(int argc, char **argv) {
        paying for a session. */
     if (strcmp(argv[i], "textconv") == 0)
         return mv_git_textconv(i + 1 < argc ? argv[i + 1] : "-");
+
+    /* `agent` speaks to the account I/O agent directly (mv_git#47): one opcode,
+       its arguments, the reply on stdout.  It is the diagnostic for the session
+       layer — when a record operation misbehaves, this says whether the session,
+       the protocol or the caller is at fault, without a repository in the way.
+         uv-git [-a acct] agent <OPCODE> [arg...] */
+    if (strcmp(argv[i], "agent") == 0) {
+        char err[512] = "";
+        uv_session *ses = uvs_open(account, err, sizeof err);
+        if (!ses) {
+            fprintf(stderr, "uv-git agent: %s\n", err);
+            return 1;
+        }
+        int rc = 0;
+        if (i + 1 < argc) {
+            const char *a[8];
+            int na = 0;
+            for (int k = i + 2; k < argc && na < 8; k++) a[na++] = argv[k];
+            rc = agent_one(ses, argv[i + 1], na, a);
+        } else {
+            /* No opcode: read a sequence from stdin, one "OP arg arg…" per line,
+               all on ONE session.  State lives in the session — a file handle
+               from OPEN is only meaningful to later calls on the same one — so a
+               probe that could not hold a session could never exercise the part
+               that matters. */
+            char line[8192];
+            while (fgets(line, sizeof line, stdin)) {
+                size_t n = strlen(line);
+                while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+                if (!line[0] || line[0] == '#') continue;
+                const char *a[8];
+                int na = 0;
+                char *save = NULL;
+                char *op = strtok_r(line, " \t", &save);
+                if (!op) continue;
+                for (char *t; na < 8 && (t = strtok_r(NULL, " \t", &save)); )
+                    a[na++] = t;
+                printf("%s: ", op);
+                fflush(stdout);
+                if (agent_one(ses, op, na, a) != 0) rc = 1;
+            }
+        }
+        uvs_close(ses);
+        return rc;
+    }
 
     /* adopt runs BEFORE the account test below, because the whole point is that
        this is not an account yet — a cloned tree has records on disk and no VOC. */

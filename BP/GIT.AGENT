@@ -1,0 +1,316 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.AGENT
+*  * @version 1.0
+*  */
+* GIT.AGENT — an account I/O server (mv_git#47).
+*
+* This program does ONE thing: it reads and writes the account it is running in,
+* on behalf of a process outside it.  Records, select lists, files.  It knows
+* nothing about git, and deliberately so — the caller owns the git objects, and
+* the only thing it cannot do for itself is reach into a UniVerse account.
+*
+* WHY IT EXISTS.  On UniVerse a session is the only way to records: GCI is
+* licensed and dead in the Trial Edition, and InterCall is a client SDK we
+* cannot get for Linux.  But that is an argument for putting the RECORD LOOP in
+* a session, not the git work — and the earlier design put both there, driving
+* the GIT verb from outside and shipping git objects back out to mvgitd.  This
+* replaces that: uv-git already links libgit2, so it keeps the git work and asks
+* a session only for what a session is for.
+*
+* THE PROTOCOL is the one BASIC already used to talk to mvgitd (gitproto.h),
+* with the roles swapped — here the session is the SERVER.  Its constraints are
+* unchanged, and each was established by probe rather than assumed:
+*
+*   Reads are EXACT-COUNT.  READBLK does not short-return at EOF on a FIFO:
+*   OPENSEQ holds the pipe read/write, so the reader is also a writer, EOF never
+*   arrives, and a read for more bytes than are present hangs.  The length header
+*   is what makes every read an exact one.
+*
+*   Everything on the wire is HEX.  Record marks are 0xFE/0xFD/0xFC, and
+*   UniVerse may have NLS or codepage translation active on sequential I/O,
+*   which can alter any non-ASCII byte in transit.  OCONV "MX" is builtin, so
+*   the encoding runs at native speed on bulk data.
+*
+*   Arguments are individually length-prefixed, never separated, because no byte
+*   is safe as a separator inside record content.
+*
+* THE LICENCE is why QUIT is a real opcode rather than the caller closing a pipe.
+* A session that is killed can leave its licence held; one that reaches QUIT and
+* STOPs releases it.  The caller asks, the agent finishes what it is doing and
+* exits cleanly — and uv-git asks even when it is itself interrupted, since it
+* handles SIGINT/SIGTERM before dying.
+*
+* NOT HANDLED YET (mv_git#48): a caller killed with SIGKILL cannot ask, and this
+* agent has no way to notice.  It is blocked in READBLK, and the FIFO gives it no
+* EOF to wake on — OPENSEQ holds the pipe read/write, which is the same property
+* that forces exact-count reads everywhere else here.  So the session waits, and
+* its licence stays held.  A heartbeat between frames is the likely answer.
+      $INCLUDE BP.INC PLATFORM.H
+      AM = CHAR(254) ; VM = CHAR(253)
+      MAGIC = "MVG1"
+*     Header widths, mirroring gitproto.h.  Fixed-width ASCII so both ends build
+*     and parse them with ordinary string operations.
+      W.MAGIC = 4 ; W.TOKEN = 32 ; W.OPCODE = 16 ; W.NARGS = 2 ; W.LEN = 10
+      W.STATUS = 4
+      REQ.HDR = W.MAGIC + W.TOKEN + W.OPCODE + W.NARGS + W.LEN   ;* 64
+*
+*     The pipes and the token are the last three words of the sentence, taken
+*     from the END so this works whether it is RUN or cataloged as a verb.
+      S = TRIM(@SENTENCE)
+      NT = DCOUNT(S, " ")
+      REQP = FIELD(S, " ", NT - 2)
+      RSPP = FIELD(S, " ", NT - 1)
+      TOK  = FIELD(S, " ", NT)
+      IF REQP = "" OR RSPP = "" OR TOK = "" THEN
+         CRT "GIT.AGENT: usage: GIT.AGENT <reqpipe> <rsppipe> <token>"
+         STOP
+      END
+      OPENSEQ REQP TO RQ ELSE
+         CRT "GIT.AGENT: cannot open ":REQP
+         STOP
+      END
+      OPENSEQ RSPP TO RS ELSE
+         CRT "GIT.AGENT: cannot open ":RSPP
+         STOP
+      END
+*
+*     Open file variables live in a fixed pool; the caller refers to one by its
+*     slot number.  A pool rather than a name lookup because the caller may hold
+*     a file and its dictionary open at once, and they share a name.
+      DIM FV(64)
+      NFV = 0
+      DONE = 0
+*
+      LOOP UNTIL DONE DO
+         GOSUB READREQ
+         IF DONE THEN EXIT
+         GOSUB DISPATCH
+         GOSUB SENDRSP
+      REPEAT
+      CLOSESEQ RQ
+      CLOSESEQ RS
+      STOP
+*
+* ---- read one request ------------------------------------------------------
+READREQ:
+      HDR = ""
+      READBLK HDR FROM RQ, REQ.HDR ELSE DONE = 1 ; RETURN
+      IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN
+      IF HDR[1, W.MAGIC] # MAGIC THEN DONE = 1 ; RETURN
+      P = W.MAGIC + 1
+      RTOK = HDR[P, W.TOKEN] ; P += W.TOKEN
+      OP = TRIM(HDR[P, W.OPCODE]) ; P += W.OPCODE
+      NARGS = HDR[P, W.NARGS] + 0 ; P += W.NARGS
+      BLEN = HDR[P, W.LEN] + 0
+      BODY = ""
+      IF BLEN > 0 THEN
+         READBLK BODY FROM RQ, BLEN ELSE DONE = 1 ; RETURN
+      END
+*     The token is checked on EVERY request, not just at connect.  It tells
+*     apart sessions sharing one OS uid, and — the reason it is here rather than
+*     at connect alone — a length-framed protocol has no resynchronisation
+*     point, so once the ends disagree about where a frame starts every byte
+*     after is garbage.  A checked token turns silent corruption into a clean
+*     rejection.
+      STATUS = 0 ; RESULT = ""
+      IF RTOK # TOK THEN
+         STATUS = 2 ; RESULT = "token mismatch"
+         OP = ""
+         RETURN
+      END
+*     Split the body into arguments: each is [len(10)][len hex chars].
+      DIM ARGV(8)
+      FOR K = 1 TO 8 ; ARGV(K) = "" ; NEXT K
+      OFF = 1
+      FOR K = 1 TO NARGS
+         IF K > 8 THEN EXIT
+         AL = BODY[OFF, W.LEN] + 0 ; OFF += W.LEN
+         ENC = BODY[OFF, AL] ; OFF += AL
+         IF AL > 0 THEN ARGV(K) = ICONV(ENC, "MX") ELSE ARGV(K) = ""
+      NEXT K
+      RETURN
+*
+* ---- one operation ---------------------------------------------------------
+DISPATCH:
+      STATUS = 0 ; RESULT = ""
+      BEGIN CASE
+         CASE OP = "QUIT"
+            DONE = 1
+         CASE OP = "PING"
+            RESULT = "ok"
+         CASE OP = "OPEN"
+            GOSUB DO.OPEN
+         CASE OP = "READ"
+            GOSUB DO.READ
+         CASE OP = "WRITE"
+            GOSUB DO.WRITE
+         CASE OP = "DELETE"
+            GOSUB DO.DELETE
+         CASE OP = "SELECT"
+            GOSUB DO.SELECT
+         CASE OP = "READNEXT"
+            GOSUB DO.READNEXT
+         CASE OP = "FILELIST"
+            GOSUB DO.FILELIST
+         CASE OP = "FILECLASS"
+            GOSUB DO.FILECLASS
+         CASE OP = "INDICES"
+            GOSUB DO.INDICES
+         CASE OP = ""
+            STATUS = STATUS
+         CASE 1
+            STATUS = 3 ; RESULT = "unknown opcode: " : OP
+      END CASE
+      RETURN
+*
+*     OPEN(name [, part]) -> slot number.  `part` is "DICT" for the dictionary
+*     and may be omitted for the data file — the name first, so the optional
+*     argument is the one that can be left off.
+DO.OPEN:
+      NAME = ARGV(1) ; PART = ARGV(2)
+      IF NFV >= 64 THEN
+         STATUS = 5 ; RESULT = "too many open files"
+         RETURN
+      END
+      NFV += 1
+      IF PART = "DICT" THEN
+         OPEN "DICT", NAME TO FV(NFV) ELSE
+            NFV -= 1
+            STATUS = 5 ; RESULT = "cannot open DICT " : NAME
+            RETURN
+         END
+      END ELSE
+         OPEN NAME TO FV(NFV) ELSE
+            NFV -= 1
+            STATUS = 5 ; RESULT = "cannot open " : NAME
+            RETURN
+         END
+      END
+      RESULT = NFV
+      RETURN
+*
+DO.READ:
+      H = ARGV(1) + 0 ; ID = ARGV(2)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      READ REC FROM FV(H), ID THEN
+         RESULT = REC
+      END ELSE
+         STATUS = 5 ; RESULT = "no record " : ID
+      END
+      RETURN
+*
+DO.WRITE:
+      H = ARGV(1) + 0 ; ID = ARGV(2) ; REC = ARGV(3)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      WRITE REC ON FV(H), ID ELSE
+         STATUS = 5 ; RESULT = "cannot write " : ID
+      END
+      RETURN
+*
+DO.DELETE:
+      H = ARGV(1) + 0 ; ID = ARGV(2)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      DELETE FV(H), ID
+      RETURN
+*
+*     SELECT(handle).  The default select list is used, so exactly one scan is
+*     live at a time — which is all the caller's record loop needs, and it keeps
+*     the flavour-dependent "SELECT ... TO list" form out of the code.
+DO.SELECT:
+      H = ARGV(1) + 0
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      SELECT FV(H)
+      RETURN
+*
+*     READNEXT -> the next id, or an empty body at the end of the list.  An
+*     empty result is unambiguous: a record id is never empty.
+DO.READNEXT:
+      READNEXT ID THEN RESULT = ID ELSE RESULT = ""
+      RETURN
+*
+*     FILELIST -> the account's own files, "<name><VM><type>" per @AM field.
+*     The same locality rules the account scan has always used: a file counts
+*     when it is F or DIR and both its data and dictionary paths resolve inside
+*     this account, so a Q-pointer to another account is never followed.
+DO.FILELIST:
+      OPEN "VOC" TO VOCF ELSE
+         STATUS = 5 ; RESULT = "no VOC"
+         RETURN
+      END
+      FILES = ""
+      SELECT VOCF
+      LOOP WHILE READNEXT VID DO
+         READ VREC FROM VOCF, VID THEN
+*           Attribute 1 is the type, but not the type ALONE: UniVerse appends
+*           the description given at CREATE.FILE time, so a described file reads
+*           "F Customer master" and an exact match makes it invisible.
+            VT = TRIM(FIELD(VREC<1>, " ", 1))
+            IF VT = "F" OR VT = "DIR" THEN
+               DP = VREC<2> ; DD = VREC<3> ; LOC = 1
+               IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
+               IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
+               L = LEN(VID)
+               IF VID[1,1]="_" AND VID[L,1]="_" THEN LOC = 0
+               IF VID[1,1]="&" AND VID[L,1]="&" THEN LOC = 0
+               IF LOC THEN FILES<-1> = VID : VM : VT
+            END
+         END
+      REPEAT
+      RESULT = FILES
+      RETURN
+*
+DO.FILECLASS:
+      NAME = ARGV(1)
+      RESULT = "hash"
+      OPEN NAME TO FCV THEN
+         FTY = FILEINFO(FCV, 3) ; MODL = FILEINFO(FCV, 5)
+         IF MODL <= 0 THEN
+            RESULT = "DIR"
+         END ELSE
+            IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+            RESULT = "hash " : MODL : " " : DS
+         END
+      END ELSE
+         STATUS = 5 ; RESULT = "cannot open " : NAME
+      END
+      RETURN
+*
+DO.INDICES:
+      NAME = ARGV(1)
+      RESULT = ""
+      OPEN NAME TO IXV THEN
+         IXL = INDICES(IXV)
+         IF IXL # "" THEN RESULT = IXL
+      END ELSE
+         STATUS = 5 ; RESULT = "cannot open " : NAME
+      END
+      RETURN
+*
+* ---- send one reply --------------------------------------------------------
+SENDRSP:
+      ENC = ""
+      IF RESULT # "" THEN ENC = OCONV(RESULT, "MX")
+      EL = LEN(ENC)
+      SH = MAGIC : FMT(STATUS, "R%":W.STATUS) : FMT(EL, "R%":W.LEN)
+      WRITEBLK SH TO RS ELSE DONE = 1 ; RETURN
+      IF EL > 0 THEN
+         WRITEBLK ENC TO RS ELSE DONE = 1 ; RETURN
+      END
+      RETURN
+

@@ -46,7 +46,7 @@ echo "built $OUT/mvgitd"
 # and so needs no session — hence the same recordless backend as mvgitd.
 $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
     -I"$SRC" $LG2_CFLAGS \
-    "$SRC/uv-git.c" "$SRC/gitd_rt.c" "$SRC/mvxgit.c" \
+    "$SRC/uv-git.c" "$SRC/uvsession.c" "$SRC/gitd_rt.c" "$SRC/mvxgit.c" \
     -o "$OUT/uv-git" $LG2_LIBS
 
 echo "built $OUT/uv-git"
