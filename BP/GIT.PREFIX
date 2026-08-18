@@ -1,0 +1,52 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.PREFIX
+*  * @version 1.0
+*  */
+* GIT.PREFIX(pfx) — where this account sits inside its repository, as a path
+* prefix ending in "/", or "" when the account IS the repository root.
+*
+* A repository may hold several accounts beside ordinary files, and the paths it
+* stores carry the account:
+*
+*     demo/.mvx                 the account marker
+*     demo/BP.DICT/%FILE%       a file's control, under its account
+*     demo/BP/MOUSE-DEMO        a record: <account>/<file>/<id>
+*     .github/workflows/ci.yml  ordinary files, at the top
+*
+* MVX produces that shape without trying: with the open format its records ARE
+* files in directories on disk, so git's own `add` walks them from the repo root
+* and the account name is simply part of the path it finds.
+*
+* UniVerse and UniData have no such luck — records live in hash files and never
+* appear on disk — so the verb CONSTRUCTS each path, and without this prefix it
+* builds `<file>/<id>`.  For an account at the root that is right.  For an
+* account below it, two accounts would both claim `CUST/C1` and overwrite each
+* other, and a checkout could not tell whose record it was holding.
+      SUBROUTINE GIT.PREFIX(PFX)
+      PFX = ""
+      CALL GIT.REPO(REPO)
+*     GIT.REPO returns "<root>/.git"; the root is that with the suffix removed.
+      L = LEN(REPO)
+      IF L < 6 THEN RETURN
+      IF REPO[L-4, 5] # "/.git" THEN RETURN
+      ROOT = REPO[1, L-5]
+      ACCT = @PATH
+*     The account IS the root: no prefix, and the paths stay as they always were.
+      IF ACCT = ROOT THEN RETURN
+      RL = LEN(ROOT)
+      IF LEN(ACCT) <= RL + 1 THEN RETURN
+      IF ACCT[1, RL] # ROOT THEN RETURN      ;* not below the root after all
+      IF ACCT[RL+1, 1] # "/" THEN RETURN     ;* a sibling whose name merely starts the same
+      PFX = ACCT[RL+2, LEN(ACCT)-RL-1] : "/"
+      RETURN
+      END
+

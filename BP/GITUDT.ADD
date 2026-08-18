@@ -14,6 +14,11 @@
 SUBROUTINE GITUDT.ADD(REPO, S)
 $IFNDEF MVX
    AM = CHAR(254) ; VM = CHAR(253) ; LF = CHAR(10)
+*  Where this account sits in its repository.  "" when the account IS the repo
+*  root — which is every single-account package, so those paths are unchanged.
+*  Below a root it is "<account>/", and every path staged here carries it, so
+*  two accounts in one repository cannot both claim CUST/C1.
+   CALL GIT.PREFIX(PFX)
    ARG3 = FIELD(S, " ", 3)
    OPENFMT = 0
    IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
@@ -71,7 +76,7 @@ ADDALL:
       GOSUB STAGEDICT
       IF OPENFMT THEN
          GOSUB FILECLASS
-         CALL GIT.OBJ("STAGEBLOB", 3, REPO, FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
          GOSUB IXSTAGE
       END
       NFILES += 1
@@ -79,7 +84,7 @@ ADDALL:
    IF OPENFMT THEN
       NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
       DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
-      CALL GIT.OBJ("STAGEBLOB", 3, REPO, ".mv-account", DESC, "", "", OBJOUT)
+      CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:".mv-account", DESC, "", "", OBJOUT)
    END
    RETURN
 FILECLASS:
@@ -99,7 +104,7 @@ IXSTAGE:
       IXL = INDICES(IXVAR)
       IF IXL # "" THEN
          IXG = IXL ; CONVERT AM TO LF IN IXG
-         CALL GIT.OBJ("STAGEBLOB", 3, REPO, FILE:".DICT/%INDEXES%", IXG, "", "", OBJOUT)
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%INDEXES%", IXG, "", "", OBJOUT)
       END
    END
    RETURN
@@ -120,7 +125,7 @@ STAGEDATA:
             IF RT="Q" OR RT="X" OR RT="R" THEN DROP = 1
          END
          IF NOT(DROP) THEN
-            CALL GIT.OBJ("STAGE", 4, REPO, FILE, RID, RREC, "", OBJOUT)
+            CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, RID, RREC, "", OBJOUT)
             NSTAGED += 1
          END
       END
@@ -131,7 +136,7 @@ STAGEDICT:
    SELECT DCF
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DCF, RID THEN
-         CALL GIT.OBJ("STAGE", 4, REPO, FILE:".DICT", RID, RREC, "", OBJOUT)
+         CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE:".DICT", RID, RREC, "", OBJOUT)
          NSTAGED += 1
       END
    REPEAT
