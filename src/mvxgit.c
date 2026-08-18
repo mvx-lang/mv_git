@@ -664,11 +664,51 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 
+    /* RECONCILE DELETIONS.  Staging only ever ADDED, so a record deleted from
+       the account stayed in the index and went on being committed — and a clone
+       of that commit brought it back.  Deleted data returning is worse than
+       deleted data being missed, and `status` already reported the deletion
+       correctly, so the two disagreed about the same account.
+       The test is the one status uses — the record cannot be read — so they now
+       agree by construction.  Only on a wholesale add of a file: naming one
+       record is about that record, not about everything else in the file. */
+    int64_t removed = 0;
+    if (!only[0]) {
+        char rpfx[600];
+        int pn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, fn);
+        mv_value fv2, id2, rec2;
+        mv_init(&fv2); mv_init(&id2); mv_init(&rec2);
+        if (pn > 0 && open_named(ctx, fn, &fv2)) {
+            size_t pl = (size_t)pn;
+            for (size_t i = git_index_entrycount(index); i-- > 0; ) {
+                const git_index_entry *e = git_index_get_byindex(index, i);
+                if (!e || strncmp(e->path, rpfx, pl) != 0) continue;
+                char path[600], rid[300];
+                snprintf(path, sizeof path, "%s", e->path);
+                snprintf(rid, sizeof rid, "%s", e->path + pl);
+                /* synthesised, never a record — see stage_file_control */
+                if (strcmp(rid, "%FILE%") == 0) continue;
+                mv_set_str(&id2, rid, (int64_t)strlen(rid));
+                if (!mv_read(ctx, &rec2, &fv2, &id2, 0)) {
+                    git_index_remove_bypath(index, path);
+                    removed++;
+                }
+            }
+        }
+        mv_clear(&fv2); mv_clear(&id2); mv_clear(&rec2);
+    }
+
     int rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
     if (rc != 0) { fail(argv[3], "write index"); return; }
     char out[96];
+    if (removed) {
+        snprintf(out, sizeof out, "staged %lld record(s), %lld removed",
+                 (long long)n, (long long)removed);
+        mv_set_str(argv[3], out, (int64_t)strlen(out));
+        return;
+    }
     if (skipped)
         snprintf(out, sizeof out, "staged %lld record(s), %lld ignored",
                  (long long)n, (long long)skipped);
