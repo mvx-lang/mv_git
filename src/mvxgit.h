@@ -86,6 +86,36 @@ int mv_git_desc_open(const char *name, const char *version,
                      const char *description, const char *hash,
                      char *out, size_t cap);
 
+/* Adopt a descriptor onto THIS platform (mv_git#44).
+
+   Adoption is a CONVERSION, not a restoration.  A repository may carry a native
+   descriptor from wherever it was committed — `.mvx` (MVX), `.udt` (UniData) —
+   and each describes a platform this one is not: `.mvx` names an lmdb backend,
+   `.udt` a UniData file type.  Rebuilding the account here therefore means
+   rewriting the descriptor to describe THIS platform, and the rewrite is left in
+   the working tree as an ordinary git change so the user reviews and commits it.
+   A clone must never silently mutate what a repository claims to be.
+
+   `platform` is the native marker's bare name ("uv", "udt", "mvx").  `flavour`
+   supplies a field the source could not carry (UniVerse's VOC flavour, mv_git#15)
+   and is ignored when empty, so a platform with no such notion never acquires a
+   meaningless field.  With `open_form` the portable `.mv-account` is rendered
+   instead — the interchange form, and the one to prefer when the account will
+   travel again.
+
+   `name_out` receives the descriptor filename to write; when it differs from the
+   source's, that is the rename git will report.  Returns the rendered length. */
+int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
+                      const char *flavour, int open_form,
+                      char *name_out, size_t name_cap,
+                      char *out, size_t cap);
+
+/* Read one field from a descriptor (either form), so a driver can tell what the
+   source could not supply without duplicating the parser.  Returns 1 when the
+   field is present and non-empty, 0 otherwise. */
+int mv_git_desc_field(const char *src, size_t srclen, const char *key,
+                      char *out, size_t cap);
+
 /* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
    in `out`; returns its length, or -1 if `base` has no committed control yet.
    Generators use it to keep a shipped hash modulo sticky: a re-add preserves the

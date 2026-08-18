@@ -31,6 +31,7 @@
 
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <fnmatch.h>
 #include <git2.h>
@@ -707,14 +708,17 @@ static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     return n;
 }
 
-/* Render the native `.mvx` form of `d`: identity + the VENDOR permit/deny lines
+/* Render a NATIVE descriptor for `d` — identity + the VENDOR permit/deny lines
    (re-seeded on checkout so mvx enforces them at the restricted tier).  The
-   LOCAL admin policy is re-established from .mvx-private, never carried here. */
-static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
+   LOCAL admin policy is re-established from .mvx-private, never carried here.
+   `tag` names the platform in the header comment: the native form is per-platform
+   (`.mvx`, `.uv`, `.udt`) and the file should say which one it describes. */
+static int desc_render_native_as(const acct_desc *d, const char *tag,
+                                char *out, size_t cap) {
     const char *name = d->name[0]    ? d->name    : "account";
     const char *ver  = d->version[0] ? d->version : "1";
     int n = snprintf(out, cap,
-        "# MVX account descriptor\nname = %s\nversion = %s\n", name, ver);
+        "# %s account descriptor\nname = %s\nversion = %s\n", tag, name, ver);
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
@@ -727,6 +731,11 @@ static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->permits[0])
         n += snprintf(out + n, cap - (size_t)n, "%s", d->permits);
     return n;
+}
+
+/* The native MVX descriptor — the form checkout re-seeds onto disk as `.mvx`. */
+static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
+    return desc_render_native_as(d, "MVX", out, cap);
 }
 
 /* Public: render the canonical portable descriptor for an account with the
@@ -744,6 +753,59 @@ int mv_git_desc_open(const char *name, const char *version,
     if (hash)        snprintf(d.hash, sizeof d.hash, "%s", hash);
     d.openaccount = 1;
     return desc_render_open(&d, out, cap);
+}
+
+/* Public: adopt a descriptor onto this platform — see mvxgit.h for why this is a
+   conversion the user reviews rather than something a clone does silently. */
+int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
+                      const char *flavour, int open_form,
+                      char *name_out, size_t name_cap,
+                      char *out, size_t cap) {
+    acct_desc d;
+    desc_parse(src ? src : "", src ? srclen : 0, &d);
+    /* Supplied only when the source lacked it, so adopting an account that
+       already names its flavour never overwrites what it says. */
+    if (flavour && flavour[0])
+        snprintf(d.flavour, sizeof d.flavour, "%s", flavour);
+    if (open_form) {
+        d.openaccount = 1;
+        if (name_out) snprintf(name_out, name_cap, ".mv-account");
+        return desc_render_open(&d, out, cap);
+    }
+    /* Declining the open form keeps the account native — but native to HERE, not
+       to wherever it came from.  On UniVerse and UniData the native marker exists
+       only inside the repository (the live account IS its VOC), so the descriptor's
+       whole job is to say what to rebuild and how. */
+    d.openaccount = 0;
+    if (name_out)
+        snprintf(name_out, name_cap, ".%s",
+                 (platform && platform[0]) ? platform : "mvx");
+    {
+        char tag[32];
+        const char *p = (platform && platform[0]) ? platform : "mvx";
+        size_t i = 0;
+        for (; p[i] && i < sizeof tag - 1; i++)
+            tag[i] = (char)toupper((unsigned char)p[i]);
+        tag[i] = '\0';
+        return desc_render_native_as(&d, tag, out, cap);
+    }
+}
+
+/* Public: read one field from a descriptor without duplicating the parser. */
+int mv_git_desc_field(const char *src, size_t srclen, const char *key,
+                      char *out, size_t cap) {
+    acct_desc d;
+    const char *v = NULL;
+    desc_parse(src ? src : "", src ? srclen : 0, &d);
+    if      (!strcasecmp(key, "name"))        v = d.name;
+    else if (!strcasecmp(key, "version"))     v = d.version;
+    else if (!strcasecmp(key, "description")) v = d.description;
+    else if (!strcasecmp(key, "hash"))        v = d.hash;
+    else if (!strcasecmp(key, "flavour") ||
+             !strcasecmp(key, "flavor"))      v = d.flavour;
+    if (!v || !v[0]) { if (cap) out[0] = '\0'; return 0; }
+    snprintf(out, cap, "%s", v);
+    return 1;
 }
 
 /* Normalise the staged index to the open account format — the record-git
