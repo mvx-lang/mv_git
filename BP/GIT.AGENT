@@ -58,7 +58,12 @@
 * that wants to hold a session it is not using yet: it resets the timer and does
 * nothing else.  If a session does time out there is nothing to recover — the
 * caller simply starts another one.
-      $INCLUDE BP.INC PLATFORM.H
+*     NO $INCLUDE, DELIBERATELY.  This program has no platform conditionals —
+*     it is ordinary MV BASIC throughout — so it needs no PLATFORM.H, and not
+*     needing one is a property worth keeping: it means the agent compiles in a
+*     BARE account, one with nothing installed but a BP file.  That is exactly
+*     what learning a stock account's VOC requires (mv_git#46), and an include
+*     of a file a stock account does not have was what stopped it.
       AM = CHAR(254) ; VM = CHAR(253)
       MAGIC = "MVG1"
 *     Header widths, mirroring gitproto.h.  Fixed-width ASCII so both ends build

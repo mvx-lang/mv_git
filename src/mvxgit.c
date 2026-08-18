@@ -386,6 +386,92 @@ static int record_oid(const char *content, int64_t len, git_oid *oid) {
     return rc;
 }
 
+/* --- the stock account baseline (mv_git#46) -------------------------------
+ *
+ * An account created on UniVerse is born with a VOC full of records nobody
+ * wrote: 847 of them for the PICK flavour, 840 for Ideal, 851 for Reality — the
+ * verbs, keywords and pointers the system supplies.  Committing them makes a
+ * repository where 92% of the content is furniture, buries the real change in a
+ * diff, and — worse — restores one release's stock VOC over another's on
+ * checkout, silently.
+ *
+ * So a record identical to the one a fresh account of the same flavour would
+ * have is not this account's content, and is not committed.  What IS committed
+ * is what the account added, and what it changed: the comparison is by content,
+ * not just by name, so an edited stock verb still travels.
+ *
+ * THE BASELINE IS SUPPLIED, NOT DISCOVERED.  Building it means standing up an
+ * account of the right flavour and reading its VOC, which needs a session and is
+ * therefore platform work; the driver does it and hands the file over here.  All
+ * the engine needs is a set of (id, content) pairs to recognise, which is
+ * platform-neutral — and being a plain file, it is equally available to the
+ * verb route through mvgitd and to the CLI, which matters now that both are
+ * kept (DECISIONS.md).
+ *
+ * The file is per clone, not committed: the stock VOC belongs to a particular
+ * UniVerse release, and a committed baseline would subtract 14.2's furniture
+ * from a 14.3 account.  Format is one `<oid> <id>` per line, `#` comments.
+ *
+ * NOT HANDLED: an account that deliberately DELETES a stock record.  It looks
+ * identical to one that never had it, so checkout puts it back.  Recording that
+ * needs a tombstone, and it is deliberately out of this first cut.
+ */
+typedef struct { char oid[41]; char id[256]; } stock_rec;
+static stock_rec *g_stock;
+static int g_stock_n, g_stock_cap, g_stock_loaded;
+static char g_stock_path[4096];
+
+void mv_git_set_stock(const char *path) {
+    free(g_stock);
+    g_stock = NULL;
+    g_stock_n = g_stock_cap = 0;
+    g_stock_loaded = 0;
+    snprintf(g_stock_path, sizeof g_stock_path, "%s", path ? path : "");
+}
+
+static void stock_load(void) {
+    if (g_stock_loaded) return;
+    g_stock_loaded = 1;
+    if (!g_stock_path[0]) return;
+    FILE *f = fopen(g_stock_path, "r");
+    if (!f) return;
+    char ln[512];
+    while (fgets(ln, sizeof ln, f)) {
+        if (ln[0] == '#' || ln[0] == '\n') continue;
+        size_t n = strlen(ln);
+        while (n && (ln[n-1] == '\n' || ln[n-1] == '\r')) ln[--n] = '\0';
+        if (n < 42 || ln[40] != ' ') continue;
+        if (g_stock_n >= g_stock_cap) {
+            g_stock_cap = g_stock_cap ? g_stock_cap * 2 : 1024;
+            stock_rec *ns = realloc(g_stock, (size_t)g_stock_cap * sizeof *ns);
+            if (!ns) { fclose(f); return; }
+            g_stock = ns;
+        }
+        memcpy(g_stock[g_stock_n].oid, ln, 40);
+        g_stock[g_stock_n].oid[40] = '\0';
+        snprintf(g_stock[g_stock_n].id, sizeof g_stock[g_stock_n].id, "%s", ln + 41);
+        g_stock_n++;
+    }
+    fclose(f);
+}
+
+/* True when this record is exactly what a fresh account of the same flavour
+   would hold — same id, same content — and so is not the account's own. */
+static int is_stock_record(const char *id, const char *content, int64_t len) {
+    stock_load();
+    if (!g_stock_n) return 0;
+    git_oid oid;
+    if (record_oid(content, len, &oid) != 0) return 0;
+    char hex[GIT_OID_HEXSZ + 1];
+    git_oid_fmt(hex, &oid);
+    hex[GIT_OID_HEXSZ] = '\0';
+    for (int i = 0; i < g_stock_n; i++)
+        if (strcmp(g_stock[i].id, id) == 0 &&
+            strcmp(g_stock[i].oid, hex) == 0)
+            return 1;
+    return 0;
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -484,11 +570,28 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    verb/keyword the target supplies), 2 = drop in the open
                    interchange only (platform file/pointer — %FILE% carries the
                    portable form), 0 = keep (the user's own procs). */
+                /* All of these exclusions are about what a WHOLESALE add
+                   should not sweep up.  Naming a record explicitly
+                   (`add VOC SORT`) is a deliberate act and overrides every one
+                   of them: the user has said they want this record versioned,
+                   and second-guessing that is how a tool becomes untrustworthy. */
                 int cls = mv_voc_class(vp, f1);
-                if (cls == 1 || (cls == 2 && voc_open)) {
+                if (!one && (cls == 1 || (cls == 2 && voc_open))) {
                     skipped++;
-                    if (one) break;
                     continue;
+                }
+                /* Identical to what a fresh account of this flavour holds, so
+                   it is the system's record and not this account's (mv_git#46).
+                   Skipped on a WHOLESALE add only: naming a record explicitly
+                   (`add VOC SOMEVERB`) is a deliberate act and stages it, the
+                   same rule provisioning pointers follow just below. */
+                if (!one) {
+                    char sid[256];
+                    arg_str(&id, sid, sizeof sid);
+                    if (is_stock_record(sid, vp, vl)) {
+                        skipped++;
+                        continue;
+                    }
                 }
             }
             char idb[256], nb[40];
@@ -1557,6 +1660,13 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     git_index_get_bypath(index, path, 0);
                 const char *cp;
                 int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                /* A stock record that nobody staged is the system's furniture,
+                   and `add -A` skips it — so reporting it would leave it
+                   untracked forever, the trap type K and V fell into (#51).
+                   One that IS staged was staged deliberately, and from then on
+                   it is ordinary tracked content: changes to it must show. */
+                if (is_voc && !entry && is_stock_record(idb, cp, clen))
+                    continue;
                 git_oid woid;
                 char ofb[16];
                 int ofl;

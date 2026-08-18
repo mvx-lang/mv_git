@@ -95,6 +95,15 @@ void mv_git_set_prefix(const char *prefix);
    directory changes without the prefix changing. */
 void mv_git_forget_account(void);
 
+/* The stock-account baseline: a file of `<blob-oid> <record-id>` lines naming
+   the VOC records a FRESH account of this flavour is born with.  A record
+   matching one exactly is the system's, not the account's, and is neither
+   staged nor reported (mv_git#46).  Building the file needs a session and is
+   the driver's job; applying it is platform-neutral and lives here, which also
+   makes it available to both the CLI and the in-session verb.  NULL or a
+   missing file means no subtraction — every record is the account's own. */
+void mv_git_set_stock(const char *path);
+
 int mv_git_desc_open(const char *name, const char *version,
                      const char *description, const char *hash,
                      char *out, size_t cap);

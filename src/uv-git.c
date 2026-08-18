@@ -45,6 +45,7 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE          /* realpath */
 
 #include "mvxgit.h"
 #include "mvsession.h"
@@ -293,6 +294,9 @@ static void exclude_new(const names *before, const names *now,
     fclose(f);
 }
 
+/* Defined below: a LIVE account, as distinct from a checkout of one. */
+static int is_live_account(const char *dir);
+
 /* Create the UniVerse account in the current directory with `code` as the
    flavour answer.  A fresh directory becomes an account on its first `uv`,
    which asks whether to set it up and then which flavour to use. */
@@ -302,7 +306,7 @@ static int make_account(const char *code) {
              code, UV_BIN);
     int rc = system(cmd);
     (void)rc;
-    return access("VOC", F_OK) == 0 ? 0 : -1;
+    return is_live_account(".") ? 0 : -1;
 }
 
 /* One agent call, rendered for a person: the reply as lines, or the status. */
@@ -406,7 +410,7 @@ static int adopt(int argc, char **argv, int i) {
         fclose(f);
     }
 
-    int already = (access("VOC", F_OK) == 0);
+    int already = is_live_account(".");
 
     /* --- the flavour ---------------------------------------------------- */
     char have[64] = "";
@@ -711,6 +715,9 @@ static int run_plain(int argc, char **argv, int i) {
  * The session is opened lazily by the backend on first record use, so an
  * operation that touches no records costs no licence.
  */
+/* Defined with the stock-baseline helpers below. */
+static void apply_stock(const char *gitdir);
+
 static int run_account(int argc, char **argv, int i) {
     /* Fold the subcommand to lower case.  A UniVerse sentence is
        case-insensitive and MV users type verbs in upper case — `GIT ADD` must
@@ -754,6 +761,14 @@ static int run_account(int argc, char **argv, int i) {
             }
             git_repository_free(gr);
         }
+    }
+
+    /* Subtract this flavour's stock VOC, so a commit carries what the account
+       added rather than what UniVerse supplied (mv_git#46).  Resolved per
+       account: accounts in one repository may differ in flavour. */
+    {
+        char gd[4096], pfx[4096];
+        if (repo_place(gd, sizeof gd, pfx, sizeof pfx) == 0) apply_stock(gd);
     }
 
     if      (!strcmp(sub, "init"))     out = mv_git_init(ctx, repo);
@@ -834,6 +849,181 @@ static int run_account(int argc, char **argv, int i) {
     return 0;
 }
 
+/* --- the stock account baseline (mv_git#46) -------------------------------
+ *
+ * A UniVerse account is born with a VOC full of records nobody wrote — 847 of
+ * them for PICK — and committing them buries the account's real content in
+ * furniture.  The engine subtracts them if it is handed a baseline; building
+ * that baseline is this side's job, because it needs a session.
+ *
+ * The method is the obvious one and it is exact: create a throwaway account of
+ * the same flavour, read its VOC, and record each record's id and blob oid.
+ * Whatever a fresh account of that flavour holds is by definition stock.
+ *
+ * Cached per clone under .git/mvgit/stock-<FLAVOUR>, and per FLAVOUR rather
+ * than per account because that is what actually determines the answer — two
+ * PICK accounts in one repository share a baseline.  Not committed: a stock VOC
+ * belongs to a UniVerse release, and a committed one would subtract 14.2's
+ * furniture from a 14.3 account.
+ */
+
+/* Write out the VOC of a fresh account of `flavour` as `<oid> <id>` lines.
+   Returns 0 on success. */
+/* Put a working agent into the account we are standing in: a BP file to hold it,
+   the source copied from the account that HAS one, and a compile.  A stock
+   account is stock precisely because nothing has been installed into it, so it
+   cannot answer until this is done — and seeding it is cheaper and far more
+   honest than trying to read a VOC without a session. */
+static int seed_agent(const char *agent_src) {
+    char cmd[512];
+    /* CREATE.FILE is interactive; answer its prompts, with an EMPTY description
+       (a described file reads "F <text>" and the account scan cannot see it). */
+    snprintf(cmd, sizeof cmd,
+             "printf 'CREATE.FILE BP\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
+             ">/dev/null 2>&1", mvs_shell());
+    if (system(cmd) != 0) { /* prompts are noisy; the check below is the test */ }
+    FILE *in = fopen(agent_src, "rb");
+    if (!in) return -1;
+    FILE *o = fopen("BP/GIT.AGENT", "wb");
+    if (!o) { fclose(in); return -1; }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, o);
+    fclose(in);
+    fclose(o);
+    snprintf(cmd, sizeof cmd,
+             "printf 'BASIC BP GIT.AGENT\nQUIT\n' | %s >/dev/null 2>&1",
+             mvs_shell());
+    if (system(cmd) != 0) { /* likewise */ }
+    return access("BP.O/GIT.AGENT", F_OK) == 0 ? 0 : -1;
+}
+
+static int build_stock(const char *flavour, const char *code, const char *out) {
+    /* Where our own agent's source lives, resolved before we leave the account. */
+    char agent_src[4096];
+    if (!realpath("BP/GIT.AGENT", agent_src)) {
+        fprintf(stderr, "uv-git: cannot find BP/GIT.AGENT to seed a stock "
+                        "account with; skipping the stock baseline\n");
+        return -1;
+    }
+    char tmpl[] = "/tmp/uvstockXXXXXX";
+    if (!mkdtemp(tmpl)) return -1;
+    int rc = -1;
+    char here[4096];
+    if (!getcwd(here, sizeof here)) { rmdir(tmpl); return -1; }
+    fprintf(stderr, "uv-git: learning what a stock %s account holds "
+                    "(once per clone)\n", flavour);
+    int seeded = chdir(tmpl) == 0 && make_account(code) == 0 &&
+                 seed_agent(agent_src) == 0;
+    if (!seeded)
+        fprintf(stderr, "uv-git: could not stand up a stock %s account to learn "
+                        "from; commits will carry the system's own VOC records "
+                        "(mv_git#46)\n", flavour);
+    if (seeded) {
+        char err[512] = "";
+        mv_session *s = mvs_open(".", err, sizeof err);
+        if (s) {
+            const char *a[1] = { "VOC" };
+            char *body = NULL;
+            long blen = 0;
+            if (mvs_calls(s, "OPEN", 1, a, &body, &blen) == 0) {
+                free(body);
+                const char *h[1] = { "1" };
+                mvs_calls(s, "SELECT", 1, h, NULL, NULL);
+                FILE *f = fopen(out, "w");
+                if (f) {
+                    fprintf(f, "# stock VOC for a %s account — generated here, "
+                               "not committed:\n"
+                               "# the contents belong to this UniVerse release "
+                               "(mv_git#46).\n", flavour);
+                    long n = 0;
+                    for (;;) {
+                        char *idb = NULL;
+                        long idl = 0;
+                        if (mvs_calls(s, "READNEXT", 0, NULL, &idb, &idl) != 0 ||
+                            idl <= 0) { free(idb); break; }
+                        /* Seeding had to CREATE.FILE BP and compile into
+                           BP.O, so those two VOC entries are OURS, not the
+                           stock account's.  Recording them would subtract a
+                           real account's own BP pointer, and a clone would then
+                           not recreate the file.  The account is stock in every
+                           other respect; these are the only two we added. */
+                        if ((idl == 2 && memcmp(idb, "BP", 2) == 0) ||
+                            (idl == 4 && memcmp(idb, "BP.O", 4) == 0)) {
+                            free(idb);
+                            continue;
+                        }
+                        const char *r[2] = { "1", idb };
+                        char *rec = NULL;
+                        long rl = 0;
+                        if (mvs_calls(s, "READ", 2, r, &rec, &rl) == 0) {
+                            git_oid oid;
+                            char hex[41];
+                            /* the engine hashes a record's TRANSLATED content;
+                               match that exactly or nothing ever compares equal */
+                            char *t = malloc((size_t)rl + 1);
+                            if (t) {
+                                for (long k = 0; k < rl; k++)
+                                    t[k] = ((unsigned char)rec[k] == 0xFE) ? '\n' : rec[k];
+                                if (git_odb_hash(&oid, t, (size_t)rl,
+                                                 GIT_OBJECT_BLOB) == 0) {
+                                    git_oid_fmt(hex, &oid);
+                                    hex[40] = '\0';
+                                    fprintf(f, "%s %.*s\n", hex, (int)idl, idb);
+                                    n++;
+                                }
+                                free(t);
+                            }
+                        }
+                        free(rec);
+                        free(idb);
+                    }
+                    fclose(f);
+                    fprintf(stderr, "uv-git: %ld stock record(s) recorded\n", n);
+                    rc = 0;
+                }
+            }
+            mvs_close(s);
+        } else {
+            fprintf(stderr, "uv-git: could not read a stock account: %s\n", err);
+        }
+    }
+    if (chdir(here) != 0) { /* best effort */ }
+    /* the throwaway account is a directory of files; leave no litter */
+    char rmcmd[4200];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf '%s'", tmpl);
+    if (system(rmcmd) != 0) { /* best effort */ }
+    return rc;
+}
+
+/* Point the engine at this account's stock baseline, building it if this clone
+   has not seen this flavour yet.  Silently does nothing when the descriptor
+   names no flavour — there is then nothing to be sure of, and guessing one
+   would subtract the wrong furniture. */
+static void apply_stock(const char *gitdir) {
+    const char *desc = find_descriptor();
+    if (!desc) return;
+    char src[65536];
+    size_t srclen = 0;
+    FILE *df = fopen(desc, "rb");
+    if (!df) return;
+    srclen = fread(src, 1, sizeof src, df);
+    fclose(df);
+    char flav[64];
+    if (!mv_git_desc_field(src, srclen, "flavour", flav, sizeof flav)) return;
+    int fi = flavour_index(flav);
+    if (fi < 0) return;
+
+    char dir[4096], path[4200];
+    snprintf(dir, sizeof dir, "%s/mvgit", gitdir);
+    mkdir(dir, 0700);
+    snprintf(path, sizeof path, "%s/stock-%s", dir, uv_flavours[fi].name);
+    if (access(path, R_OK) != 0 &&
+        build_stock(uv_flavours[fi].name, uv_flavours[fi].code, path) != 0)
+        return;
+    mv_git_set_stock(path);
+}
+
 /* --- several accounts in one repository (mv_git#44, #47) -------------------
  *
  * A repository may hold more than one account — the mvx repository already does
@@ -849,12 +1039,26 @@ static int run_account(int argc, char **argv, int i) {
  * retiring the oldest session rather than exceeding it.
  */
 
-/* Is this directory a UniVerse account?  Its VOC is what makes it one. */
-static int dir_is_account(const char *dir) {
+/* Is this directory a LIVE UniVerse account?
+ *
+ * The VOC is what makes it one — but "a VOC exists" is not the test, and getting
+ * that wrong is worse than it sounds.  A native account's records are committed
+ * at `VOC/<id>`, so a plain `git clone` of one writes a DIRECTORY called VOC
+ * full of record files.  That checkout is precisely what adopt exists to turn
+ * into an account, and a bare existence check reads it as one already — so
+ * adopt does nothing, and the user is left with a directory of files that no
+ * session can open.
+ *
+ * A live account's VOC is a hash file: a regular file, with a D_VOC dictionary
+ * beside it.  A checkout's is a directory.  That is the distinction. */
+static int is_live_account(const char *dir) {
     char p[4096];
+    struct stat sb;
     snprintf(p, sizeof p, "%s/VOC", dir);
-    return access(p, F_OK) == 0;
+    return stat(p, &sb) == 0 && S_ISREG(sb.st_mode);
 }
+
+static int dir_is_account(const char *dir) { return is_live_account(dir); }
 
 /* The accounts directly beneath `root`, sorted so a run is reproducible.
    Returns the count; names are malloc'd into `out` (caller frees). */
@@ -1050,7 +1254,7 @@ int main(int argc, char **argv) {
        Ops that would need records are simply not offered here; the recordless
        backend aborts loudly if one is ever reached, so a wrong assumption
        announces itself instead of quietly doing the wrong thing. */
-    if (access("VOC", F_OK) != 0) {
+    if (!is_live_account(".")) {
         /* Not an account.  It may still be a repository HOLDING accounts, and a
            record operation run at the root should visit each of them — which is
            how a multi-account repository is worked (mv_git#44). */
