@@ -32,11 +32,16 @@
      - default (mvx-git): the MVX runtime, libmvxrt (mvx_runtime.h).
      - MVXGIT_UDT (udt-git): the same names over Rocket UniData's InterCall API
        (udtgit_rt.h / udtgit_rt.c).
+     - MVXGIT_GITD (mvgitd): no record layer at all (gitd_rt.h / gitd_rt.c) —
+       the background process does git-object work for a session that keeps its
+       own records, so the primitives abort if ever reached.  See gitd_rt.h.
 
    The engine body is identical either way; only genuine behavioural
    differences (UniData has no on-disk descriptor, generates %INDEXES%
    virtually) are guarded inline with #ifdef MVXGIT_UDT. */
-#if defined(MVXGIT_UDT)
+#if defined(MVXGIT_GITD)
+#  include "gitd_rt.h"
+#elif defined(MVXGIT_UDT)
 #  include "udtgit_rt.h"
 #else
 #  include "mvx_runtime.h"
@@ -77,9 +82,52 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
    given identity and default hash backend into `out`; returns its length.  One
    schema shared by mvx-git (converting from the native `.mvx`) and udt-git
    (synthesising from the live UniData account), so both emit identical bytes. */
+/* Where this account sits beneath the repository root, as a path prefix — ""
+   (the default) when the account IS the root, "acctA/" when it is below one.
+   Records commit at <prefix><file>/<id>, so several accounts can share one
+   repository without both claiming CUST/C1.  Set once per account, before the
+   operation; the engine applies it at the single point where a record's git
+   path is built, and strips it again where paths are read back. */
+void mv_git_set_prefix(const char *prefix);
+
+/* Forget what was cached about the account currently in scope (its file list).
+   Setting a prefix does this implicitly; call it directly when the working
+   directory changes without the prefix changing. */
+void mv_git_forget_account(void);
+
 int mv_git_desc_open(const char *name, const char *version,
                      const char *description, const char *hash,
                      char *out, size_t cap);
+
+/* Adopt a descriptor onto THIS platform (mv_git#44).
+
+   Adoption is a CONVERSION, not a restoration.  A repository may carry a native
+   descriptor from wherever it was committed — `.mvx` (MVX), `.udt` (UniData) —
+   and each describes a platform this one is not: `.mvx` names an lmdb backend,
+   `.udt` a UniData file type.  Rebuilding the account here therefore means
+   rewriting the descriptor to describe THIS platform, and the rewrite is left in
+   the working tree as an ordinary git change so the user reviews and commits it.
+   A clone must never silently mutate what a repository claims to be.
+
+   `platform` is the native marker's bare name ("uv", "udt", "mvx").  `flavour`
+   supplies a field the source could not carry (UniVerse's VOC flavour, mv_git#15)
+   and is ignored when empty, so a platform with no such notion never acquires a
+   meaningless field.  With `open_form` the portable `.mv-account` is rendered
+   instead — the interchange form, and the one to prefer when the account will
+   travel again.
+
+   `name_out` receives the descriptor filename to write; when it differs from the
+   source's, that is the rename git will report.  Returns the rendered length. */
+int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
+                      const char *flavour, int open_form,
+                      char *name_out, size_t name_cap,
+                      char *out, size_t cap);
+
+/* Read one field from a descriptor (either form), so a driver can tell what the
+   source could not supply without duplicating the parser.  Returns 1 when the
+   field is present and non-empty, 0 otherwise. */
+int mv_git_desc_field(const char *src, size_t srclen, const char *key,
+                      char *out, size_t cap);
 
 /* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
    in `out`; returns its length, or -1 if `base` has no committed control yet.
@@ -96,12 +144,22 @@ int  mv_git_batch_begin(const char *repo);
 void mv_git_batch_add(const char *path, const char *content, int64_t len,
                       int translate);
 void mv_git_batch_end(void);
+/* How many records the batch skipped because their id cannot be a git path (an
+   id containing "/", or one that is "." or "..").  A skipped record is NOT
+   versioned, so a front-end must tell the user rather than let it pass. */
+long mv_git_batch_skipped(void);
 
 /* Checkout side (git -> account): list every blob path in HEAD, and fetch one
    blob's content with attribute marks restored, so a driver can create files
    and WRITE records on its own platform (the UniData in-session GIT verb). */
 char *mv_git_headfiles(mv_ctx *ctx, const char *repo);
 char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path);
+/* As mv_git_catpath, but reporting the content's true byte length.  Record
+   content is arbitrary bytes and may contain NULs, so a caller able to carry an
+   explicit length must use this instead of measuring with strlen — otherwise a
+   binary record is silently truncated on the way back out. */
+char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
+                         int64_t *outlen);
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
