@@ -77,7 +77,29 @@ elif [ "$PLATFORM" = uv ]; then
   # scan, which matches attribute 1 against "F", cannot see the file.
   CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   # strip the leading verb: uv-git takes the subcommand, not the whole sentence
-  GITV() { local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
+  # TWO WAYS IN, and both are tested, because both ship (DECISIONS.md).
+  #
+  #   UV_VIA=verb (the DEFAULT) drives the in-session GIT verb, exactly as the
+  #     mvx and udt shims do — and it is the default because it is what most MV
+  #     developers use: they work at the TCL prompt and never see a unix shell.
+  #     It also costs no extra licence, since the session is already theirs.
+  #   UV_VIA=cli drives uv-git from the shell, which is the route a build
+  #     script, a CI job or a multi-account operation takes.
+  #
+  # Testing only one of them is how the primary interface goes unexercised: for
+  # a while this file tested the CLI on UniVerse and the verb everywhere else.
+  if [ "${UV_VIA:-verb}" = cli ]; then
+    GITV() { local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
+  else
+    # `GIT -M` fences the verb's own output with <<<GIT-BEGIN>>>/<<<GIT-END>>>,
+    # which is precisely what makes a session's output assertable: UniVerse
+    # greets every session and prompts between commands, and an exact-match
+    # assertion against a banner fails no matter how right the verb was.  That
+    # is what the fence is FOR, so the tests use it rather than scraping.
+    GITV() { local a="$1"; shift; local s="$*"
+             ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
+               | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+  fi
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
