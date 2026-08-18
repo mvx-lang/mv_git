@@ -1608,8 +1608,14 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         split_top(rel, top, sizeof top);
         if (!is_mv_file(top) && !backend_has_file(ctx, top))
             continue;                     /* plain path — git tracks deletions */
+        /* A record path is `<file>/<id>`.  An entry with no slash is a plain
+           file at the account root, and git tracks its own deletions — but its
+           name may still BE an MV file's (VOCLIB, VOC …), in which case the
+           read below looks for a record of that name inside that file, fails,
+           and reports the file itself as a deleted record. */
         const char *recid = strchr(rel, '/');
-        recid = recid ? recid + 1 : rel;
+        if (!recid) continue;
+        recid++;
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int isrec = 0, gone = 0;

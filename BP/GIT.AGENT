@@ -93,6 +93,7 @@
 *     slot number.  A pool rather than a name lookup because the caller may hold
 *     a file and its dictionary open at once, and they share a name.
       DIM FV(64)
+      FVKEYS = ""
       NFV = 0
       DONE = 0
       IDLED = 0
@@ -216,6 +217,25 @@ DISPATCH:
 *     argument is the one that can be left off.
 DO.OPEN:
       NAME = ARGV(1) ; PART = ARGV(2)
+*     ALREADY OPEN?  Hand back the same slot.
+*
+*     A file variable for a given file is interchangeable with any other, so
+*     reopening is pure waste — and worse than waste here, because the pool is
+*     finite.  The engine opens a file per INDEX ENTRY when it looks for deleted
+*     records, and an account's index runs to hundreds of entries, so a pool of
+*     64 was exhausted long before the scan finished.  Every open after that
+*     failed, the caller read the failure as "not a record file", and deleted
+*     records were silently never reported (mv_git#51).
+*
+*     Caching by name makes the pool a function of how many DISTINCT files an
+*     account has — a handful — instead of how many records it holds.
+      KEY = NAME : VM : PART
+*     Format 1 (parenthesised) LOCATE only — the IN…SETTING form behaves
+*     differently between flavours and must not be used in a portable port.
+      LOCATE(KEY, FVKEYS; FVPOS) THEN
+         RESULT = FVPOS
+         RETURN
+      END
       IF NFV >= 64 THEN
          STATUS = 5 ; RESULT = "too many open files"
          RETURN
@@ -234,6 +254,7 @@ DO.OPEN:
             RETURN
          END
       END
+      FVKEYS<NFV> = KEY
       RESULT = NFV
       RETURN
 *
