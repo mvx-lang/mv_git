@@ -5,48 +5,43 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-/* uv-git — shell-side git for a UniVerse account.
+/* uv-git — git for a UniVerse account, from the shell.
  *
- * The counterpart of mvx-git and udt-git, and the odd one of the three: those
- * two reach records from C directly — mvx-git through the MVX runtime, udt-git
- * through UniData's InterCall — and drive the engine themselves.  uv-git cannot,
- * and the reason is not a design preference:
+ * The counterpart of mvx-git and udt-git.  All three do the same thing: keep the
+ * git objects in process with libgit2, and reach records through whatever this
+ * platform allows.  mvx-git goes through the MVX runtime, udt-git through
+ * UniData's InterCall, and uv-git through a SESSION running BP/GIT.AGENT
+ * (mv_git#47) — because on UniVerse C cannot touch records directly:
  *
  *   - GCI, the in-process C bridge, is licensed and non-functional in the
  *     UniVerse Trial Edition (mv_git#37) — it refuses even Rocket's own shipped
  *     example.
- *   - InterCall, the documented record API with ic_universe_session(), is a
- *     CLIENT SDK shipped in the Rocket U2 Clients bundle, not with the UniVerse
- *     server, and is not available for Linux to us (mv_git#42).  The library
- *     that IS installed, libvm_ici.a, is the superseded ICI: undocumented in
- *     both shipped headers, and it segfaults rather than erroring when called.
+ *   - InterCall, the documented record API, is a CLIENT SDK shipped in the
+ *     Rocket U2 Clients bundle, not with the server, and is not available for
+ *     Linux to us (mv_git#42).  The library that IS installed, libvm_ici.a, is
+ *     the superseded ICI: undocumented in both shipped headers, and it segfaults
+ *     rather than erroring when called.
  *
- * So on UniVerse the only supported way into the records is a session — which
- * is exactly what the in-session GIT verb already is, and it works (mv_git#40).
- * uv-git therefore runs the verb: it enters the account, hands the sentence to
- * `uv`, and passes the output back.  The record loop runs in BASIC where
- * UniVerse allows it, and the git-object work goes out to the mvgitd background
- * process over its pipe.
- *
- * This is a thinner program than its siblings by necessity, not by neglect.  If
- * an InterCall SDK for Linux ever becomes available, the honest upgrade is a
- * uvgit_rt.c implementing the mv_* primitives over ic_universe_session() — a
- * near-mechanical port of udtgit_rt.c — and this driver retires.
+ * A session is the only way in — but only the RECORD half needs one.  An earlier
+ * design drove the in-session GIT verb and shipped git objects back out to a
+ * second process; this one keeps the git work here and asks the session for
+ * records alone, which is both simpler and the correct division of labour.  See
+ * uvgit_rt.c for the record contract and uvsession.c for the session lifecycle,
+ * where the important constraint lives: a session is a LICENCE, so it is opened
+ * lazily, held only while there is work, and released cleanly.
  *
  * TWO PATHS, chosen by what the directory actually is:
  *
- *   an ACCOUNT (it has a VOC)   drive the in-session verb, which owns the
- *                               records; git objects go out to mvgitd
- *   an ORDINARY DIRECTORY       serve it here, directly against libgit2 —
- *                               no session, because there is nothing a session
+ *   an ACCOUNT (it has a VOC)   the full engine, records included
+ *   an ORDINARY DIRECTORY       the engine's disk-side operations only — no
+ *                               session, because there is nothing a session
  *                               could contribute to a directory of plain files
  *
  * The second is not a courtesy: a repository may hold ordinary files beside its
  * accounts, and refusing to work on them would make uv-git useless for exactly
- * the repositories that need it most.  libgit2 is already linked (textconv needs
- * it), so the plain path costs nothing.
+ * the repositories that need it most.
  *
- *   uv-git [-a account] <command> [args...]
+ *   uv-git [-a account] [-j jobs] [--idle-timeout secs] <command> [args...]
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -67,53 +62,14 @@
 
 #define UV_BIN "uv"
 
-/* The fence the verb prints around its own output in machine mode (GIT -M).
-   Must match BP/GIT. */
-#define GIT_BEGIN "<<<GIT-BEGIN>>>"
-#define GIT_END   "<<<GIT-END>>>"
-
-/* UniVerse greets every session and prompts between commands.  None of that is
-   the verb's output, so it is filtered — a caller piping `uv-git status` into
-   something else should see what GIT printed and nothing more. */
-static int is_noise(const char *line) {
-    static const char *prefixes[] = {
-        "UniVerse Command Language", "Copyright ", "Rocket Software",
-        ">", ":", NULL
-    };
-    if (!*line) return 1;
-    for (int i = 0; prefixes[i]; i++)
-        if (strncmp(line, prefixes[i], strlen(prefixes[i])) == 0) return 1;
-    /* the per-session logon line: "<account> logged on: <date>" */
-    if (strstr(line, " logged on:")) return 1;
-    return 0;
-}
-
-/* Quote one argument for a UniVerse sentence.  Anything with a space has to be
-   quoted or the verb sees several arguments — a commit message being the case
-   that matters, since it is normally a sentence of its own. */
-static void append_arg(char *buf, size_t cap, const char *arg) {
-    size_t used = strlen(buf);
-    int needs_quotes = (*arg == '\0') || strpbrk(arg, " \t") != NULL;
-    const char *q = needs_quotes ? "\"" : "";
-    snprintf(buf + used, cap - used, " %s%s%s", q, arg, q);
-}
-
-/* Is this directory inside a repository that lives ABOVE it?
+/* The repository this directory belongs to, found the way git finds it: by
+ * searching upward.  An account may sit at a repository root, or beneath one —
+ * a repo holding several accounts, or an account inside a larger project — and
+ * both must work.
  *
- * Everything here — and in the verb, and in mvgitd — assumes the repository is
- * `.git` directly inside the account.  An account can perfectly well sit BELOW a
- * repo root instead (a repo holding several accounts, or an account inside a
- * larger project), and real git would find the enclosing repo by searching
- * upward.  We do not, so `init` would create a SECOND repository nested inside
- * the first and quietly split the history in two.
- *
- * Detecting it is cheap — git_repository_discover is the same upward walk git
- * itself does — so the damage is prevented even though nesting is not yet
- * SUPPORTED.  Supporting it needs the account-aware staging and checkout
- * recursion in mv_git#44; refusing clearly is the honest interim answer.
- *
- * Returns 1 and fills `out` when an enclosing repo exists above us; 0 when
- * there is none, or when the repo found is our own `.git`. */
+ * Returns 1 and fills `out` with the git directory when the repository is above
+ * us; 0 when there is none, or when the repository found is our own `.git`
+ * (in which case the default ".git" is already right). */
 static int enclosing_repo(char *out, size_t cap) {
     if (access(".git", F_OK) == 0) return 0;      /* our own — not enclosing */
     git_libgit2_init();
@@ -682,7 +638,18 @@ static int plain_status(void) {
  * against HEAD.  It is served by plain_status() instead, and `diff` is left out
  * for the same reason.  Anything else is refused by name rather than attempted. */
 static int run_plain(int argc, char **argv, int i) {
-    const char *sub = argv[i++];
+    /* Fold the subcommand to lower case.  A UniVerse sentence is
+       case-insensitive and MV users type verbs in upper case — `GIT ADD` must
+       reach the same place as `git add`, which a plain strcmp does not. */
+    char subbuf[64];
+    {
+        const char *raw = argv[i++];
+        size_t k = 0;
+        for (; raw[k] && k < sizeof subbuf - 1; k++)
+            subbuf[k] = (char)tolower((unsigned char)raw[k]);
+        subbuf[k] = '\0';
+    }
+    const char *sub = subbuf;
     const char *a0 = (i     < argc) ? argv[i]     : "";
     const char *a1 = (i + 1 < argc) ? argv[i + 1] : "";
     mv_ctx *ctx = mv_ctx_create();
@@ -727,6 +694,113 @@ static int run_plain(int argc, char **argv, int i) {
         free(out);
     }
     mv_ctx_destroy(ctx);
+    return 0;
+}
+
+/* Serve a UniVerse ACCOUNT: the engine, in process, with records reached through
+ * the session agent (mv_git#47).
+ *
+ * This is the same dispatch run_plain does, with the record-based operations
+ * added — because with uvgit_rt.c linked they now work.  There is no verb here
+ * and no BASIC git code: uv-git owns the git objects, and the session is asked
+ * only for records.
+ *
+ * The session is opened lazily by the backend on first record use, so an
+ * operation that touches no records costs no licence.
+ */
+static int run_account(int argc, char **argv, int i) {
+    /* Fold the subcommand to lower case.  A UniVerse sentence is
+       case-insensitive and MV users type verbs in upper case — `GIT ADD` must
+       reach the same place as `git add`, which a plain strcmp does not. */
+    char subbuf[64];
+    {
+        const char *raw = argv[i++];
+        size_t k = 0;
+        for (; raw[k] && k < sizeof subbuf - 1; k++)
+            subbuf[k] = (char)tolower((unsigned char)raw[k]);
+        subbuf[k] = '\0';
+    }
+    const char *sub = subbuf;
+    const char *a0 = (i     < argc) ? argv[i]     : "";
+    const char *a1 = (i + 1 < argc) ? argv[i + 1] : "";
+    const char *a2 = (i + 2 < argc) ? argv[i + 2] : "";
+    mv_ctx *ctx = mv_ctx_create();
+    char *out = NULL;
+
+    /* Find the repository the way git does — search upward — so an account that
+       sits inside a larger repository works on the enclosing one (mv_git#39). */
+    char found[4096], repobuf[4096];
+    const char *repo = ".git";
+    if (enclosing_repo(found, sizeof found)) {
+        snprintf(repobuf, sizeof repobuf, "%s", found);
+        repo = repobuf;
+    }
+    /* The open account format is an opt-in the engine reads from the environment;
+       seed it from the repository's config so add and status agree with what the
+       descriptor claims. */
+    {
+        git_libgit2_init();
+        git_repository *gr = NULL;
+        if (git_repository_open_ext(&gr, ".", 0, NULL) == 0) {
+            git_config *cfg = NULL;
+            int on = 0;
+            if (git_repository_config(&cfg, gr) == 0) {
+                if (git_config_get_bool(&on, cfg, "mvx.openaccount") == 0 && on)
+                    setenv("MVX_OPENACCOUNT", "1", 1);
+                git_config_free(cfg);
+            }
+            git_repository_free(gr);
+        }
+    }
+
+    if      (!strcmp(sub, "init"))     out = mv_git_init(ctx, repo);
+    else if (!strcmp(sub, "status"))   out = mv_git_status(ctx, repo);
+    else if (!strcmp(sub, "log"))      out = mv_git_log(ctx, repo, *a0 ? a0 : "20");
+    else if (!strcmp(sub, "branch"))   out = mv_git_branch(ctx, repo, a0);
+    else if (!strcmp(sub, "config"))   out = mv_git_config(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "diff"))     out = mv_git_diff(ctx, repo, a0);
+    else if (!strcmp(sub, "checkout")) out = mv_git_checkout(ctx, repo, a0);
+    else if (!strcmp(sub, "switch"))   out = mv_git_switch(ctx, repo, a0);
+    else if (!strcmp(sub, "merge"))    out = mv_git_merge(ctx, repo, a0);
+    else if (!strcmp(sub, "restore"))  out = mv_git_restore(ctx, repo, a0);
+    else if (!strcmp(sub, "rm"))       out = mv_git_rm(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "show"))     out = mv_git_show(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "tag"))
+        out = mv_git_tag(ctx, repo, a0, a1, a2,
+                         (i + 3 < argc) ? argv[i + 3] : "");
+    else if (!strcmp(sub, "remote"))   out = mv_git_remote(ctx, repo, a0, a1, a2);
+    else if (!strcmp(sub, "fetch"))    out = mv_git_fetch(ctx, repo, a0);
+    else if (!strcmp(sub, "push"))     out = mv_git_push(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "pull"))     out = mv_git_pull(ctx, repo, a0, a1);
+    else if (!strcmp(sub, "cherry-pick"))
+        out = mv_git_cherrypick(ctx, repo, a0);
+    else if (!strcmp(sub, "add")) {
+        /* `add -A` (or . / --all) stages the whole account: every local file's
+           records and dictionary.  `add <file>` stages one file. */
+        if (!*a0 || !strcmp(a0, "-A") || !strcmp(a0, ".") || !strcmp(a0, "--all"))
+            out = mv_git_addall(ctx, repo);
+        else
+            out = mv_git_add(ctx, repo, a0, a1);
+    } else if (!strcmp(sub, "commit")) {
+        const char *msg = a0;
+        if (!strcmp(a0, "-m")) msg = a1;
+        out = mv_git_commit(ctx, repo, msg);
+    } else {
+        fprintf(stderr, "uv-git: unknown command '%s'\n", sub);
+        mv_ctx_destroy(ctx);
+        return 2;
+    }
+
+    if (out) {
+        /* engine output is @AM-separated; render it as lines */
+        for (char *p = out; *p; p++) if ((unsigned char)*p == 0xFE) *p = '\n';
+        printf("%s\n", out);
+        free(out);
+    }
+    mv_ctx_destroy(ctx);
+    /* Hand the licence back now rather than at exit, so a long-running caller
+       does not keep one for work it has finished. */
+    uvs_close_all();
     return 0;
 }
 
@@ -836,143 +910,24 @@ int main(int argc, char **argv) {
     if (access("VOC", F_OK) != 0)
         return run_plain(argc, argv, i);
 
-    /* An ACCOUNT below a repository root is the unsupported case, and it is
-       specific to accounts: records would have to be staged under the account's
-       own prefix, and checkout would have to recurse back into it — neither of
-       which exists yet (mv_git#44).  A plain subdirectory inside a repo needs
-       none of that; git works there every day, and so does the path above.
-       init is called out separately because it does not merely misbehave — it
-       creates a SECOND repository nested in the first and splits the history. */
-    {
+    /* An account inside a larger repository is fine: the engine finds the
+       enclosing repository by walking up, exactly as git does, and records stage
+       under the account's own prefix.  init is the one case worth stopping —
+       it would create a SECOND repository nested in the first and split the
+       history — so it is refused by name rather than by refusing the account. */
+    if (!strcmp(argv[i], "init")) {
         char up[4096];
         if (enclosing_repo(up, sizeof up)) {
             fprintf(stderr,
                 "uv-git: this account is inside the repository at\n"
                 "          %s\n"
-                "        and an account below a repository root is not supported "
-                "yet (mv_git#44).\n", up);
-            if (!strcmp(argv[i], "init"))
-                fprintf(stderr,
                 "        Running init here would create a SECOND repository "
                 "nested in that one,\n"
                 "        splitting the history.  Run it at the repository root "
-                "instead.\n");
+                "instead.\n", up);
             return 1;
         }
     }
 
-    /* Build the sentence the verb will see.  GIT is the verb; the rest is its
-       command and arguments, in the order given. */
-    /* -M asks the verb for machine output: it prints a fence around its own
-       output so we can find it exactly, rather than inferring where it starts.
-       See BP/GIT.  A verb too old to know the flag treats it as an unknown
-       subcommand, so the echo fence below stays as the fallback. */
-    char sentence[8192];
-    snprintf(sentence, sizeof sentence, "GIT -M");
-    for (; i < argc; i++)
-        append_arg(sentence, sizeof sentence, argv[i]);
-
-    /* Drive a UniVerse session: the sentence, then QUIT so it exits rather than
-       waiting at the prompt.  The input goes through a temp file rather than a
-       bidirectional popen, because popen is only defined for "r" or "w" — a
-       "w+" pipe is a glibc-specific extension and not portable. */
-    char script[] = "/tmp/uvgitXXXXXX";
-    int sfd = mkstemp(script);
-    if (sfd < 0) {
-        fprintf(stderr, "uv-git: cannot create a temp script: %s\n", strerror(errno));
-        return 1;
-    }
-    FILE *sf = fdopen(sfd, "w");
-    if (!sf) { close(sfd); unlink(script); return 1; }
-    fprintf(sf, "%s\nQUIT\n", sentence);
-    fclose(sf);
-
-    /* A driver never wants curses.  UniVerse already treats a session with no
-       terminal as a phantom — @TTY reports "phantom" and @USERNO is negative
-       even with stdin merely redirected — so a LOGIN paragraph carrying the
-       usual non-interactive guard exits by itself, which is the behaviour we
-       want rather than something to suppress.  Forcing a dumb terminal is the
-       belt to that braces: it stops anything that runs anyway from trying to
-       paint a screen, which would otherwise land in our output. */
-    setenv("TERM", "dumb", 1);
-
-    char cmd[4096];
-    snprintf(cmd, sizeof cmd, "%s < %s", UV_BIN, script);
-    FILE *uv = popen(cmd, "r");
-    if (!uv) {
-        fprintf(stderr, "uv-git: cannot run %s: %s\n", UV_BIN, strerror(errno));
-        unlink(script);
-        return 1;
-    }
-
-    /* Print only what the verb itself produced.  This matters because a LOGIN
-       paragraph runs BEFORE our sentence and cannot be assumed well behaved:
-       the usual one guards on a non-interactive session and exits silently
-       (UniVerse reports @TTY as "phantom" here even with stdin merely
-       redirected, so that guard does fire), but an unguarded one prints its
-       banner or menu straight into what a caller is trying to parse.
-
-       Two fences, preferred first:
-
-         1. The verb's own, from `GIT -M` — it PRINTs <<<GIT-BEGIN>>> before
-            dispatching and <<<GIT-END>>> after.  An explicit contract rather
-            than an inference, and it comes from BASIC, where a program can
-            always CRT a literal; there is no TCL verb that reliably echoes one
-            (DISPLAY is a paragraph statement, not a verb, in this flavour).
-         2. Failing that, UniVerse's command echo: a session reading a pipe
-            echoes each command after its prompt (">GIT -M ADD TESTF"), so the
-            output lies between that echo and the next prompt.  Kept for a verb
-            too old to know -M, which treats the flag as an unknown subcommand.
-
-       Either way, whatever LOGIN prints arrives before both fences and is
-       outside them. */
-    char line[4096];
-    int inside = 0, saw_end = 0, fenced = 0, no_verb = 0;
-    while (fgets(line, sizeof line, uv)) {
-        size_t n = strlen(line);
-        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-
-        /* The account exists but has no GIT verb.  UniVerse reports this on the
-           way past, and it is worth catching by name: it is not a git failure
-           but a missing installation, and the user needs to be told which. */
-        if (strstr(line, "is not in your VOC")) { no_verb = 1; continue; }
-
-        /* Preferred: the verb's own fence.  Once seen, it governs alone — the
-           echo heuristic below is abandoned, since the verb's word about where
-           its output begins beats anything inferred from the display. */
-        if (strcmp(line, GIT_BEGIN) == 0) { fenced = 1; inside = 1; saw_end = 0; continue; }
-        if (fenced && strcmp(line, GIT_END) == 0) { inside = 0; saw_end = 1; continue; }
-
-        if (!fenced && (line[0] == '>' || line[0] == ':')) {  /* prompt + its echo */
-            if (!inside && strstr(line, sentence)) inside = 1;
-            else if (inside) { inside = 0; saw_end = 1; }
-            continue;
-        }
-        if (inside && !is_noise(line)) printf("%s\n", line);
-    }
-
-    if (no_verb) {
-        fprintf(stderr,
-            "uv-git: git is not set up in this account — the GIT verb is not "
-            "in its VOC.\n"
-            "        Install it there (the package's install.sh catalogs the "
-            "verb and its\n"
-            "        handlers), then try again.\n");
-        pclose(uv);
-        unlink(script);
-        return 1;
-    }
-
-    /* No closing marker means the session did not reach the end of our script —
-       a LOGIN paragraph that prompted and swallowed it, or a session that died.
-       Say so, rather than let a silent empty result read as success. */
-    if (!saw_end)
-        fprintf(stderr, "uv-git: the UniVerse session did not run the command"
-                        " (a LOGIN paragraph that prompts will consume it from"
-                        " stdin before the verb is reached)\n");
-
-    int rc = pclose(uv);
-    unlink(script);
-    if (!saw_end) return 1;
-    return rc == 0 ? 0 : 1;
+    return run_account(argc, argv, i);
 }

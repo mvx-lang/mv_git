@@ -967,9 +967,40 @@ static int addall_is_mv_file(const char *acct, const char *n) {
 /* GITADDALL(repo, out) — the whole-account `add -A`, IN THE ENGINE so it works
    where there is no CLI to fall back to (D3).  Same three passes as the former
    CLI-only add_all: git's own add of plain files (honouring .gitignore), then
-   every MV file's records — on-disk directory files AND lmdb-backed files (found
-   via mv_filelist, staged with their .DICT) — then the open-form normalisation.
-   A gitignored MV file is skipped (its records never enter the open form). */
+   every MV file's records — on-disk directory files AND whatever the BACKEND
+   reports (mv_filelist), staged with their .DICT — then the open-form
+   normalisation.  A gitignored MV file is skipped (its records never enter the
+   open form).
+
+   Both file sources are needed because the platforms disagree about where a file
+   even IS.  On MVX a file may be a directory on disk carrying <name>.DICT/%FILE%,
+   which pass 2 finds by looking; on UniVerse and UniData a file is a hash file
+   that pass 2 cannot see at all, and the only authority is the account's VOC —
+   which is exactly what mv_filelist answers.  Pass 3 used to run only when an
+   lmdb store was present, which quietly made it MVX-only: on UniVerse it left
+   every record unstaged while reporting success, because pass 1 had swept the
+   directory files as ordinary blobs and nothing had asked the backend.  So the
+   backend is now always consulted, and pass 3 skips what pass 2 already did. */
+/* The names pass 2 already staged, so pass 3 does not stage them twice.  Small
+   and linear on purpose: an account has tens of files, not thousands. */
+typedef struct { char (*n)[256]; int c, cap; } addall_set;
+
+static void addall_seen(addall_set *s, const char *name) {
+    if (s->c >= s->cap) {
+        int nc = s->cap ? s->cap * 2 : 32;
+        void *p = realloc(s->n, (size_t)nc * 256);
+        if (!p) return;
+        s->n = p; s->cap = nc;
+    }
+    snprintf(s->n[s->c++], 256, "%s", name);
+}
+
+static int addall_was_seen(const addall_set *s, const char *name) {
+    for (int i = 0; i < s->c; i++)
+        if (!strcmp(s->n[i], name)) return 1;
+    return 0;
+}
+
 void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
@@ -979,6 +1010,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     const char *acct = getenv("MVXACCOUNT");
     if (!acct || !acct[0]) acct = ".";
     int64_t nfiles = 0;
+    addall_set seen = {0};
 
     /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules */
     { const char *a[] = {rp}; addall_call(mvx_sub_GITADDDISK, ctx, a, 1); }
@@ -1000,15 +1032,15 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (git_path_ignored(repo, n)) continue;
         const char *a[] = {rp, n, ""};
         addall_call(mvx_sub_GITADD, ctx, a, 3);
+        addall_seen(&seen, n);
         nfiles++;
     }
     if (d) closedir(d);
 
-    /* 3. lmdb-backed files (records not on disk), only if the store exists */
-    char lmdbp[4096];
-    struct stat lsb;
-    snprintf(lmdbp, sizeof lmdbp, "%s/mvxdata.lmdb", acct);
-    if (stat(lmdbp, &lsb) == 0) {
+    /* 3. every file the BACKEND knows about — lmdb-backed on MVX, the VOC scan
+          on UniVerse and UniData.  Always consulted: a platform whose files are
+          hash files has no other way to be seen, and pass 2 cannot find them. */
+    {
         mv_value fl;
         mv_init(&fl);
         mv_filelist(ctx, &fl);                   /* name<VM>type, @AM-separated */
@@ -1024,10 +1056,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 char name[256];
                 memcpy(name, p + s, (size_t)nl);
                 name[nl] = '\0';
-                char fp[4096];
-                struct stat ns;
-                snprintf(fp, sizeof fp, "%s/%s", acct, name);
-                if ((stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) &&
+                if (!addall_was_seen(&seen, name) &&
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -1043,6 +1072,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         }
         mv_clear(&fl);
     }
+    free(seen.n);
     if (repo) git_repository_free(repo);
 
     /* 4. open-account normalisation of the staged index */

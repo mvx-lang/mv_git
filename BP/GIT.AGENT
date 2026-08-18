@@ -200,6 +200,10 @@ DISPATCH:
             GOSUB DO.FILECLASS
          CASE OP = "INDICES"
             GOSUB DO.INDICES
+         CASE OP = "CREATEFILE"
+            GOSUB DO.CREATEFILE
+         CASE OP = "DELETEFILE"
+            GOSUB DO.DELETEFILE
          CASE OP = ""
             STATUS = STATUS
          CASE 1
@@ -328,6 +332,77 @@ DO.FILECLASS:
          END
       END ELSE
          STATUS = 5 ; RESULT = "cannot open " : NAME
+      END
+      RETURN
+*
+*     CREATEFILE(name, class).  `class` is the open interchange form: "DIR", or
+*     "hash", or "hash <modulo> DYNAMIC|STATIC" carrying the source file's real
+*     geometry so a clone rebuilds the file at its true size.
+*
+*     CREATE.FILE is INTERACTIVE and there is no non-interactive form of it that
+*     can be trusted.  Probed on 14.2.1: `CREATE.FILE X 1,2 1,2 TYPE 19` reports
+*     success, creates a Type 18 file — not the directory asked for — and puts
+*     "TYPE 19" in the VOC record as the file's DESCRIPTION.  A trailing token it
+*     does not understand becomes a description rather than an error, which is
+*     the same trap that once hid whole files from the account scan (mv_git#43).
+*     So the prompts are answered properly, with DATA stacking the replies:
+*     dictionary modulo/separation/type, the same three for the data part, then
+*     the description — which must be EMPTY, or the VOC type reads "F <text>"
+*     and code matching attribute 1 against "F" cannot see the file.
+DO.CREATEFILE:
+      NAME = ARGV(1) ; CLS = TRIM(ARGV(2))
+      IF NAME = "" THEN
+         STATUS = 5 ; RESULT = "no file name"
+         RETURN
+      END
+*     Already there?  Say so and stop: a second CREATE.FILE asks whether to
+*     recreate, and an unanswered prompt would hang the session.
+      OPEN NAME TO XV THEN
+         RESULT = "exists"
+         RETURN
+      END
+      KIND = FIELD(CLS, " ", 1)
+      MODL = FIELD(CLS, " ", 2) + 0
+      DYN  = TRIM(FIELD(CLS, " ", 3))
+      IF MODL <= 0 THEN MODL = 1
+      IF KIND = "DIR" THEN
+         DTYPE = 19 ; MODL = 1
+      END ELSE
+*        Type 30 is a dynamic file, 18 an ordinary static hashed one.  The open
+*        form says which the source was; a bare "hash" means dynamic, which is
+*        the sane default for a file whose size is unknown.
+         IF DYN = "STATIC" THEN DTYPE = 18 ELSE DTYPE = 30
+      END
+      DATA 1, 2, 3, MODL, 2, DTYPE, ""
+      EXECUTE "CREATE.FILE " : NAME CAPTURING CFOUT
+      OPEN NAME TO XV2 THEN
+         RESULT = "created"
+      END ELSE
+         STATUS = 5
+         RESULT = "CREATE.FILE " : NAME : " did not produce a usable file: " : CFOUT[1,200]
+      END
+      RETURN
+*
+*     DELETEFILE(name).  DELETE.FILE asks for confirmation, so the answer is
+*     stacked the same way — an unanswered prompt would hang the session, and a
+*     hung session holds a licence.
+DO.DELETEFILE:
+      NAME = ARGV(1)
+      IF NAME = "" THEN
+         STATUS = 5 ; RESULT = "no file name"
+         RETURN
+      END
+      OPEN NAME TO XV3 ELSE
+         RESULT = "absent"
+         RETURN
+      END
+      DATA "Y", "Y"
+      EXECUTE "DELETE.FILE " : NAME CAPTURING DFOUT
+      OPEN NAME TO XV4 THEN
+         STATUS = 5
+         RESULT = "DELETE.FILE " : NAME : " left the file in place: " : DFOUT[1,200]
+      END ELSE
+         RESULT = "deleted"
       END
       RETURN
 *
