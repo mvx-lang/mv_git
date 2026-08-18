@@ -23,7 +23,7 @@ OUT = ""
 CALL GITCHECKOUT(".git", NM, OUT)
 PRINT OUT
 $ELSE
-REPO = @PATH : "/.git"
+CALL GIT.REPO(REPO)
 IF NM # "" THEN
    CALL GIT.OBJ("SWITCH", 2, REPO, NM, "", "", "", OBJOUT)             ;* move HEAD to the branch (git side)
    MSG = OBJOUT
