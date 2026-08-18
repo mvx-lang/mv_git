@@ -93,6 +93,33 @@ static void append_arg(char *buf, size_t cap, const char *arg) {
     snprintf(buf + used, cap - used, " %s%s%s", q, arg, q);
 }
 
+/* Is this directory inside a repository that lives ABOVE it?
+ *
+ * Everything here — and in the verb, and in mvgitd — assumes the repository is
+ * `.git` directly inside the account.  An account can perfectly well sit BELOW a
+ * repo root instead (a repo holding several accounts, or an account inside a
+ * larger project), and real git would find the enclosing repo by searching
+ * upward.  We do not, so `init` would create a SECOND repository nested inside
+ * the first and quietly split the history in two.
+ *
+ * Detecting it is cheap — git_repository_discover is the same upward walk git
+ * itself does — so the damage is prevented even though nesting is not yet
+ * SUPPORTED.  Supporting it needs the account-aware staging and checkout
+ * recursion in mv_git#44; refusing clearly is the honest interim answer.
+ *
+ * Returns 1 and fills `out` when an enclosing repo exists above us; 0 when
+ * there is none, or when the repo found is our own `.git`. */
+static int enclosing_repo(char *out, size_t cap) {
+    if (access(".git", F_OK) == 0) return 0;      /* our own — not enclosing */
+    git_libgit2_init();
+    git_buf found = {0};
+    /* across_fs = 0: do not wander over a mount boundary looking for a repo */
+    if (git_repository_discover(&found, ".", 0, NULL) != 0) return 0;
+    snprintf(out, cap, "%s", found.ptr ? found.ptr : "");
+    git_buf_dispose(&found);
+    return out[0] != '\0';
+}
+
 /* status for a plain directory, straight from libgit2.
  *
  * The engine's mv_git_status cannot serve this: it compares LIVE RECORDS against
@@ -158,8 +185,18 @@ static int run_plain(int argc, char **argv, int i) {
     const char *a0 = (i     < argc) ? argv[i]     : "";
     const char *a1 = (i + 1 < argc) ? argv[i + 1] : "";
     mv_ctx *ctx = mv_ctx_create();
-    const char *repo = ".git";
     char *out = NULL;
+
+    /* Find the repository the way git does: search upward, so running in a
+       subdirectory works on the enclosing repo rather than failing to find one.
+       Falls back to ".git" here, which is what `init` needs — there is nothing
+       to discover before it exists. */
+    char found[4096], repobuf[4096];
+    const char *repo = ".git";
+    if (enclosing_repo(found, sizeof found)) {
+        snprintf(repobuf, sizeof repobuf, "%s", found);
+        repo = repobuf;
+    }
 
     if      (!strcmp(sub, "init"))    out = mv_git_init(ctx, repo);
     else if (!strcmp(sub, "status"))  { mv_ctx_destroy(ctx); return plain_status(); }
@@ -228,6 +265,31 @@ int main(int argc, char **argv) {
        announces itself instead of quietly doing the wrong thing. */
     if (access("VOC", F_OK) != 0)
         return run_plain(argc, argv, i);
+
+    /* An ACCOUNT below a repository root is the unsupported case, and it is
+       specific to accounts: records would have to be staged under the account's
+       own prefix, and checkout would have to recurse back into it — neither of
+       which exists yet (mv_git#44).  A plain subdirectory inside a repo needs
+       none of that; git works there every day, and so does the path above.
+       init is called out separately because it does not merely misbehave — it
+       creates a SECOND repository nested in the first and splits the history. */
+    {
+        char up[4096];
+        if (enclosing_repo(up, sizeof up)) {
+            fprintf(stderr,
+                "uv-git: this account is inside the repository at\n"
+                "          %s\n"
+                "        and an account below a repository root is not supported "
+                "yet (mv_git#44).\n", up);
+            if (!strcmp(argv[i], "init"))
+                fprintf(stderr,
+                "        Running init here would create a SECOND repository "
+                "nested in that one,\n"
+                "        splitting the history.  Run it at the repository root "
+                "instead.\n");
+            return 1;
+        }
+    }
 
     /* Build the sentence the verb will see.  GIT is the verb; the rest is its
        command and arguments, in the order given. */
