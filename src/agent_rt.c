@@ -5,13 +5,20 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-/* uvgit_rt.c — the record backend for UniVerse (mv_git#47).
+/* agent_rt.c — the record backend that reaches records through a SESSION
+ * (mv_git#47).
  *
- * The peer of udtgit_rt.c, which implements the same contract over UniData's
- * InterCall.  There is no InterCall for us on UniVerse — it is a client SDK we
- * cannot get for Linux, and GCI is licensed and dead in the Trial Edition — so
- * these primitives go through a SESSION instead: BP/GIT.AGENT, running in the
- * account, reached over the framed pipe protocol in uvsession.c.
+ * Used by every MV platform that keeps its records behind a licensed session:
+ * BP/GIT.AGENT runs in the account and these primitives talk to it over the
+ * framed pipe protocol in mvsession.c.  Nothing here is platform-specific —
+ * it talks to a session, not to a product — so UniVerse and UniData share it,
+ * differing only in which shell mvsession starts.
+ *
+ * On UniVerse there is no alternative: InterCall is a client SDK unavailable for
+ * Linux and GCI is licensed and dead in the Trial Edition.  On UniData there is
+ * one — udtgit_rt.c over InterCall — and this replaces it anyway, because
+ * InterCall authenticates with a stored password rather than as the person
+ * running the command (mv_git#45).
  *
  * That one substitution is the whole port.  The engine in mvxgit.c is written
  * against this contract and nothing else, so implementing it here puts every
@@ -22,7 +29,7 @@
  * A FILE HANDLE IS A NUMBER, not a pointer.  The agent owns the open files and
  * hands out slot numbers, so mv_value.fid carries the slot and every operation
  * on a file is one round trip naming it.  Handles survive a session that times
- * out and is replaced, because uvsession replays the opens — see uvsession.c.
+ * out and is replaced, because mvsession replays the opens — see mvsession.c.
  *
  * THE ACCOUNT IS AMBIENT.  The engine never says which account a record lives
  * in; it chdir's and works there, exactly as the MVX and UniData backends
@@ -34,7 +41,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "gitd_rt.h"
-#include "uvsession.h"
+#include "mvsession.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,7 +50,7 @@
 #include <strings.h>
 #include <unistd.h>
 
-struct mv_ctx { uv_session *s; };
+struct mv_ctx { mv_session *s; };
 
 /* One session per process, opened on first record use against the account we
    are standing in.  The engine has no notion of "which account", so neither can
@@ -51,12 +58,12 @@ struct mv_ctx { uv_session *s; };
    backends follow. */
 static mv_ctx g_ctx;
 
-static uv_session *session(void) {
+static mv_session *session(void) {
     if (!g_ctx.s) {
         char err[512] = "";
-        g_ctx.s = uvs_open(".", err, sizeof err);
+        g_ctx.s = mvs_open(".", err, sizeof err);
         if (!g_ctx.s)
-            mv_fatal("uv-git: cannot reach the account: %s", err);
+            mv_fatal("cannot reach the account: %s", err);
     }
     return g_ctx.s;
 }
@@ -65,11 +72,11 @@ mv_ctx *mv_ctx_create(void) { return &g_ctx; }
 
 /* Finish with the account we are in: close its session and forget it, so the
    next account opens its own.  This is what keeps a multi-account walk to ONE
-   licence — and it must clear the cached pointer, since uvs_close frees the
+   licence — and it must clear the cached pointer, since mvs_close frees the
    session it is pointing at. */
-void mv_uv_release(void) {
+void mv_agent_release(void) {
     if (g_ctx.s) {
-        uvs_close(g_ctx.s);
+        mvs_close(g_ctx.s);
         g_ctx.s = NULL;
     }
 }
@@ -77,7 +84,7 @@ void mv_uv_release(void) {
 void mv_ctx_destroy(mv_ctx *ctx) {
     /* Deliberately does NOT close the session: the engine creates and destroys
        contexts freely around individual operations, and tearing the session down
-       with each one would pay a licence acquisition per record.  uvs_close_all()
+       with each one would pay a licence acquisition per record.  mvs_close_all()
        at exit is what releases it — and the agent's idle timeout is the backstop
        if we never get there. */
     (void)ctx;
@@ -129,7 +136,7 @@ static const char *sdata(const mv_value *v) {
    Returns 1 on MVG_OK, 0 otherwise; the reply body (if wanted) is malloc'd. */
 static int call(const char *op, int nargs, const char *const *args,
                 const long *lens, char **out, long *outlen) {
-    return uvs_call(session(), op, nargs, args, lens, out, outlen) == 0;
+    return mvs_call(session(), op, nargs, args, lens, out, outlen) == 0;
 }
 
 /* --- record I/O ---------------------------------------------------------- */
@@ -291,12 +298,16 @@ int mv_voc_class(const char *type, int64_t len) {
 
 void mv_fatal(const char *fmt, ...) {
     va_list ap;
-    fputs("uv-git: ", stderr);
+    /* Name the driver the way the user invoked it, without a per-platform
+       string here: the shell mvsession was told to start is exactly what
+       distinguishes uv-git from udt-git. */
+    const char *sh = mvs_shell();
+    fprintf(stderr, "%s-git: ", (sh && *sh) ? sh : "mv");
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
     /* Release the licence on the way out — exit() runs the atexit handler
-       uvsession installs, so a fatal error does not strand a session. */
+       mvsession installs, so a fatal error does not strand a session. */
     exit(1);
 }

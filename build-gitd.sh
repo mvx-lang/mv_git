@@ -33,7 +33,7 @@ mkdir -p "$OUT"
 # MVXGIT_GITD selects the shared value type in mvxgit.h; MVXGIT_NORECORDS says
 # this binary has NO record backend at all, so the engine never asks one a
 # question it would abort on.  uv-git sets the first but not the second — it has
-# a real backend (uvgit_rt.c).  -D_FILE_OFFSET_BITS=64 keeps large blobs honest
+# a real backend (agent_rt.c).  -D_FILE_OFFSET_BITS=64 keeps large blobs honest
 # on 32-bit hosts.
 $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD -DMVXGIT_NORECORDS \
     -I"$SRC" $LG2_CFLAGS \
@@ -42,7 +42,7 @@ $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD -DMVXGIT_NORECORDS \
 
 echo "built $OUT/mvgitd"
 
-# uv-git — the shell-side entry point, and it DOES reach records: uvgit_rt.c
+# uv-git — the shell-side entry point, and it DOES reach records: agent_rt.c
 # implements the engine's record contract over a session running BP/GIT.AGENT
 # (mv_git#47), which is the peer of udtgit_rt.c's InterCall implementation.  The
 # session is needed because C cannot touch UniVerse records directly — GCI is
@@ -51,10 +51,12 @@ echo "built $OUT/mvgitd"
 # process, which is why no verb and no mvgitd are involved.
 #
 # Same MVXGIT_GITD build of the engine (the value type and header are shared),
-# with the recordless gitd_rt.c swapped for the real backend.
+# with the recordless gitd_rt.c swapped for the real backend.  mvsession.c and
+# agent_rt.c are NOT UniVerse-specific: udt-git will link the same two files and
+# only name a different shell (mv_git#45).
 $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
     -I"$SRC" $LG2_CFLAGS \
-    "$SRC/uv-git.c" "$SRC/uvsession.c" "$SRC/uvgit_rt.c" "$SRC/mvxgit.c" \
+    "$SRC/uv-git.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/mvxgit.c" \
     -o "$OUT/uv-git" $LG2_LIBS
 
 echo "built $OUT/uv-git"

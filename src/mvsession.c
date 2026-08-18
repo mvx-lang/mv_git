@@ -5,13 +5,18 @@
  * SPDX-License-Identifier: GPL-2.0-only
  */
 
-/* uvsession — see uvsession.h.  The client half of the agent protocol, and the
- * licence discipline that goes with it. */
+/* mvsession — see mvsession.h.  The client half of the agent protocol, and the
+ * licence discipline that goes with it.
+ *
+ * SHARED BY UniVerse AND UniData, because there is nothing platform-specific in
+ * it beyond the name of the shell to exec.  Both reach records the same way —
+ * start a session, run BP/GIT.AGENT in it, speak the framed protocol — so both
+ * use this file and set g_shell to their own binary. */
 
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE          /* realpath */
 
-#include "uvsession.h"
+#include "mvsession.h"
 #include "gitproto.h"
 
 #include <errno.h>
@@ -27,46 +32,60 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifndef UV_BIN
-#define UV_BIN "uv"
-#endif
+/* THE ONLY PLATFORM DIFFERENCE IN THIS FILE.
+ *
+ * Everything else here — the FIFOs, the framing, the hex, the licence
+ * discipline, the idle reconnect — is the same on UniVerse and UniData, because
+ * none of it is about the platform: it is about talking to a session that is
+ * running BP/GIT.AGENT.  So the driver names its shell and the rest is shared,
+ * rather than the file being copied and one string edited.
+ *
+ * Deliberately has no default.  "uv" would be a silently wrong choice for
+ * udt-git, and a wrong shell fails as a mysteriously unanswered agent rather
+ * than as the mistake it is. */
+static char g_shell[64];
 
 /* A file the caller opened, remembered so it can be reopened if the session is
    replaced.  The agent hands out handles in order, so replaying these in order
    restores the same numbers and the caller's handles stay valid across a
    reconnect it never sees. */
-typedef struct { char name[256]; char part[16]; } uvs_open_rec;
+typedef struct { char name[256]; char part[16]; } mvs_open_rec;
 
-struct uv_session {
+struct mv_session {
     char  account[MVG_PATH_MAX];
     char  dir[MVG_PATH_MAX];        /* private run dir holding the two FIFOs */
     char  token[MVG_TOKEN_LEN + 1];
     int   req;                      /* we write requests here      */
     int   rsp;                      /* we read replies here        */
     pid_t pid;                      /* the uv process              */
-    uvs_open_rec *opens;            /* replayed after a reconnect  */
+    mvs_open_rec *opens;            /* replayed after a reconnect  */
     int   nopens, capopens;
     int   in_replay;                /* guard: no reconnect while reconnecting */
-    struct uv_session *next;
+    struct mv_session *next;
 };
 
 /* Defined below; declared here because teardown and spawn both use the raw
    exchange, and the reconnect logic sits between them. */
-static int call_raw(uv_session *s, const char *op, int nargs,
+static int call_raw(mv_session *s, const char *op, int nargs,
                     const char *const *args, const long *lens,
                     char **out, long *outlen);
-static void teardown(uv_session *s, int ask);
+static void teardown(mv_session *s, int ask);
 
-static uv_session *g_sessions;
+static mv_session *g_sessions;
 static int g_jobs = 1;
 static int g_idle = 30;
 static int g_handlers_installed;
 
-void uvs_set_jobs(int n) { g_jobs = n > 0 ? n : 1; }
-int  uvs_jobs(void)      { return g_jobs; }
-void uvs_set_idle(int s) { g_idle = s > 0 ? s : 30; }
-int  uvs_idle(void)      { return g_idle; }
-const char *uvs_account(const uv_session *s) { return s ? s->account : ""; }
+void mvs_set_shell(const char *bin) {
+    snprintf(g_shell, sizeof g_shell, "%s", bin ? bin : "");
+}
+const char *mvs_shell(void) { return g_shell; }
+
+void mvs_set_jobs(int n) { g_jobs = n > 0 ? n : 1; }
+int  mvs_jobs(void)      { return g_jobs; }
+void mvs_set_idle(int s) { g_idle = s > 0 ? s : 30; }
+int  mvs_idle(void)      { return g_idle; }
+const char *mvs_account(const mv_session *s) { return s ? s->account : ""; }
 
 /* --- hex, the wire encoding -------------------------------------------- */
 
@@ -165,11 +184,11 @@ static int reap(pid_t pid, int ms) {
     return 0;
 }
 
-void uvs_close(uv_session *s) {
+void mvs_close(mv_session *s) {
     if (!s) return;
     /* unlink from the registry first, so a signal during teardown does not
        revisit a session already being torn down */
-    for (uv_session **pp = &g_sessions; *pp; pp = &(*pp)->next)
+    for (mv_session **pp = &g_sessions; *pp; pp = &(*pp)->next)
         if (*pp == s) { *pp = s->next; break; }
 
     /* Ask, rather than kill.  A session that reaches QUIT and STOPs releases its
@@ -179,12 +198,12 @@ void uvs_close(uv_session *s) {
     free(s);
 }
 
-void uvs_close_all(void) {
-    while (g_sessions) uvs_close(g_sessions);
+void mvs_close_all(void) {
+    while (g_sessions) mvs_close(g_sessions);
 }
 
 static void on_signal(int sig) {
-    uvs_close_all();
+    mvs_close_all();
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -196,7 +215,7 @@ static void install_handlers(void) {
     signal(SIGTERM, on_signal);
     signal(SIGHUP,  on_signal);
     signal(SIGPIPE, SIG_IGN);      /* a dead session is an error, not a death */
-    atexit(uvs_close_all);
+    atexit(mvs_close_all);
 }
 
 /* --- opening ------------------------------------------------------------- */
@@ -221,9 +240,15 @@ static void make_token(char *out) {
 }
 
 /* Bring up the pipes, the run script and the uv process for an already-allocated
-   session, and prove the agent answers.  Split out of uvs_open because a session
+   session, and prove the agent answers.  Split out of mvs_open because a session
    that times out is rebuilt through exactly this path. */
-static int spawn(uv_session *s, char *err, size_t errcap) {
+static int spawn(mv_session *s, char *err, size_t errcap) {
+    if (!g_shell[0]) {
+        snprintf(err, errcap,
+                 "no MV shell set — the driver must call mvs_set_shell(\"uv\") "
+                 "or mvs_set_shell(\"udt\") before opening a session");
+        return -1;
+    }
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = "/tmp";
     /* A private directory for the pipes: 0700, since the token travels through
@@ -292,7 +317,7 @@ static int spawn(uv_session *s, char *err, size_t errcap) {
             dup2(devnull, STDERR_FILENO);
             if (devnull > STDERR_FILENO) close(devnull);
         }
-        execlp(UV_BIN, UV_BIN, (char *)NULL);
+        execlp(g_shell, g_shell, (char *)NULL);
         _exit(127);
     }
     s->pid = pid;
@@ -313,7 +338,7 @@ static int spawn(uv_session *s, char *err, size_t errcap) {
 }
 
 /* Drop the process and pipes of a session, keeping the session itself. */
-static void teardown(uv_session *s, int ask) {
+static void teardown(mv_session *s, int ask) {
     if (ask && s->req >= 0)
         call_raw(s, "QUIT", 0, NULL, NULL, NULL, NULL);
     if (s->req >= 0) { close(s->req); s->req = -1; }
@@ -340,7 +365,7 @@ static void teardown(uv_session *s, int ask) {
    the timeout that triggers this cannot fire during one; a session that died for
    another reason mid-scan will surface as a failed READNEXT rather than silently
    short results. */
-static int reconnect(uv_session *s) {
+static int reconnect(mv_session *s) {
     if (s->in_replay) return -1;
     s->in_replay = 1;
     teardown(s, 0);
@@ -359,7 +384,7 @@ static int reconnect(uv_session *s) {
     return rc;
 }
 
-uv_session *uvs_open(const char *account, char *err, size_t errcap) {
+mv_session *mvs_open(const char *account, char *err, size_t errcap) {
     install_handlers();
 
     char real[MVG_PATH_MAX];
@@ -368,21 +393,21 @@ uv_session *uvs_open(const char *account, char *err, size_t errcap) {
         return NULL;
     }
     /* Already have one?  Reuse it — the licence is already spent. */
-    for (uv_session *s = g_sessions; s; s = s->next)
+    for (mv_session *s = g_sessions; s; s = s->next)
         if (!strcmp(s->account, real)) return s;
 
     /* Honour the licence cap: retire the oldest session before adding another,
        so the number held never exceeds what the caller allowed. */
     int live = 0;
-    for (uv_session *s = g_sessions; s; s = s->next) live++;
+    for (mv_session *s = g_sessions; s; s = s->next) live++;
     while (live >= g_jobs && g_sessions) {
-        uv_session *last = g_sessions;
+        mv_session *last = g_sessions;
         while (last->next) last = last->next;
-        uvs_close(last);
+        mvs_close(last);
         live--;
     }
 
-    uv_session *s = calloc(1, sizeof *s);
+    mv_session *s = calloc(1, sizeof *s);
     if (!s) { snprintf(err, errcap, "out of memory"); return NULL; }
     s->req = s->rsp = -1;
     s->pid = -1;
@@ -403,7 +428,7 @@ uv_session *uvs_open(const char *account, char *err, size_t errcap) {
 /* --- one call ------------------------------------------------------------ */
 
 /* The wire exchange, with no opinion about a session that has gone away. */
-static int call_raw(uv_session *s, const char *op, int nargs,
+static int call_raw(mv_session *s, const char *op, int nargs,
                     const char *const *args, const long *lens,
                     char **out, long *outlen) {
     if (out) *out = NULL;
@@ -479,21 +504,21 @@ static int call_raw(uv_session *s, const char *op, int nargs,
 }
 
 /* Remember a file the caller opened, so a replacement session can reopen it. */
-static void remember_open(uv_session *s, int nargs, const char *const *args) {
+static void remember_open(mv_session *s, int nargs, const char *const *args) {
     if (s->in_replay || nargs < 1) return;
     if (s->nopens >= s->capopens) {
         int nc = s->capopens ? s->capopens * 2 : 8;
-        uvs_open_rec *no = realloc(s->opens, (size_t)nc * sizeof *no);
+        mvs_open_rec *no = realloc(s->opens, (size_t)nc * sizeof *no);
         if (!no) return;
         s->opens = no;
         s->capopens = nc;
     }
-    uvs_open_rec *r = &s->opens[s->nopens++];
+    mvs_open_rec *r = &s->opens[s->nopens++];
     snprintf(r->name, sizeof r->name, "%s", args[0]);
     snprintf(r->part, sizeof r->part, "%s", nargs > 1 && args[1] ? args[1] : "");
 }
 
-int uvs_call(uv_session *s, const char *op, int nargs,
+int mvs_call(mv_session *s, const char *op, int nargs,
              const char *const *args, const long *lens,
              char **out, long *outlen) {
     int st = call_raw(s, op, nargs, args, lens, out, outlen);
@@ -514,11 +539,11 @@ int uvs_call(uv_session *s, const char *op, int nargs,
     return st;
 }
 
-int uvs_calls(uv_session *s, const char *op, int nargs,
+int mvs_calls(mv_session *s, const char *op, int nargs,
               const char *const *args, char **out, long *outlen) {
-    return uvs_call(s, op, nargs, args, NULL, out, outlen);
+    return mvs_call(s, op, nargs, args, NULL, out, outlen);
 }
 
-int uvs_keepalive(uv_session *s) {
-    return uvs_call(s, "NOP", 0, NULL, NULL, NULL, NULL);
+int mvs_keepalive(mv_session *s) {
+    return mvs_call(s, "NOP", 0, NULL, NULL, NULL, NULL);
 }

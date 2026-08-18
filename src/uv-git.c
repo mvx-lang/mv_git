@@ -26,7 +26,7 @@
  * design drove the in-session GIT verb and shipped git objects back out to a
  * second process; this one keeps the git work here and asks the session for
  * records alone, which is both simpler and the correct division of labour.  See
- * uvgit_rt.c for the record contract and uvsession.c for the session lifecycle,
+ * agent_rt.c for the record contract and mvsession.c for the session lifecycle,
  * where the important constraint lives: a session is a LICENCE, so it is opened
  * lazily, held only while there is work, and released cleanly.
  *
@@ -47,10 +47,10 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "mvxgit.h"
-#include "uvsession.h"
+#include "mvsession.h"
 
-/* uvgit_rt.c: finish with the current account and give its licence back. */
-void mv_uv_release(void);
+/* agent_rt.c: finish with the current account and give its licence back. */
+void mv_agent_release(void);
 #include <git2.h>
 
 #include <ctype.h>
@@ -306,10 +306,10 @@ static int make_account(const char *code) {
 }
 
 /* One agent call, rendered for a person: the reply as lines, or the status. */
-static int agent_one(uv_session *ses, const char *op, int na, const char *const *a) {
+static int agent_one(mv_session *ses, const char *op, int na, const char *const *a) {
     char *body = NULL;
     long blen = 0;
-    int st = uvs_calls(ses, op, na, a, &body, &blen);
+    int st = mvs_calls(ses, op, na, a, &body, &blen);
     if (st != 0) {
         fprintf(stderr, "status %d%s%.*s\n", st, blen ? ": " : "",
                 (int)blen, body ? body : "");
@@ -704,7 +704,7 @@ static int run_plain(int argc, char **argv, int i) {
  * the session agent (mv_git#47).
  *
  * This is the same dispatch run_plain does, with the record-based operations
- * added — because with uvgit_rt.c linked they now work.  There is no verb here
+ * added — because with agent_rt.c linked they now work.  There is no verb here
  * and no BASIC git code: uv-git owns the git objects, and the session is asked
  * only for records.
  *
@@ -828,9 +828,9 @@ static int run_account(int argc, char **argv, int i) {
     mv_ctx_destroy(ctx);
     /* Hand the licence back now rather than at exit, so a caller does not keep
        one for work it has finished.  Goes through the backend so its cached
-       session pointer is cleared with it — uvs_close_all() alone would free the
+       session pointer is cleared with it — mvs_close_all() alone would free the
        session and leave the backend holding a dangling pointer. */
-    mv_uv_release();
+    mv_agent_release();
     return 0;
 }
 
@@ -845,7 +845,7 @@ static int run_account(int argc, char **argv, int i) {
  * A session is a licence; visiting four accounts must not mean holding four.  So
  * each account is entered, worked, and its session released before the next is
  * opened — log in, do the work, log out.  -j raises the cap for someone who has
- * the licences and wants the wall clock; the cap is enforced in uvsession.c by
+ * the licences and wants the wall clock; the cap is enforced in mvsession.c by
  * retiring the oldest session rather than exceeding it.
  */
 
@@ -934,7 +934,7 @@ static int run_accounts(const char *root, int argc, char **argv, int i) {
         mv_git_set_prefix(acct[k]);
         if (run_account(argc, argv, i) != 0) rc = 1;
         /* Hand the licence back before entering the next account. */
-        mv_uv_release();
+        mv_agent_release();
         if (chdir(here) != 0) { perror("uv-git"); return 1; }
     }
     mv_git_set_prefix("");
@@ -947,6 +947,10 @@ int main(int argc, char **argv) {
     int i = 1;
     const char *account = ".";
 
+    /* This driver's shell.  The session layer is shared with UniData and has no
+       default, so naming it here is what makes these sessions UniVerse ones. */
+    mvs_set_shell("uv");
+
     /* Global switches, before the subcommand.  Both are about licences: how many
        sessions this run may hold at once, and how long an unused one waits before
        giving its licence back. */
@@ -956,10 +960,10 @@ int main(int argc, char **argv) {
             i += 2;
         } else if ((!strcmp(argv[i], "-j") || !strcmp(argv[i], "--jobs")) &&
                    i + 1 < argc) {
-            uvs_set_jobs(atoi(argv[i + 1]));
+            mvs_set_jobs(atoi(argv[i + 1]));
             i += 2;
         } else if (!strcmp(argv[i], "--idle-timeout") && i + 1 < argc) {
-            uvs_set_idle(atoi(argv[i + 1]));
+            mvs_set_idle(atoi(argv[i + 1]));
             i += 2;
         } else break;
     }
@@ -982,7 +986,7 @@ int main(int argc, char **argv) {
          uv-git [-a acct] agent <OPCODE> [arg...] */
     if (strcmp(argv[i], "agent") == 0) {
         char err[512] = "";
-        uv_session *ses = uvs_open(account, err, sizeof err);
+        mv_session *ses = mvs_open(account, err, sizeof err);
         if (!ses) {
             fprintf(stderr, "uv-git agent: %s\n", err);
             return 1;
@@ -1016,7 +1020,7 @@ int main(int argc, char **argv) {
                 if (agent_one(ses, op, na, a) != 0) rc = 1;
             }
         }
-        uvs_close(ses);
+        mvs_close(ses);
         return rc;
     }
 
