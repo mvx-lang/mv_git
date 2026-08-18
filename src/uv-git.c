@@ -765,9 +765,34 @@ static int run_account(int argc, char **argv, int i) {
     else if (!strcmp(sub, "restore"))  out = mv_git_restore(ctx, repo, a0);
     else if (!strcmp(sub, "rm"))       out = mv_git_rm(ctx, repo, a0, a1);
     else if (!strcmp(sub, "show"))     out = mv_git_show(ctx, repo, a0, a1);
-    else if (!strcmp(sub, "tag"))
-        out = mv_git_tag(ctx, repo, a0, a1, a2,
-                         (i + 3 < argc) ? argv[i + 3] : "");
+    else if (!strcmp(sub, "tag")) {
+        /* git's own spelling, which is what a user types and what the BASIC
+           handler used to decode before handing the engine an op:
+             GIT TAG                      list
+             GIT TAG name {commit}        lightweight tag, HEAD if no commit
+             GIT TAG -a name -m message   annotated
+             GIT TAG -d name              delete                                */
+        const char *op = "list", *name = "", *target = "", *msg = "";
+        for (int k = i; k < argc; k++) {
+            if (!strcmp(argv[k], "-d") && k + 1 < argc) {
+                op = "delete"; name = argv[++k];
+            } else if (!strcmp(argv[k], "-a") && k + 1 < argc) {
+                op = "add";    name = argv[++k];
+            } else if (!strcmp(argv[k], "-m") && k + 1 < argc) {
+                msg = argv[++k];
+            } else if (argv[k][0] != '-') {
+                if (!*name)        { op = "add"; name = argv[k]; }
+                else if (!*target) target = argv[k];
+            }
+        }
+        if (strcmp(op, "list") != 0 && !*name) {
+            fprintf(stderr, "usage: uv-git tag {name {commit} | -a name "
+                            "-m msg | -d name}\n");
+            mv_ctx_destroy(ctx);
+            return 2;
+        }
+        out = mv_git_tag(ctx, repo, op, name, target, msg);
+    }
     else if (!strcmp(sub, "remote"))   out = mv_git_remote(ctx, repo, a0, a1, a2);
     else if (!strcmp(sub, "fetch"))    out = mv_git_fetch(ctx, repo, a0);
     else if (!strcmp(sub, "push"))     out = mv_git_push(ctx, repo, a0, a1);

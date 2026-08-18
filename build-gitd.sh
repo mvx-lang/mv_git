@@ -30,9 +30,12 @@ fi
 
 mkdir -p "$OUT"
 
-# MVXGIT_GITD selects the recordless backend in mvxgit.h.  -D_FILE_OFFSET_BITS=64
-# keeps large blobs honest on 32-bit hosts.
-$CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
+# MVXGIT_GITD selects the shared value type in mvxgit.h; MVXGIT_NORECORDS says
+# this binary has NO record backend at all, so the engine never asks one a
+# question it would abort on.  uv-git sets the first but not the second — it has
+# a real backend (uvgit_rt.c).  -D_FILE_OFFSET_BITS=64 keeps large blobs honest
+# on 32-bit hosts.
+$CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD -DMVXGIT_NORECORDS \
     -I"$SRC" $LG2_CFLAGS \
     "$SRC/gitd.c" "$SRC/gitd_rt.c" "$SRC/mvxgit.c" \
     -o "$OUT/mvgitd" $LG2_LIBS

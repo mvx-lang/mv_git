@@ -520,17 +520,50 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
    records of VOC files that are not plain on-disk files, e.g. LMDB hash files).
    Uses the repository-owned index so libgit2 can stat the working tree and
    apply the ignore rules.  GITADDDISK(repo, out) */
+/* Declared here, defined with the status helpers: whether the BACKEND calls this
+   name one of the account's files. */
+static int backend_has_file(mv_ctx *ctx, const char *name);
+static void split_top(const char *path, char *out, size_t cap);
+
 /* The record-git model tracks records as git blobs, never the binary LMDB
    store — so the account's mvxdata.lmdb must never be staged, even when no
-   .gitignore lists it.  Returns >0 to skip the path. */
+   .gitignore lists it.
+
+   Nor may this pass stage anything that belongs to an MV FILE.  Those are
+   records, and the record pass stages them with record semantics; letting the
+   plain-file pass also stage them means the same path is written twice by two
+   readers whose bytes need not agree, and the loser shows up as permanently
+   modified.  On MVX the question never arose, because an MV file's records are
+   not ordinary files on disk.  On UniVerse a directory file — BP, BP.O — is
+   exactly that, which is how `M BP.O/...` survived every commit.
+
+   Returns >0 to skip the path. */
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
-    (void)payload;
-    return strncmp(path, "mvxdata.lmdb", 12) == 0 ? 1 : 0;
+    if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
+    char top[256];
+    split_top(path, top, sizeof top);
+    /* A platform WORK file is never content.  &SAVEDLISTS&, &PH&, _HOLD_ … are
+       scratch areas the system writes to as a side effect of ordinary use — and
+       in our case as a side effect of US: every SELECT this tool issues rewrites
+       a &SAVEDLISTS& entry, so tracking it means the account is dirty the moment
+       anything looks at it.  The account scan has always skipped these names
+       (wrapped in & or _); the plain-file pass must skip them too, because on
+       UniVerse they are real directories on disk and git would otherwise sweep
+       them up. */
+    {
+        size_t tl = strlen(top);
+        if (tl >= 2 && ((top[0] == '&' && top[tl - 1] == '&') ||
+                        (top[0] == '_' && top[tl - 1] == '_')))
+            return 1;
+    }
+    /* only a path INSIDE a file is a record; the file's own entry is not */
+    if (strcmp(top, path) != 0 && backend_has_file((mv_ctx *)payload, top))
+        return 1;
+    return 0;
 }
 
 void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -546,7 +579,7 @@ void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     git_strarray all = {NULL, 0};              /* empty pathspec ⇒ everything */
     int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT,
-                               addall_skip, NULL);
+                               addall_skip, ctx);
     if (rc == 0) rc = git_index_update_all(index, &all, NULL, NULL);
     if (rc == 0) rc = git_index_write(index);
     git_index_free(index);
@@ -1258,6 +1291,57 @@ static void split_top(const char *path, char *top, size_t cap) {
    LMDB-backed hash file, so it is an MV file.  Pure stat(), run in the account
    (the engine has chdir'd there): it never opens the store, so status on a
    directory-only account cannot conjure an mvxdata.lmdb. */
+/* The account's own files as the BACKEND reports them, cached for the process.
+ *
+ * The disk test below cannot answer this on every platform.  It recognises an MV
+ * file by the MVX convention — a directory carrying <name>.DICT/%FILE% — and on
+ * UniVerse the dictionary is a separate file called D_<name>, so a directory
+ * file like BP or BP.O looks like an ordinary directory of ordinary files.  It
+ * is then read TWICE with different byte semantics: once by git's plain-file
+ * pass, once as records, and whichever staged last leaves the other permanently
+ * disagreeing.  That is what left `M BP.O/...` in status after every commit.
+ *
+ * The VOC is the authority on what is a file, and mv_filelist is how the backend
+ * says so.  Not available in the recordless build, which has no backend at all —
+ * hence the guard rather than a call that would abort. */
+static nameset g_bfiles;
+static int g_bfiles_done;
+
+static int backend_has_file(mv_ctx *ctx, const char *name) {
+#ifdef MVXGIT_NORECORDS
+    (void)ctx; (void)name;
+    return 0;
+#else
+    if (!g_bfiles_done) {
+        g_bfiles_done = 1;
+        mv_value fl;
+        mv_init(&fl);
+        mv_filelist(ctx, &fl);              /* name<VM>type, @AM-separated */
+        char nb[40];
+        const char *p;
+        int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p), i = 0;
+        while (i < len) {
+            int64_t st = i;
+            while (i < len && (unsigned char)p[i] != 0xFE &&
+                   (unsigned char)p[i] != 0xFD) i++;
+            int64_t nl = i - st;
+            if (nl > 0 && nl < 256) {
+                char nm[256];
+                memcpy(nm, p + st, (size_t)nl);
+                nm[nl] = '\0';
+                ns_add(&g_bfiles, nm);
+            }
+            while (i < len && (unsigned char)p[i] != 0xFE) i++;
+            if (i < len) i++;
+        }
+        mv_clear(&fl);
+    }
+    for (size_t k = 0; k < g_bfiles.c; k++)
+        if (!strcmp(g_bfiles.n[k], name)) return 1;
+    return 0;
+#endif
+}
+
 static int is_mv_file(const char *name) {
     struct stat sb;
     if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
@@ -1302,6 +1386,9 @@ static int is_file_control(const char *path) {
 }
 
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
+/* Defined with the staging helpers below; status needs the same judgement. */
+static int path_storable(const char *path);
+
 void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
@@ -1340,16 +1427,39 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     for (size_t f = 0; f < files.c; f++) {
         const char *fn = files.n[f];
-        if (!is_mv_file(fn)) continue;    /* plain path — git diffs it, below */
+        if (!is_mv_file(fn) && !backend_has_file(ctx, fn))
+            continue;                     /* plain path — git diffs it, below */
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         if (open_named(ctx, fn, &fvar)) {
+            /* The same two exclusions `add` applies, because a record add
+               deliberately never stages must not then be reported as untracked —
+               it would be untracked forever, and no amount of committing would
+               clear it.  This is what made `status` dirty immediately after a
+               commit on UniVerse: a PICK-flavour VOC is full of type K and V
+               records (keywords and verbs the destination supplies its own copies
+               of), add dropped every one, and status listed every one. */
+            int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
+            int voc_open = is_voc && mv_openaccount();
             mv_select(ctx, &fvar);
             while (mv_readnext(ctx, &id)) {
                 if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
                 char idb[256], nb[40], path[600];
                 arg_str(&id, idb, sizeof idb);
+                if (is_voc) {
+                    const char *vp;
+                    char vnb[40];
+                    int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
+                    int64_t f1 = 0;
+                    while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
+                    int cls = mv_voc_class(vp, f1);
+                    if (cls == 1 || (cls == 2 && voc_open)) continue;
+                }
                 snprintf(path, sizeof path, "%s/%s", fn, idb);
+                /* An id that cannot be a git path was never staged either
+                   (mv_git#42) — reporting it as untracked would be reporting
+                   something no commit can ever fix. */
+                if (!path_storable(path)) continue;
                 const git_index_entry *entry =
                     git_index_get_bypath(index, path, 0);
                 const char *cp;
@@ -1473,7 +1583,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 sb_line(&s, " M .mv-account");
                 continue;
             }
-            if (is_mv_file(top)) continue;
+            if (is_mv_file(top) || backend_has_file(ctx, top)) continue;
             /* an open account's on-disk %FILE% is native (FILE<VM>type) while
                the committed blob is the open form (DIR/hash); compare in
                open-space and skip when they match. */
