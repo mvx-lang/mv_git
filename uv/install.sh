@@ -91,9 +91,19 @@ if [ ! -e D_BP ]; then
 fi
 mkfile BP.INC
 
-say "writing BP.INC/PLATFORM.H (UniVerse platform defines)"
+# PLATFORM.H comes from the BUILD, not from here — the package ships the exact
+# defines its sources were built against, and install puts them where the
+# compiler looks.  Generating them here instead would mean the tarball and the
+# installed account could disagree about what was compiled.
+say "installing BP.INC/PLATFORM.H (UniVerse platform defines)"
 mkdir -p BP.INC
-printf '* PLATFORM.H - UniVerse (UV) platform defines, written by install.sh.\n$DEFINE MV\n$DEFINE UV\n' > BP.INC/PLATFORM.H
+if [ -f PLATFORM.H ]; then
+    cp PLATFORM.H BP.INC/PLATFORM.H
+else
+    echo "install.sh: PLATFORM.H is missing from this package — it is produced" >&2
+    echo "            by build-uv.sh; this tarball was not built properly." >&2
+    exit 1
+fi
 
 # UniVerse's compiler rejects a source whose last line is unterminated.  The
 # staged items already carry a trailing newline, but a hand-edited one may not.

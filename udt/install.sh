@@ -132,13 +132,21 @@ sudo chown "$OWNER:$GROUP" "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null || true
 #      against.  BP/GIT begins with `$INCLUDE BP.INC PLATFORM.H`; UniData resolves
 #      that only when BP.INC is a VOC-registered directory-file, so CREATE.FILE DIR
 #      makes the directory + its VOC pointer (it errors harmlessly on a re-install),
-#      then we write the UDT defines.  Must precede the catalog below.
-say "registering BP.INC + writing PLATFORM.H (UDT platform defines)"
+#      then we copy in the defines.  Must precede the catalog below.
+#
+#      PLATFORM.H comes from the BUILD, not from here — the package ships the
+#      exact defines its sources were built against, and install puts them where
+#      the compiler looks.  Generating them here instead would let the tarball
+#      and the installed account disagree about what was compiled.
+say "registering BP.INC + installing PLATFORM.H (UDT platform defines)"
 ( cd "$HERE" && printf 'CREATE.FILE DIR BP.INC\n' | LANG="$LANG_OK" TERM=dumb "$UDT" ) >/dev/null 2>&1 || true
-printf '%s\n' \
-  '* PLATFORM.H - UniData (UDT) platform defines, written by install.sh.' \
-  '$DEFINE MV' \
-  '$DEFINE UDT' > "$HERE/BP.INC/PLATFORM.H"
+if [ -f "$HERE/PLATFORM.H" ]; then
+    cp "$HERE/PLATFORM.H" "$HERE/BP.INC/PLATFORM.H"
+else
+    echo "install.sh: PLATFORM.H is missing from this package — it is produced" >&2
+    echo "            by build-udt.sh; this tarball was not built properly." >&2
+    exit 1
+fi
 
 say "compiling + globally cataloging the GIT verb + its handler set"
 # The verb dispatches (via cmd) to GIT.* handlers, which delegate the heavy udt
