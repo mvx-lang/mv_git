@@ -48,11 +48,19 @@ else
     LG2LIBS="-L$LG2LIB -Wl,-rpath,$LG2LIB -lgit2"
 fi
 
-"$CC" -std=c11 -O2 -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
+# BOTH macros, and they mean different things.  MVXGIT_GITD selects the shared
+# value type and the session-backed record layer (agent_rt.c); MVXGIT_UDT keeps
+# UniData's DATA conventions — the dictionary D/I attribute remap.  mvxgit.h
+# prefers GITD when both are set, which is exactly what this build wants: records
+# through the agent, dictionaries in UniData's shape.
+#
+# No -luvic: InterCall is gone from this driver (mv_git#45).  It authenticated
+# with a stored password rather than as the person running the command, and the
+# session inherits the caller's own identity instead.
+"$CC" -std=c11 -O2 -DMVXGIT_GITD -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
-    "$SRC/mvxgit.c" "$SRC/udtgit_rt.c" "$SRC/udt-git.c" \
+    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/udt-git.c" \
     $LG2LIBS \
-    -L"$UDTHOME/bin/lib" -luvic \
     -o udt-git
 echo "built udt-git"
 

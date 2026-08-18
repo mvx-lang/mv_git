@@ -24,6 +24,7 @@
 #define _POSIX_C_SOURCE 200809L   /* setenv, chdir under -std=c11 */
 
 #include "mvxgit.h"
+#include "mvsession.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -606,6 +607,13 @@ static void deploy_git_verb(void) {
 }
 
 int main(int argc, char **argv) {
+    /* This driver's shell.  Records now come from a SESSION running
+       BP/GIT.AGENT (mv_git#45) rather than over InterCall, so there is no stored
+       password and history attributes to the person running the command.  The
+       session layer is shared with UniVerse and has no default shell, so naming
+       it here is what makes these UniData sessions. */
+    mvs_set_shell("udt");
+
     /* optional "-a <account>" before the subcommand */
     int i = 1;
     const char *account = ".";
