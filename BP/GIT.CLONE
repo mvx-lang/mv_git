@@ -24,9 +24,40 @@ $IFDEF MVX
 OUT = ""
 CALL GITCLONE(URL, DIR, REF, OUT)
 PRINT OUT
-$ELSE
+$ENDIF
+$IFDEF UDT
 CALL GIT.REPO(REPO)
 CALL GIT.OBJ("CLONE", 4, REPO, URL, DIR, REF, "", OBJOUT)
 CALL GIT.ECHO(OBJOUT)
+$ENDIF
+$IFDEF UV
+* CLONE IS THE ONE OPERATION A SESSION CANNOT DO FOR ITSELF.
+*
+* Every other verb works on the account it is running in.  Clone creates an
+* account that does NOT yet exist — a UniVerse account is born by running `uv`
+* in an empty directory and answering for a flavour — and this session is inside
+* a different account entirely.  So it cannot build the thing it is being asked
+* to build.
+*
+* The plain git clone the engine does instead is worse than useless here: a
+* native account's records live at VOC/<id>, so checking them out writes a
+* DIRECTORY called VOC, and UniVerse can then never create its own VOC hash file
+* because the name is taken.  The checkout blocks the account it was meant to
+* become (mv_git#52).
+*
+* uv-git already does this correctly — clone --no-checkout, create the account,
+* materialise from the git objects — so the verb hands it over rather than
+* keeping a second, broken implementation.  The developer still types
+* `GIT CLONE ...` at the TCL prompt and never sees a shell.
+CMD = "uv-git clone " : URL : " " : DIR
+IF REF # "" THEN CMD := " " : REF
+* 2>&1 because uv-git reports progress and failures on stderr and only the final
+* line on stdout — CAPTURING takes stdout alone, so without this a clone that
+* failed would come back as SILENCE, which is the least useful thing it could do.
+CMD := " 2>&1"
+EXECUTE "SH -c '" : CMD : "'" CAPTURING COUT
+FOR CI = 1 TO DCOUNT(COUT, @AM)
+   IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
+NEXT CI
 $ENDIF
 RETURN
