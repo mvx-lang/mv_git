@@ -61,12 +61,15 @@ echo "built udt-git"
 # (udtgit_rt.c).  Shipped in udt-callc/ so MVPKG's CALLC op aggregates them into
 # UniData's libu2callc.so on install (with udt-callc/funcs + libs).
 mkdir -p udt-callc
-for c in gitcallcb mvxgit udtgit_rt; do
+# agentcallc.c is the AGENT's transport (mv_git#45): UniData BASIC has no
+# READBLK and no TIMEOUT, so the pipe I/O the framed protocol needs goes
+# through CallC.  Registered in udt-callc/funcs alongside the GIT* entries.
+for c in gitcallcb agentcallc mvxgit udtgit_rt; do
     "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT \
         -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
         -c "$SRC/$c.c" -o "udt-callc/$c.o"
 done
-echo "built udt-callc/{gitcallcb,mvxgit,udtgit_rt}.o"
+echo "built udt-callc/{gitcallcb,agentcallc,mvxgit,udtgit_rt}.o"
 
 # ---- stage the release as a UniData account dir named 'git' -----------------
 # The tar wraps this one dir, so the tarball unpacks to ./git/ — a self-sufficient

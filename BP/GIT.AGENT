@@ -58,12 +58,14 @@
 * that wants to hold a session it is not using yet: it resets the timer and does
 * nothing else.  If a session does time out there is nothing to recover — the
 * caller simply starts another one.
-*     NO $INCLUDE, DELIBERATELY.  This program has no platform conditionals —
-*     it is ordinary MV BASIC throughout — so it needs no PLATFORM.H, and not
-*     needing one is a property worth keeping: it means the agent compiles in a
-*     BARE account, one with nothing installed but a BP file.  That is exactly
-*     what learning a stock account's VOC requires (mv_git#46), and an include
-*     of a file a stock account does not have was what stopped it.
+      $INCLUDE BP.INC PLATFORM.H
+*     The include is back, and it costs something worth stating: the agent no
+*     longer compiles in a BARE account, which is how uv-git seeds a throwaway
+*     account to learn a stock VOC (mv_git#46) and how it seeds a freshly cloned
+*     one (#52).  Those paths must now write a PLATFORM.H beside the agent
+*     before compiling it.  The alternative — keeping the transport
+*     platform-neutral — is not available: the two platforms genuinely have no
+*     statement in common for an exact-count timed read.
       AM = CHAR(254) ; VM = CHAR(253)
       MAGIC = "MVG1"
 *     Header widths, mirroring gitproto.h.  Fixed-width ASCII so both ends build
@@ -86,15 +88,34 @@
          STOP
       END
       CRT "AGENT-START req=":REQP:" rsp=":RSPP:" idle=":IDLE
+*     THE TRANSPORT IS THE ONLY PLATFORM-SPECIFIC PART OF THIS PROGRAM.
+*     Everything above and below is ordinary MV BASIC; these four operations —
+*     open, exact-count read, write, close — are not available in the same form
+*     on both platforms, so they are the seam.  See GIT.OSFILE for the same
+*     shape applied to OS files.
+$IFDEF UV
       OPENSEQ REQP TO RQ ELSE
          CRT "GIT.AGENT: cannot open ":REQP
          STOP
       END
-      CRT "AGENT-REQ-OPEN"
       OPENSEQ RSPP TO RS ELSE
          CRT "GIT.AGENT: cannot open ":RSPP
          STOP
       END
+$ENDIF
+$IFDEF UDT
+*     UniData BASIC has neither READBLK nor TIMEOUT — verified on 8.3, in every
+*     compile mode — and the protocol needs both: exact-count reads because a
+*     FIFO never reports EOF, and a deadline so an idle agent can release its
+*     licence.  So the transport goes through CallC (src/agentcallc.c), which is
+*     possible only because everything on this wire is hex and fixed-width
+*     ASCII: CallC marshals with strlen and could not carry a byte of binary.
+      AGERR = CALLC AGOPEN(REQP, RSPP)
+      IF AGERR # "" THEN
+         CRT "GIT.AGENT: ":AGERR
+         STOP
+      END
+$ENDIF
       CRT "AGENT-READY"
 *
 *     Open file variables live in a fixed pool; the caller refers to one by its
@@ -120,8 +141,13 @@
          STATUS = 6 ; RESULT = "idle timeout"
          GOSUB SENDRSP
       END
+$IFDEF UV
       CLOSESEQ RQ
       CLOSESEQ RS
+$ENDIF
+$IFDEF UDT
+      AGERR = CALLC AGCLOSE("")
+$ENDIF
       STOP
 *
 * ---- read one request ------------------------------------------------------
@@ -130,13 +156,18 @@ READREQ:
 *     Bound the wait for the NEXT request — this is the idle timer.  An unbounded
 *     read here is what would hold a licence forever behind a caller that died or
 *     simply lost interest.
+$IFDEF UV
       TIMEOUT RQ, IDLE
       READBLK HDR FROM RQ, REQ.HDR THEN
          NULL
       END ELSE
-         CRT "AGENT-READ-FAILED status=":STATUS()
          IDLED = 1 ; DONE = 1 ; RETURN
       END
+$ENDIF
+$IFDEF UDT
+      HDR = CALLC AGREAD(REQ.HDR, IDLE)
+      IF HDR = "" THEN IDLED = 1 ; DONE = 1 ; RETURN
+$ENDIF
       IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN
       IF HDR[1, W.MAGIC] # MAGIC THEN DONE = 1 ; RETURN
       P = W.MAGIC + 1
@@ -149,12 +180,18 @@ READREQ:
 *        The body follows its header immediately, so a wait HERE is a stalled
 *        transfer, not an idle session.  Armed generously and separately, so a
 *        short idle limit can never truncate a large record in flight.
+$IFDEF UV
          TIMEOUT RQ, 300
          READBLK BODY FROM RQ, BLEN THEN
             NULL
          END ELSE
             DONE = 1 ; RETURN
          END
+$ENDIF
+$IFDEF UDT
+         BODY = CALLC AGREAD(BLEN, 300)
+         IF BODY = "" THEN DONE = 1 ; RETURN
+$ENDIF
       END
 *     The token is checked on EVERY request, not just at connect.  It tells
 *     apart sessions sharing one OS uid, and — the reason it is here rather than
@@ -171,11 +208,13 @@ READREQ:
 *     Split the body into arguments: each is [len(10)][len hex chars].
       DIM ARGV(8)
       FOR K = 1 TO 8 ; ARGV(K) = "" ; NEXT K
-      OFF = 1
+*     BOFF, not OFF: OFF is a UniData keyword (its logout command) and using it
+*     as a variable is a syntax error there, while UniVerse accepts it happily.
+      BOFF = 1
       FOR K = 1 TO NARGS
          IF K > 8 THEN EXIT
-         AL = BODY[OFF, W.LEN] + 0 ; OFF += W.LEN
-         ENC = BODY[OFF, AL] ; OFF += AL
+         AL = BODY[BOFF, W.LEN] + 0 ; BOFF += W.LEN
+         ENC = BODY[BOFF, AL] ; BOFF += AL
          IF AL > 0 THEN ARGV(K) = ICONV(ENC, "MX") ELSE ARGV(K) = ""
       NEXT K
       RETURN
@@ -286,9 +325,9 @@ DO.WRITE:
          STATUS = 5 ; RESULT = "bad file handle"
          RETURN
       END
-      WRITE REC ON FV(H), ID ELSE
-         STATUS = 5 ; RESULT = "cannot write " : ID
-      END
+*     A bare WRITE, deliberately: UniVerse accepts `WRITE … ELSE` and UniData
+*     does not, and the ELSE bought little — a write that fails raises anyway.
+      WRITE REC ON FV(H), ID
       RETURN
 *
 DO.DELETE:
@@ -475,9 +514,19 @@ SENDRSP:
       IF RESULT # "" THEN ENC = OCONV(RESULT, "MX")
       EL = LEN(ENC)
       SH = MAGIC : FMT(STATUS, "R%":W.STATUS) : FMT(EL, "R%":W.LEN)
+$IFDEF UV
       WRITEBLK SH TO RS ELSE DONE = 1 ; RETURN
       IF EL > 0 THEN
          WRITEBLK ENC TO RS ELSE DONE = 1 ; RETURN
       END
+$ENDIF
+$IFDEF UDT
+      AGERR = CALLC AGWRITE(SH)
+      IF AGERR # "" THEN DONE = 1 ; RETURN
+      IF EL > 0 THEN
+         AGERR = CALLC AGWRITE(ENC)
+         IF AGERR # "" THEN DONE = 1 ; RETURN
+      END
+$ENDIF
       RETURN
 

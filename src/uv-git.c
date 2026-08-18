@@ -914,6 +914,30 @@ static int seed_agent(void) {
              "printf 'CREATE.FILE BP\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
              ">/dev/null 2>&1", mvs_shell());
     if (system(cmd) != 0) { /* prompts are noisy; the check below is the test */ }
+    /* The agent $INCLUDEs PLATFORM.H now that its transport differs per platform
+       (mv_git#45), so a bare account needs one before it will compile.  Written
+       here rather than assumed present: the whole point of seeding is that this
+       account has NOTHING installed in it. */
+    snprintf(cmd, sizeof cmd,
+             "printf 'CREATE.FILE BP.INC\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
+             ">/dev/null 2>&1", mvs_shell());
+    if (system(cmd) != 0) { /* ditto */ }
+    {
+        mkdir("BP.INC", 0755);
+        FILE *ph = fopen("BP.INC/PLATFORM.H", "wb");
+        if (!ph) return -1;
+        /* Named from the shell this driver runs, so uv-git seeds UV and udt-git
+           seeds UDT without either knowing about the other. */
+        char up[16];
+        const char *sh = mvs_shell();
+        size_t k = 0;
+        for (; sh[k] && k < sizeof up - 1; k++)
+            up[k] = (char)toupper((unsigned char)sh[k]);
+        up[k] = '\0';
+        fprintf(ph, "* PLATFORM.H - written by seed_agent for a bare account.\n"
+                    "$DEFINE MV\n$DEFINE %s\n", up);
+        fclose(ph);
+    }
     /* From the copy compiled into this binary, not from disk: the account we are
        seeding may be anywhere, and the package may be nowhere near it. */
     FILE *o = fopen("BP/GIT.AGENT", "wb");
