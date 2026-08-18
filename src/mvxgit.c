@@ -2221,9 +2221,47 @@ static int tree_is_mv_file(git_tree *head, const char *name) {
    git.  Without it (a branch switch on an existing account) every top-level tree
    is materialised, as before — a file added without its dictionary still
    round-trips. */
+/* HEAD's tree AS THIS ACCOUNT SEES IT.
+ *
+ * A commit's top level is the repository's, not the account's: with several
+ * accounts it holds `acctA`, `acctB` and whatever ordinary files sit beside
+ * them.  The walk below treats every subtree as an MV FILE, so run against the
+ * repository root it would take `acctA` for a file and `acctA/CUST` for one of
+ * its record ids — restoring nonsense, or more likely nothing.
+ *
+ * Descending to the account's own subtree first puts us back in the world the
+ * rest of this code assumes, where a subtree IS a file and its entries ARE
+ * records.  It is the exact mirror of the prefix that staging applies, and it
+ * is what makes a multi-account repository restorable rather than merely
+ * committable (mv_git#44).
+ *
+ * Returns NULL when the account has nothing committed yet, which is not an
+ * error — a new account in an existing repository is exactly that. */
+static git_tree *account_subtree(git_repository *repo, git_tree *root) {
+    if (!g_prefix[0]) return NULL;              /* the root IS the account */
+    char p[256];
+    size_t n = strlen(g_prefix);
+    snprintf(p, sizeof p, "%.*s", (int)(n - 1), g_prefix);   /* drop the '/' */
+    git_tree_entry *te = NULL;
+    git_tree *sub = NULL;
+    if (git_tree_entry_bypath(&te, root, p) == 0) {
+        if (git_tree_entry_type(te) == GIT_OBJECT_TREE)
+            git_tree_lookup(&sub, repo, git_tree_entry_id(te));
+        git_tree_entry_free(te);
+    }
+    return sub;
+}
+
 static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
                                git_tree *tree, int strict,
                                int64_t *nw, int64_t *nd) {
+    /* Below a repository root, this account's files live in its own subtree. */
+    git_tree *owned = NULL;
+    if (g_prefix[0]) {
+        owned = account_subtree(repo, tree);
+        if (!owned) return;                 /* nothing committed for us yet */
+        tree = owned;
+    }
     size_t n = git_tree_entrycount(tree);
     for (size_t i = 0; i < n; i++) {
         const git_tree_entry *te = git_tree_entry_byindex(tree, i);
@@ -2238,6 +2276,7 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
         materialize_file(ctx, repo, tree, sub, name, strict, nw, nd);
         git_tree_free(sub);
     }
+    if (owned) git_tree_free(owned);
 }
 
 static void materialize_tree(mv_ctx *ctx, git_repository *repo,
@@ -3011,7 +3050,11 @@ void mvx_sub_GITRESTORE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_tree *t = head_tree(repo);
     git_tree_entry *sub = NULL;
     git_tree *subtree = NULL;
-    if (!t || git_tree_entry_bypath(&sub, t, fn) != 0 ||
+    /* The file is named account-relative but lives in the commit under this
+       account's prefix, so look it up there (mv_git#44). */
+    char tpath[512];
+    snprintf(tpath, sizeof tpath, "%s%s", g_prefix, fn);
+    if (!t || git_tree_entry_bypath(&sub, t, tpath) != 0 ||
         git_tree_lookup(&subtree, repo, git_tree_entry_id(sub)) != 0) {
         if (sub) git_tree_entry_free(sub);
         if (t) git_tree_free(t);
