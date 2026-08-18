@@ -85,14 +85,17 @@
          CRT "GIT.AGENT: usage: GIT.AGENT <reqpipe> <rsppipe> <token>"
          STOP
       END
+      CRT "AGENT-START req=":REQP:" rsp=":RSPP:" idle=":IDLE
       OPENSEQ REQP TO RQ ELSE
          CRT "GIT.AGENT: cannot open ":REQP
          STOP
       END
+      CRT "AGENT-REQ-OPEN"
       OPENSEQ RSPP TO RS ELSE
          CRT "GIT.AGENT: cannot open ":RSPP
          STOP
       END
+      CRT "AGENT-READY"
 *
 *     Open file variables live in a fixed pool; the caller refers to one by its
 *     slot number.  A pool rather than a name lookup because the caller may hold
@@ -131,6 +134,7 @@ READREQ:
       READBLK HDR FROM RQ, REQ.HDR THEN
          NULL
       END ELSE
+         CRT "AGENT-READ-FAILED status=":STATUS()
          IDLED = 1 ; DONE = 1 ; RETURN
       END
       IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN

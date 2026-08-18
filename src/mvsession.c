@@ -61,6 +61,7 @@ struct mv_session {
     mvs_open_rec *opens;            /* replayed after a reconnect  */
     int   nopens, capopens;
     int   in_replay;                /* guard: no reconnect while reconnecting */
+    int   reconnects;               /* consecutive rebuilds; a runaway guard   */
     struct mv_session *next;
 };
 
@@ -144,12 +145,34 @@ static int write_all(int fd, const char *p, long n) {
    will never deliver and never close — a plain blocking read there waits
    forever.  poll() gives that a deadline; the caller then decides whether the
    session is gone. */
-static int read_all(int fd, char *p, long n, int timeout_ms) {
+/* Is the session still there?  A pid check, not a question asked over the wire.
+ *
+ * Asking the agent whether it is alive cannot work: a busy agent and a dead one
+ * look identical from out here — neither answers.  The process table is not
+ * ambiguous, and we own the child, so this is the one check that distinguishes
+ * "working on it" from "gone".  Without it a died agent left us polling a pipe
+ * that would never deliver, for as long as the deadline allowed, over and over. */
+static int session_alive(pid_t pid) {
+    if (pid <= 0) return 0;
+    int st;
+    return waitpid(pid, &st, WNOHANG) == 0;
+}
+
+static int read_all(int fd, char *p, long n, int timeout_ms, pid_t pid) {
+    int waited = 0;
     while (n > 0) {
         struct pollfd pfd = { fd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, timeout_ms);
+        /* Wake often enough to notice a dead agent quickly, rather than only
+           when the whole deadline expires. */
+        int slice = timeout_ms > 1000 ? 1000 : timeout_ms;
+        int pr = poll(&pfd, 1, slice);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
-        if (pr == 0) return -1;                    /* deadline */
+        if (pr == 0) {
+            if (!session_alive(pid)) return -1;    /* it will never answer */
+            waited += slice;
+            if (waited >= timeout_ms) return -1;   /* deadline */
+            continue;
+        }
         ssize_t r = read(fd, p, (size_t)n);
         if (r < 0) { if (errno == EINTR) continue; return -1; }
         if (r == 0) return -1;
@@ -310,12 +333,18 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
         if (in != STDIN_FILENO) close(in);
         /* The session's own chatter (banner, prompts, whatever LOGIN prints) is
            not our protocol and must not be mistaken for it — the protocol has its
-           own pipes.  Discard it. */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) close(devnull);
+           own pipes.  Discard it.
+           $MVGIT_AGENT_LOG keeps it instead, which is the only way to see a BASIC
+           error that killed the agent: from out here that looks like a session
+           which stopped answering, and the reason is in the output we throw away. */
+        const char *logf = getenv("MVGIT_AGENT_LOG");
+        int sink = (logf && logf[0])
+                 ? open(logf, O_WRONLY | O_CREAT | O_APPEND, 0600)
+                 : open("/dev/null", O_WRONLY);
+        if (sink >= 0) {
+            dup2(sink, STDOUT_FILENO);
+            dup2(sink, STDERR_FILENO);
+            if (sink > STDERR_FILENO) close(sink);
         }
         execlp(g_shell, g_shell, (char *)NULL);
         _exit(127);
@@ -476,7 +505,7 @@ static int call_raw(mv_session *s, const char *op, int nargs,
        that is genuinely gone rather than merely slow. */
     int deadline = (g_idle + 15) * 1000;
     char rh[MVG_RSP_HDR + 1];
-    if (read_all(s->rsp, rh, MVG_RSP_HDR, deadline) != 0) return MVG_ECLOSED;
+    if (read_all(s->rsp, rh, MVG_RSP_HDR, deadline, s->pid) != 0) return MVG_ECLOSED;
     rh[MVG_RSP_HDR] = '\0';
     if (memcmp(rh, MVG_MAGIC, MVG_MAGIC_LEN) != 0) return MVG_EPROTO;
 
@@ -492,7 +521,7 @@ static int call_raw(mv_session *s, const char *op, int nargs,
     if (rlen > 0) {
         char *enc = malloc((size_t)rlen + 1);
         if (!enc) return MVG_EPROTO;
-        if (read_all(s->rsp, enc, rlen, deadline) != 0) { free(enc); return MVG_ECLOSED; }
+        if (read_all(s->rsp, enc, rlen, deadline, s->pid) != 0) { free(enc); return MVG_ECLOSED; }
         long dlen = 0;
         char *dec = hex_dec(enc, rlen, &dlen);
         free(enc);
@@ -531,9 +560,22 @@ int mvs_call(mv_session *s, const char *op, int nargs,
         strcmp(op, "QUIT") != 0) {
         if (out) { free(*out); *out = NULL; }
         if (outlen) *outlen = 0;
+        /* Replacing a session that timed out is routine.  Replacing one that
+           dies again immediately is not, and retrying per call turns a session
+           that cannot survive into an endless cycle of rebuilding it — which is
+           what an operation making hundreds of calls looked like from outside: a
+           hang.  Give up after a few consecutive failures and say so. */
+        if (s->reconnects >= 3) {
+            fprintf(stderr, "mv-git: the account session keeps dying — giving up "
+                            "after %d attempts.  Set MVGIT_AGENT_LOG=<file> to "
+                            "capture what the session says.\n", s->reconnects);
+            return st;
+        }
+        s->reconnects++;
         if (reconnect(s) == 0)
             st = call_raw(s, op, nargs, args, lens, out, outlen);
     }
+    if (st == MVG_OK) s->reconnects = 0;   /* it works again; forget the run */
     if (st == MVG_OK && strcmp(op, "OPEN") == 0)
         remember_open(s, nargs, args);
     return st;

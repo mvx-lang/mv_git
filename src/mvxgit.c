@@ -455,6 +455,18 @@ static void stock_load(void) {
     fclose(f);
 }
 
+/* True when an id belongs to the stock account, whatever its content.
+   Used where the question is "may this be deleted", not "should it be staged":
+   a stock record the user has EDITED differs in content, so it IS committed and
+   the caller finds it there — meaning an id-only test never protects anything
+   that should have been removed, and it costs no extra record read. */
+static int is_stock_id(const char *id) {
+    stock_load();
+    for (int i = 0; i < g_stock_n; i++)
+        if (strcmp(g_stock[i].id, id) == 0) return 1;
+    return 0;
+}
+
 /* True when this record is exactly what a fresh account of the same flavour
    would hold — same id, same content — and so is not the account's own. */
 static int is_stock_record(const char *id, const char *content, int64_t len) {
@@ -2342,7 +2354,14 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
        switch.  On a fresh clone (keep_extra) the destination is a just-created
        account whose files carry system records the open-account commit
        deliberately omits (VOC verbs/keywords, catalog pointers such as CTLGTB);
-       deleting those would break the account.  Clone only adds. */
+       deleting those would break the account.  Clone only adds.
+
+       THE SAME REASONING NOW APPLIES TO A BRANCH SWITCH.  Since mv_git#46 a
+       native commit deliberately omits the flavour's stock VOC — 847 records for
+       PICK — so "absent from the commit" stopped meaning "deleted by the user".
+       Reconciling without that knowledge gutted the account: a pull reported
+       "847 removed" and left a VOC with no verbs in it.  A record the baseline
+       calls stock is not the commit's to remove. */
     if (!keep_extra) {
         mv_select(ctx, &fvar);
         mv_value dl;
@@ -2353,7 +2372,10 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             int found = 0;
             for (size_t i = 0; i < ns; i++)
                 if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-            if (!found) { mv_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+            if (!found && !is_stock_id(idb)) {
+                mv_delete_rec(ctx, &fvar, &dl);
+                (*nd)++;
+            }
         }
         mv_clear(&dl);
     }
