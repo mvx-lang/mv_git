@@ -63,6 +63,17 @@ static uv_session *session(void) {
 
 mv_ctx *mv_ctx_create(void) { return &g_ctx; }
 
+/* Finish with the account we are in: close its session and forget it, so the
+   next account opens its own.  This is what keeps a multi-account walk to ONE
+   licence — and it must clear the cached pointer, since uvs_close frees the
+   session it is pointing at. */
+void mv_uv_release(void) {
+    if (g_ctx.s) {
+        uvs_close(g_ctx.s);
+        g_ctx.s = NULL;
+    }
+}
+
 void mv_ctx_destroy(mv_ctx *ctx) {
     /* Deliberately does NOT close the session: the engine creates and destroys
        contexts freely around individual operations, and tearing the session down

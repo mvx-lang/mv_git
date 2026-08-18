@@ -172,6 +172,50 @@ static void load_ignores(void) {
     fclose(fp);
 }
 
+/* --- the account's place in its repository (mv_git#44) --------------------
+ *
+ * A repository may hold several accounts, and then a record cannot be committed
+ * at `<file>/<id>`: two accounts would both claim `CUST/C1` and silently
+ * overwrite each other.  Each account's records therefore live under its own
+ * directory, `<account>/<file>/<id>`, which is the layout the mvx repository
+ * already uses.
+ *
+ * The engine works INSIDE one account at a time — it chdir's there and every
+ * record primitive is account-relative — so the prefix is applied at exactly one
+ * boundary: where a record's git path is built.  The caller sets it once per
+ * account; empty (the default) means the account IS the repository root, which
+ * is every single-account package and therefore unchanged. */
+static char g_prefix[256];
+void mv_git_forget_account(void);
+
+void mv_git_set_prefix(const char *p) {
+    /* The prefix changes exactly when the ACCOUNT changes, so this is also the
+       point at which anything cached about the account stops being true.  The
+       backend's file list is the one that matters: reused across a multi-account
+       walk it would answer account B with account A's files. */
+    mv_git_forget_account();
+    if (!p || !*p) { g_prefix[0] = '\0'; return; }
+    size_t n = strlen(p);
+    if (n && p[n - 1] == '/')
+        snprintf(g_prefix, sizeof g_prefix, "%s", p);
+    else
+        snprintf(g_prefix, sizeof g_prefix, "%s/", p);
+}
+
+/* The git path of a record: `<prefix><file>/<id>`. */
+static void record_path(char *out, size_t cap, const char *fn, const char *id) {
+    snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
+}
+
+/* The account-relative part of a repo path, or NULL when the path belongs to a
+   different account.  Used where a name has to travel back the other way —
+   status derives which FILES to scan from the paths already in the index. */
+static const char *unprefix(const char *path) {
+    if (!g_prefix[0]) return path;
+    size_t n = strlen(g_prefix);
+    return strncmp(path, g_prefix, n) == 0 ? path + n : NULL;
+}
+
 static int ignored(const char *file, const char *path) {
     load_ignores();
     for (int i = 0; i < g_nign; i++) {
@@ -450,9 +494,14 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
             {
-                char pcheck[600];
-                snprintf(pcheck, sizeof pcheck, "%s/%s", fn, idb);
-                if (ignored(fn, pcheck) || git_path_ignored(repo, pcheck)) {
+                /* Two ignore namespaces, and they are not the same path.  The
+                   account's own GIT IGNORE list is account-relative, so it sees
+                   `<file>/<id>`; .gitignore is repository-relative, so it sees
+                   the prefixed form. */
+                char acctp[600], repop[600];
+                snprintf(acctp, sizeof acctp, "%s/%s", fn, idb);
+                record_path(repop, sizeof repop, fn, idb);
+                if (ignored(fn, acctp) || git_path_ignored(repo, repop)) {
                     skipped++; if (one) break; else continue; }
             }
             if (!one && is_provision_pointer(fn, idb)) {
@@ -487,7 +536,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 git_index_entry e;
                 memset(&e, 0, sizeof e);
                 char path[600];
-                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                record_path(path, sizeof path, fn, idb);
                 e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
                 e.id = boid;
@@ -541,8 +590,27 @@ static void split_top(const char *path, char *out, size_t cap);
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
     if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
+    /* git hands us a REPOSITORY-relative path; file names are account-relative.
+       Below a repository root those differ by the account's prefix, and comparing
+       the wrong one means every test here silently fails to match — which is how
+       a second account's records got staged twice, once as records and once as
+       plain files. */
+    const char *rel = unprefix(path);
+    if (!rel) return 1;                     /* another account's territory */
     char top[256];
-    split_top(path, top, sizeof top);
+    split_top(rel, top, sizeof top);
+    /* At the repository root — no prefix — a top-level directory that is itself
+       an account belongs to that account's own pass.  Without this the root pass
+       would sweep every account's records up as ordinary blobs, which is exactly
+       what the per-account passes are for. */
+    if (!g_prefix[0] && strcmp(top, rel) != 0) {
+        char probe[600];
+        struct stat psb;
+        snprintf(probe, sizeof probe, "%s/VOC", top);
+        if (stat(probe, &psb) == 0) return 1;
+        snprintf(probe, sizeof probe, "%s/.mvx", top);
+        if (stat(probe, &psb) == 0) return 1;
+    }
     /* A platform WORK file is never content.  &SAVEDLISTS&, &PH&, _HOLD_ … are
        scratch areas the system writes to as a side effect of ordinary use — and
        in our case as a side effect of US: every SELECT this tool issues rewrites
@@ -558,7 +626,7 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
             return 1;
     }
     /* only a path INSIDE a file is a record; the file's own entry is not */
-    if (strcmp(top, path) != 0 && backend_has_file((mv_ctx *)payload, top))
+    if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
         return 1;
     return 0;
 }
@@ -580,7 +648,13 @@ void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_strarray all = {NULL, 0};              /* empty pathspec ⇒ everything */
     int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT,
                                addall_skip, ctx);
-    if (rc == 0) rc = git_index_update_all(index, &all, NULL, NULL);
+    /* update_all needs the SAME filter.  It refreshes every already-tracked path
+       from the working tree, so without the callback it re-stages record paths
+       as plain blobs — quietly undoing the record staging that put them there.
+       In a multi-account repository that made each account's pass overwrite the
+       previous account's records, and the loser showed up as permanently
+       modified. */
+    if (rc == 0) rc = git_index_update_all(index, &all, addall_skip, ctx);
     if (rc == 0) rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
@@ -1045,7 +1119,12 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     int64_t nfiles = 0;
     addall_set seen = {0};
 
-    /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules */
+    /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules.
+          Restricted to this account: a prefixed run stages only what is under its
+          own directory, and the repository's own top-level files are staged once,
+          by the caller, at the root.  Otherwise each account in a multi-account
+          repository would re-stage every other account's records as plain
+          blobs — silently undoing their record staging. */
     { const char *a[] = {rp}; addall_call(mvx_sub_GITADDDISK, ctx, a, 1); }
 
     git_repository *repo = NULL;
@@ -1178,7 +1257,7 @@ void mvx_sub_GITRM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
     char path[600];
-    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    record_path(path, sizeof path, fn, recid);
     int rc;
     if (recid[0]) rc = git_index_remove_bypath(index, path);
     else rc = git_index_remove_directory(index, fn, 0);
@@ -1342,6 +1421,15 @@ static int backend_has_file(mv_ctx *ctx, const char *name) {
 #endif
 }
 
+/* Drop what was cached about the account we were in.  Called when the prefix
+   changes (a different account) and by the CLI between accounts. */
+void mv_git_forget_account(void) {
+    free(g_bfiles.n);
+    g_bfiles.n = NULL;
+    g_bfiles.c = g_bfiles.cap = 0;
+    g_bfiles_done = 0;
+}
+
 static int is_mv_file(const char *name) {
     struct stat sb;
     if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
@@ -1421,8 +1509,13 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
+        /* Index paths are repository-relative and this account is only part of
+           the repository: strip our prefix, and ignore what belongs to another
+           account — its records are not ours to compare. */
+        const char *rel = unprefix(e->path);
+        if (!rel) continue;
         char top[256];
-        split_top(e->path, top, sizeof top);
+        split_top(rel, top, sizeof top);
         ns_add(&files, top);
     }
     for (size_t f = 0; f < files.c; f++) {
@@ -1455,7 +1548,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     int cls = mv_voc_class(vp, f1);
                     if (cls == 1 || (cls == 2 && voc_open)) continue;
                 }
-                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                record_path(path, sizeof path, fn, idb);
                 /* An id that cannot be a git path was never staged either
                    (mv_git#42) — reporting it as untracked would be reporting
                    something no commit can ever fix. */
@@ -1509,11 +1602,14 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
+        const char *rel = unprefix(e->path);
+        if (!rel) continue;               /* another account's record */
         char top[256];
-        split_top(e->path, top, sizeof top);
-        if (!is_mv_file(top)) continue;   /* plain path — git tracks deletions */
-        const char *recid = strchr(e->path, '/');
-        recid = recid ? recid + 1 : e->path;
+        split_top(rel, top, sizeof top);
+        if (!is_mv_file(top) && !backend_has_file(ctx, top))
+            continue;                     /* plain path — git tracks deletions */
+        const char *recid = strchr(rel, '/');
+        recid = recid ? recid + 1 : rel;
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int isrec = 0, gone = 0;
@@ -1556,7 +1652,10 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 d->new_file.mode == GIT_FILEMODE_COMMIT)
                 continue;
             char top[256];
-            split_top(d->new_file.path, top, sizeof top);
+            {
+                const char *rel = unprefix(d->new_file.path);
+                split_top(rel ? rel : d->new_file.path, top, sizeof top);
+            }
             /* the descriptor is committed at `.mv-account` (portable form) but on
                disk is native `.mvx` — project the on-disk `.mvx` down to the open
                form and compare that against the committed blob, so a local
@@ -1849,7 +1948,7 @@ void mvx_sub_GITSHOW(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
     git_tree *t = head_tree(repo);
     char path[600];
-    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    record_path(path, sizeof path, fn, recid);
     git_tree_entry *te = NULL;
     git_blob *blob = NULL;
     if (t && git_tree_entry_bypath(&te, t, path) == 0 &&

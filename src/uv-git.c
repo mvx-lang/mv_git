@@ -48,6 +48,9 @@
 
 #include "mvxgit.h"
 #include "uvsession.h"
+
+/* uvgit_rt.c: finish with the current account and give its licence back. */
+void mv_uv_release(void);
 #include <git2.h>
 
 #include <ctype.h>
@@ -823,10 +826,121 @@ static int run_account(int argc, char **argv, int i) {
         free(out);
     }
     mv_ctx_destroy(ctx);
-    /* Hand the licence back now rather than at exit, so a long-running caller
-       does not keep one for work it has finished. */
-    uvs_close_all();
+    /* Hand the licence back now rather than at exit, so a caller does not keep
+       one for work it has finished.  Goes through the backend so its cached
+       session pointer is cleared with it — uvs_close_all() alone would free the
+       session and leave the backend holding a dangling pointer. */
+    mv_uv_release();
     return 0;
+}
+
+/* --- several accounts in one repository (mv_git#44, #47) -------------------
+ *
+ * A repository may hold more than one account — the mvx repository already does
+ * — and then a record cannot commit at `<file>/<id>`, because two accounts would
+ * both claim `CUST/C1`.  Each account's records live under its own directory,
+ * and uv-git visits the accounts in turn.
+ *
+ * ONE AT A TIME IS THE DEFAULT, and that is about licences rather than tidiness.
+ * A session is a licence; visiting four accounts must not mean holding four.  So
+ * each account is entered, worked, and its session released before the next is
+ * opened — log in, do the work, log out.  -j raises the cap for someone who has
+ * the licences and wants the wall clock; the cap is enforced in uvsession.c by
+ * retiring the oldest session rather than exceeding it.
+ */
+
+/* Is this directory a UniVerse account?  Its VOC is what makes it one. */
+static int dir_is_account(const char *dir) {
+    char p[4096];
+    snprintf(p, sizeof p, "%s/VOC", dir);
+    return access(p, F_OK) == 0;
+}
+
+/* The accounts directly beneath `root`, sorted so a run is reproducible.
+   Returns the count; names are malloc'd into `out` (caller frees). */
+static int find_accounts(const char *root, char ***out) {
+    char **v = NULL;
+    int n = 0, cap = 0;
+    DIR *d = opendir(root);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[4096];
+        snprintf(p, sizeof p, "%s/%s", root, e->d_name);
+        struct stat sb;
+        if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
+        if (!dir_is_account(p)) continue;
+        if (n >= cap) {
+            cap = cap ? cap * 2 : 8;
+            v = realloc(v, (size_t)cap * sizeof *v);
+            if (!v) { perror("uv-git"); exit(1); }
+        }
+        v[n++] = strdup(e->d_name);
+    }
+    if (d) closedir(d);
+    for (int i = 1; i < n; i++)            /* insertion sort: a handful of names */
+        for (int k = i; k > 0 && strcmp(v[k - 1], v[k]) > 0; k--) {
+            char *t = v[k - 1]; v[k - 1] = v[k]; v[k] = t;
+        }
+    *out = v;
+    return n;
+}
+
+/* Does this operation need to look at records?  Only those have to visit the
+   accounts; the rest are repository-level and run once, where they are. */
+static int needs_records(const char *sub) {
+    static const char *rec[] = { "add", "status", "checkout", "switch",
+                                 "restore", "merge", "cherry-pick", "rm",
+                                 "diff", NULL };
+    for (int i = 0; rec[i]; i++) if (!strcmp(sub, rec[i])) return 1;
+    return 0;
+}
+
+/* Run a record operation across every account in the repository, one session at
+   a time.  `root` is the repository working tree; we are standing in it. */
+static int run_accounts(const char *root, int argc, char **argv, int i) {
+    char **acct = NULL;
+    int n = find_accounts(root, &acct);
+    if (n == 0) {
+        free(acct);
+        return -1;                          /* nothing to walk; caller decides */
+    }
+    char here[4096];
+    if (!getcwd(here, sizeof here)) { perror("uv-git"); return 1; }
+    int rc = 0;
+
+    /* The repository's own top-level files — README, docs, whatever sits beside
+       the accounts — belong to the repository, not to any account, so they are
+       staged once from here.  Each account then stages only what is under its
+       own directory. */
+    if (!strcmp(argv[i], "add")) {
+        mv_git_set_prefix("");
+        mv_ctx *rctx = mv_ctx_create();
+        char *o = mv_git_adddisk(rctx, ".git");
+        free(o);
+        mv_ctx_destroy(rctx);
+    }
+    for (int k = 0; k < n; k++) {
+        if (n > 1) printf("== %s\n", acct[k]);
+        if (chdir(acct[k]) != 0) {
+            fprintf(stderr, "uv-git: cannot enter %s: %s\n",
+                    acct[k], strerror(errno));
+            rc = 1;
+            continue;
+        }
+        /* The prefix is what keeps two accounts' records apart in one
+           repository; setting it also forgets what was cached about the last
+           account. */
+        mv_git_set_prefix(acct[k]);
+        if (run_account(argc, argv, i) != 0) rc = 1;
+        /* Hand the licence back before entering the next account. */
+        mv_uv_release();
+        if (chdir(here) != 0) { perror("uv-git"); return 1; }
+    }
+    mv_git_set_prefix("");
+    for (int k = 0; k < n; k++) free(acct[k]);
+    free(acct);
+    return rc;
 }
 
 int main(int argc, char **argv) {
@@ -932,8 +1046,29 @@ int main(int argc, char **argv) {
        Ops that would need records are simply not offered here; the recordless
        backend aborts loudly if one is ever reached, so a wrong assumption
        announces itself instead of quietly doing the wrong thing. */
-    if (access("VOC", F_OK) != 0)
+    if (access("VOC", F_OK) != 0) {
+        /* Not an account.  It may still be a repository HOLDING accounts, and a
+           record operation run at the root should visit each of them — which is
+           how a multi-account repository is worked (mv_git#44). */
+        char gd[4096], pfx[4096];
+        if (needs_records(argv[i]) && repo_place(gd, sizeof gd, pfx, sizeof pfx) == 0) {
+            char root[4096];
+            if (getcwd(root, sizeof root)) {
+                int rc = run_accounts(root, argc, argv, i);
+                if (rc >= 0) return rc;      /* -1 = no accounts here */
+            }
+        }
         return run_plain(argc, argv, i);
+    }
+
+    /* An account.  Where it sits beneath the repository root decides the prefix
+       its records commit under: "" at the root (every single-account package,
+       unchanged), "acctA/" below one. */
+    {
+        char gd[4096], pfx[4096];
+        if (repo_place(gd, sizeof gd, pfx, sizeof pfx) == 0)
+            mv_git_set_prefix(pfx);
+    }
 
     /* An account inside a larger repository is fine: the engine finds the
        enclosing repository by walking up, exactly as git does, and records stage

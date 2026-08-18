@@ -82,6 +82,19 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
    given identity and default hash backend into `out`; returns its length.  One
    schema shared by mvx-git (converting from the native `.mvx`) and udt-git
    (synthesising from the live UniData account), so both emit identical bytes. */
+/* Where this account sits beneath the repository root, as a path prefix — ""
+   (the default) when the account IS the root, "acctA/" when it is below one.
+   Records commit at <prefix><file>/<id>, so several accounts can share one
+   repository without both claiming CUST/C1.  Set once per account, before the
+   operation; the engine applies it at the single point where a record's git
+   path is built, and strips it again where paths are read back. */
+void mv_git_set_prefix(const char *prefix);
+
+/* Forget what was cached about the account currently in scope (its file list).
+   Setting a prefix does this implicitly; call it directly when the working
+   directory changes without the prefix changing. */
+void mv_git_forget_account(void);
+
 int mv_git_desc_open(const char *name, const char *version,
                      const char *description, const char *hash,
                      char *out, size_t cap);
