@@ -345,15 +345,33 @@ DO.FILELIST:
       RESULT = FILES
       RETURN
 *
+*     FILECLASS(name) -> the file's own CREATE.FILE parameters, as the open
+*     interchange spells them: "DIR", or "hash <modulo> STATIC|DYNAMIC".
+*
+*     The keys are UniVerse's, and they are NOT UniData's — which is what made
+*     this wrong before.  Measured on 14.2.1:
+*
+*       FILEINFO(f,3)  category:  4 = directory file, 1 = hashed
+*       FILEINFO(f,4)  the hashed file's TYPE (17, 18, 30 …); empty for a
+*                      directory
+*       FILEINFO(f,5)  modulo:    1 for a directory file, the real modulo for a
+*                      hashed one
+*
+*     The old test was UniData's "modulo <= 0 means directory".  A UniVerse
+*     directory file reports modulo 1, so it never fired, every directory file
+*     was recorded as hashed, and a clone recreated it as the wrong kind of file
+*     entirely.
 DO.FILECLASS:
       NAME = ARGV(1)
       RESULT = "hash"
       OPEN NAME TO FCV THEN
-         FTY = FILEINFO(FCV, 3) ; MODL = FILEINFO(FCV, 5)
-         IF MODL <= 0 THEN
+         FCAT = FILEINFO(FCV, 3)
+         IF FCAT = 4 THEN
             RESULT = "DIR"
          END ELSE
-            IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+            MODL = FILEINFO(FCV, 5) ; HTY = FILEINFO(FCV, 4)
+            IF MODL <= 0 THEN MODL = 1
+            IF HTY = 30 THEN DS = "DYNAMIC" ELSE DS = "STATIC"
             RESULT = "hash " : MODL : " " : DS
          END
       END ELSE

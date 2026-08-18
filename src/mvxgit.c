@@ -1191,6 +1191,48 @@ static int addall_is_mv_file(const char *acct, const char *n) {
    every record unstaged while reporting success, because pass 1 had swept the
    directory files as ordinary blobs and nothing had asked the backend.  So the
    backend is now always consulted, and pass 3 skips what pass 2 already did. */
+void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
+
+/* Stage `<file>.DICT/%FILE%` — the file's own CREATE.FILE parameters.
+ *
+ * This is the `.gitkeep` of a MultiValue file, and rather more: it makes a file
+ * with no records exist in the commit at all, and it carries the geometry a
+ * clone needs to recreate the file CORRECTLY rather than as some default.
+ *
+ * On MVX the control is a real record on disk, so `add` picks it up like any
+ * other and this is a no-op.  On UniVerse and UniData nothing produces one — the
+ * dictionary is a separate hash file with no such entry — so the geometry had no
+ * carrier and a clone could only guess.  GITOPENFORM converts a control that
+ * already exists; it never creates one, which is why turning the open form on
+ * did not help.
+ *
+ * Staged in EVERY form, not just the open one: a native commit needs it just as
+ * much, because it is the only thing that says what to create.
+ *
+ * Only where the backend can describe a file.  mv_fileclass is part of the
+ * UniVerse and UniData contracts and is deliberately absent from MVX's, because
+ * there the control IS a record and `add` already stages it — synthesising a
+ * second one would be inventing content over the account's own. */
+static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
+#if !defined(MVXGIT_GITD) && !defined(MVXGIT_UDT)
+    (void)ctx; (void)rp; (void)name;
+    return;                     /* MVX: the file's control is its own record */
+#else
+    char cls[128] = "";
+    if (mv_fileclass(ctx, name, cls, sizeof cls) <= 0 || !cls[0]) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s.DICT/%%FILE%%", name);
+    mv_value a0, a1, a2, out;
+    mv_init(&a0); mv_init(&a1); mv_init(&a2); mv_init(&out);
+    mv_set_str(&a0, rp, (int64_t)strlen(rp));
+    mv_set_str(&a1, path, (int64_t)strlen(path));
+    mv_set_str(&a2, cls, (int64_t)strlen(cls));
+    mv_value *av[4] = { &a0, &a1, &a2, &out };
+    mvx_sub_GITSTAGEBLOB(ctx, 4, av);
+    mv_clear(&a0); mv_clear(&a1); mv_clear(&a2); mv_clear(&out);
+#endif
+}
+
 /* The names pass 2 already staged, so pass 3 does not stage them twice.  Small
    and linear on purpose: an account has tens of files, not thousands. */
 typedef struct { char (*n)[256]; int c, cap; } addall_set;
@@ -1247,6 +1289,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (git_path_ignored(repo, n)) continue;
         const char *a[] = {rp, n, ""};
         addall_call(mvx_sub_GITADD, ctx, a, 3);
+        stage_file_control(ctx, rp, n);
         addall_seen(&seen, n);
         nfiles++;
     }
@@ -1279,6 +1322,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     snprintf(dn, sizeof dn, "%s.DICT", name);
                     const char *a2[] = {rp, dn, ""};
                     addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    stage_file_control(ctx, rp, name);
                     nfiles++;
                 }
             }
@@ -1726,6 +1770,12 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         const char *recid = strchr(rel, '/');
         if (!recid) continue;
         recid++;
+        /* `%FILE%` is SYNTHESISED from the live file's geometry, not read from
+           it (see stage_file_control) — on UniVerse and UniData no such record
+           exists to find.  Looking for one and not finding it is expected, so
+           reporting it deleted would make every account permanently dirty the
+           moment its files were described. */
+        if (strcmp(recid, "%FILE%") == 0) continue;
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int isrec = 0, gone = 0;
