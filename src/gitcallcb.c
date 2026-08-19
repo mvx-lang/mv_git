@@ -53,6 +53,23 @@ char *GITINIT(char *repo) {
     return emit(repo, r);
 }
 
+/* GITFLUSH(repo) — write the accumulated index to disk.
+ *
+ * NOT a no-op, though it was one here until UniData was actually measured.
+ * Staging batches into an IN-MEMORY index and only mv_git_batch_end() writes it.
+ * Each `GIT` sentence at TCL may be its own process, so a batch left open when
+ * ADD returns is simply lost: `GIT ADD -A` reported 1543 records staged, `GIT
+ * COMMIT` in the next session committed nothing, and every later command saw an
+ * empty repository — status clean, show empty, restore with nothing to restore.
+ * That is mv_git#41, answered for UniVerse and deferred here; the answer is the
+ * same.  Cheap when there is no open batch, so ADD can always call it.
+ */
+char *GITFLUSH(char *repo) {
+    (void)repo;
+    mv_git_batch_end();
+    return "";
+}
+
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {

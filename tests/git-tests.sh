@@ -11,12 +11,15 @@
 #   GITPKG   = path to the built git package (has LIB/ + VOC/ + BP/ cataloged)
 #   PLATFORM = mvx | udt | uv               (default mvx)
 #   UVGIT    = the uv-git binary            [PLATFORM=uv only]
+#   UDT_NEWACCT = UniData's newacct          [PLATFORM=udt only, default
+#                                             $UDTHOME/bin/newacct]
 #   SKIP_NET = 1 to skip network ops (clone/fetch/pull/push) — e.g. a libgit2
 #              built without https, or an offline runner
 #
 # Exit non-zero if any assertion fails.
 set -u
 PLATFORM="${PLATFORM:-mvx}"
+UDT_NEWACCT="${UDT_NEWACCT:-${UDTHOME:-/usr/ud83}/bin/newacct}"
 SKIP_NET="${SKIP_NET:-0}"
 : "${MVX:?set MVX to the runtime (mvx)}"
 : "${GITPKG:?set GITPKG to the built git package dir}"
@@ -106,12 +109,31 @@ elif [ "$PLATFORM" = uv ]; then
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
-  ACCT() { "$UDT_NEWACCT" "$1"; }             # provided by the udt runner env
+  # Self-contained, like the uv shims: `newacct` makes an account out of a bare
+  # directory, so nothing outside has to supply one.  It prompts for confirmation
+  # then owner and group; the answers are piped in.
+  ACCT() { mkdir -p "$1"
+           ( cd "$1" && printf 'y\n%s\n%s\n' "$(id -un)" "$(id -gn)" \
+             | "$UDT_NEWACCT" ) >/dev/null 2>&1
+           [ -f "$1/VOC" ] || [ -d "$1/VOC" ]; }
   LINK() { :; }                               # udt-git installs globally
-  CF()   { echo "CREATE.FILE $2 DYNAMIC" | ( cd "$1" && "$MVX" ) >/dev/null 2>&1; }
-  GITV() { local a="$1"; shift; ( cd "$a" && echo "$*" | "$MVX" ) 2>&1; }
-  CT()   { ( cd "$1" && echo "CT $2 $3" | "$MVX" ) 2>&1; }
-  SEED() { local a="$1" body="$2"; ( cd "$a" && printf '%s\nSAVEDLIST\n' "$body" | "$MVX" ) >/dev/null 2>&1; }
+  # NOT "CREATE.FILE <name> DYNAMIC": UniData accepts that sentence and silently
+  # creates NOTHING — no file, no error, no output.  The modulo form works.
+  CF()   { printf 'CREATE.FILE %s 2 101\nQUIT\n' "$2" \
+           | ( cd "$1" && "$MVX" ) >/dev/null 2>&1; }
+  # -M fences the verb's own output so the session banner and TCL prompts do not
+  # reach the assertions — the same reason the uv verb path uses it.
+  # `local s="$*"` FIRST, then strip: "${*#GIT }" applies the pattern to each
+  # positional parameter separately, so it strips nothing and the sentence goes
+  # out as "GIT -M GIT STATUS".
+  GITV() { local a="$1"; shift; local s="$*"
+           ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
+             | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+  CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
+  SEED() { local a="$1" body="$2"
+           printf '%s\n' "$body" > "$a/BP/SEEDT"
+           ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) \
+             >/dev/null 2>&1; }
 fi
 
 # ---------------------------------------------------------------------------
