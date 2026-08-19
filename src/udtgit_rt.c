@@ -148,6 +148,28 @@ static void udt_release_session(void) {
 
 static void udt_ensure_session(mv_ctx *ctx) {
     if (ctx->open) return;
+#ifdef MVXGIT_INSESSION
+    /* IN-SESSION WE ALREADY HOLD A LICENCE, AND ONE IS ENOUGH.
+     *
+     * These objects are the CallC library loaded INTO a udt session.  The
+     * session owns the records (Model B) and hands their content over; the C
+     * side does git-object work only.  Opening an InterCall session from here
+     * would take a SECOND licence to reach the very account we are already
+     * inside — and on a two-user licence that is half the machine, for nothing.
+     *
+     * It also cannot work: MVXACCOUNT is unset in a session, so the open is
+     * attempted against account "." and fails as "code 80011", which reads like
+     * a network fault and is not one.
+     *
+     * So refuse, and name the fix.  An opcode that needs records must be served
+     * in BASIC — GITUDT.CHECKOUT is how pull, merge and cherry-pick do it. */
+    mv_fatal("this opcode needs record I/O, and it was called INSIDE a UniData\n"
+             "session, where the records already belong to the session (Model B).\n"
+             "Opening another session here would take a second licence to reach\n"
+             "the account we are already in.  Serve it in BASIC instead — see\n"
+             "GITUDT.CHECKOUT, which is how pull, merge and cherry-pick"
+             " materialise.");
+#endif
     char ub[256], pb[256], hb[256], sb[64];
     const char *host = udt_setting("UDT_HOST", "host", hb, sizeof hb, "localhost");
     const char *user = udt_setting("UDT_USER", "user", ub, sizeof ub, getenv("USER"));

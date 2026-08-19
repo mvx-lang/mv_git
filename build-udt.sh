@@ -81,8 +81,12 @@ mkdir -p udt-callc
 # agentcallc.c is the AGENT's transport (mv_git#45): UniData BASIC has no
 # READBLK and no TIMEOUT, so the pipe I/O the framed protocol needs goes
 # through CallC.  Registered in udt-callc/funcs alongside the GIT* entries.
+# -DMVXGIT_INSESSION: these objects load INTO a udt session, which already holds
+# a licence.  One is enough — the define makes any record primitive here refuse
+# rather than open a SECOND session back into the account we are already in
+# (mv_git#54).
 for c in gitcallcb agentcallc mvxgit udtgit_rt; do
-    "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT \
+    "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT -DMVXGIT_INSESSION \
         -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
         -c "$SRC/$c.c" -o "udt-callc/$c.o"
 done
