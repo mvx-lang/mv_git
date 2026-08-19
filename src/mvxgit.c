@@ -271,6 +271,40 @@ static void openaccount_sync(const char *rp) {
    never reports it as untracked — a fresh open clone reads clean after BUILD
    runs (mvx#77).  An explicit `add VOC CATALOG` still stages it (the escape
    hatch), the same shape as the compiled-object skip (mv_git#9). */
+/* Is this record a compiled object rather than content?
+ *
+ * UniData writes the object of <PROG> as _<PROG> in the SAME file — an
+ * underscore PREFIX, measured on 8.3: compiling BP/GIT.AGENT produces
+ * BP/_GIT.AGENT.  (It is not a ".O" suffix; that is UniVerse, where the object
+ * lives in a separate FILE named <X>.O and is excluded a level up, by file.)
+ * Checked by name and only when the source really is there, so a record
+ * legitimately called _SOMETHING is never lost.
+ *
+ * $MVX_GIT_SKIP_OBJECTS keeps the old content test as a backstop for whatever
+ * the naming rule does not cover: an object is binary, and no record this tool
+ * should version contains a NUL.
+ *
+ * ADD AND STATUS BOTH CALL THIS, which is the whole point of it being a
+ * function.  Every time those two have disagreed about what to skip, the result
+ * was the same bug: status reports a record that add will never stage, so the
+ * account is dirty forever and no commit can clear it.
+ */
+static int record_is_object(mv_ctx *ctx, mv_value *fvar, const char *idb,
+                            const char *cp, int64_t clen) {
+    if (idb[0] == '_' && idb[1]) {
+        mv_value bid, brec;
+        mv_init(&bid); mv_init(&brec);
+        mv_set_str(&bid, idb + 1, (int64_t)(strlen(idb) - 1));
+        int have_src = mv_read(ctx, &brec, fvar, &bid, 0);
+        mv_clear(&bid); mv_clear(&brec);
+        if (have_src) return 1;
+    }
+    static int backstop = -1;
+    if (backstop < 0) backstop = getenv("MVX_GIT_SKIP_OBJECTS") != NULL;
+    if (backstop && cp && clen > 0 && memchr(cp, 0, (size_t)clen)) return 1;
+    return 0;
+}
+
 static int is_provision_pointer(const char *file, const char *id) {
     if (strcasecmp(id, "CATALOG") != 0) return 0;
     return strcasecmp(file, "VOC") == 0 || strcasecmp(file, "MD") == 0;
@@ -514,6 +548,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], fn, sizeof fn);
     arg_str(argv[2], only, sizeof only);
+    /* `GIT ADD BP *` means the whole file, not a record called "*".  MV has no
+       shell to expand it, so it arrives literally and used to be looked up as an
+       id — which found nothing and staged nothing.  Folding it to "no record
+       named" here makes it the wholesale add it reads as, which also means the
+       object-file exclusion applies to it: `ADD BP *` skips objects exactly as
+       `ADD BP` and `ADD -A` do, and only naming an object stages one. */
+    if (strcmp(only, "*") == 0) only[0] = '\0';
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
@@ -627,25 +668,10 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
-            /* UniData: <PROG>.O beside <PROG> in the same file is its object.
-               Checked by NAME, and only when the source really is there, so a
-               record legitimately called SOMETHING.O is not lost. */
-            if (!one) {
-                size_t il = strlen(idb);
-                if (il > 2 && strcmp(idb + il - 2, ".O") == 0) {
-                    mv_value bid, brec;
-                    mv_init(&bid); mv_init(&brec);
-                    mv_set_str(&bid, idb, (int64_t)(il - 2));
-                    int have_src = mv_read(ctx, &brec, &fvar, &bid, 0);
-                    mv_clear(&bid); mv_clear(&brec);
-                    if (have_src) { skipped++; continue; }
-                }
-            }
-            /* Backstop for anything the naming rules miss: a compiled object is
-               binary, and no record this tool should version contains a NUL. */
-            if (skip_objects && clen > 0 && memchr(cp, 0, (size_t)clen)) {
+            /* Objects are skipped by `add -A`, staged by an EXPLICIT add —
+               the same rule as every other exclusion here. */
+            if (!one && record_is_object(ctx, &fvar, idb, cp, clen)) {
                 skipped++;
-                if (one) break;
                 continue;
             }
             const char *sc = cp;
@@ -1266,9 +1292,10 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
  *   UniVerse  objects live in a SEPARATE FILE named after the source file:
  *             BP -> BP.O.  So a file whose name is <X>.O, where <X> is also a
  *             file, is an object file and none of its records are content.
- *   UniData   objects live INSIDE the source file, as records named <PROG>.O
- *             alongside <PROG>.  So a record id ending .O whose base id exists
- *             in the same file is an object.
+ *   UniData   objects live INSIDE the source file, as records named _<PROG>
+ *             alongside <PROG> — an underscore PREFIX (measured on 8.3:
+ *             compiling BP/GIT.AGENT writes BP/_GIT.AGENT).  So a record id
+ *             starting "_" whose base id exists in the same file is an object.
  *   MVX       neither — objects go to CATALOG/, which is not a record file, so
  *             these rules simply never fire.
  *
@@ -1802,6 +1829,15 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                             if (backend_has_file(ctx, b)) continue;
                         }
                     }
+                }
+                /* A compiled object is not staged by any wholesale add, so
+                   reporting it would leave it untracked forever — the same
+                   reason, and the same function, as on the add side. */
+                {
+                    const char *ocp;
+                    char onb[40];
+                    int64_t ocl = mv_val_chars(&rec, onb, sizeof onb, &ocp);
+                    if (record_is_object(ctx, &fvar, idb, ocp, ocl)) continue;
                 }
                 record_path(path, sizeof path, fn, idb);
                 /* An id that cannot be a git path was never staged either
