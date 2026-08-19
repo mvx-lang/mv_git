@@ -19,6 +19,7 @@
 #include "mvsession.h"
 #include "gitproto.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -191,6 +192,21 @@ static void unlink_dir(const char *dir) {
     snprintf(p, sizeof p, "%s/req", dir); unlink(p);
     snprintf(p, sizeof p, "%s/rsp", dir); unlink(p);
     snprintf(p, sizeof p, "%s/run",  dir); unlink(p);
+    snprintf(p, sizeof p, "%s/chatter", dir); unlink(p);
+    /* rmdir only removes an EMPTY directory, so a file added here and not added
+       above leaves the whole directory behind — which is how the chatter capture
+       turned "dirs: 0" into "dirs: 1" the moment it landed.  A named list is
+       cheap to get wrong; sweep whatever else is in there first. */
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+            unlink(p);
+        }
+        closedir(d);
+    }
     rmdir(dir);
 }
 
