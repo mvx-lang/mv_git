@@ -102,6 +102,7 @@
       CASE OP = "FETCH"      ; R = CALLC GITFETCH(REPO, A2)
       CASE OP = "PUSH"       ; R = CALLC GITPUSH(REPO, A2, A3)
       CASE OP = "PULL"       ; R = CALLC GITPULL(REPO, A2, A3)
+      CASE OP = "PULLREF"    ; R = CALLC GITPULLREF(REPO, A2, A3)
       CASE 1
          OUT = "GIT: unknown git-object operation '" : OP : "'"
          RETURN

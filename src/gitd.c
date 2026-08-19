@@ -378,6 +378,7 @@ BRIDGE1(op_clone,      mv_git_clone(ctx, A(g,1), A(g,2), A(g,3)))
 BRIDGE1(op_fetch,      mv_git_fetch(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_push,       mv_git_push(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 BRIDGE1(op_pull,       mv_git_pull(ctx, rp(A(g,0)), A(g,1), A(g,2)))
+BRIDGE1(op_pullref,    mv_git_pullref(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 
 static const struct {
     const char *name;
@@ -413,6 +414,7 @@ static const struct {
     { "FETCH",       2, op_fetch      },
     { "PUSH",        3, op_push       },
     { "PULL",        3, op_pull       },
+    { "PULLREF",     3, op_pullref    },
     { NULL, 0, NULL }
 };
 

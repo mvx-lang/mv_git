@@ -3284,7 +3284,8 @@ static void finish_merge(mv_ctx *ctx, git_repository *repo,
 /* Fast-forward HEAD to `target` and materialise its tree — no merge commit.
    Returns 0 ok. */
 static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
-                              git_commit *target, int64_t *nw, int64_t *nd) {
+                              git_commit *target, int64_t *nw, int64_t *nd,
+                              int materialise) {
     git_reference *head = NULL, *moved = NULL;
     git_tree *tree = NULL;
     int rc = git_repository_head(&head, repo);
@@ -3293,8 +3294,8 @@ static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
                                       "mvx-git: fast-forward");
     if (rc == 0) rc = git_commit_tree(&tree, target);
     if (rc == 0) {
-        materialize_tree(ctx, repo, tree, nw, nd);
-        sync_index(repo, rp, tree);
+        if (materialise) materialize_tree(ctx, repo, tree, nw, nd);
+        sync_index(repo, rp, tree);      /* the git index, not records — safe */
     }
     if (tree) git_tree_free(tree);
     if (moved) git_reference_free(moved);
@@ -3307,8 +3308,17 @@ static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
    (origin/main), FETCH_HEAD (so pull reuses this), or a SHA.  Fast-forwards when
    HEAD is an ancestor, reports up-to-date, else makes a real merge commit; record
    conflicts surfaced by finish_merge.  One path for both `merge` and `pull`. */
+/* `materialise` says whether THIS process writes the records back.
+ *
+ * It cannot always be the one to do it.  mvgitd is built MVXGIT_NORECORDS — the
+ * BASIC session owns the records (Model B) — so a record primitive there calls
+ * mv_fatal and the daemon DIES mid-request, leaving the caller waiting for a
+ * reply that can never come (mv_git#53: over an hour asleep in pipe_read).
+ * With the flag off, the git-object work still happens here and the caller
+ * re-materialises natively afterwards, which is exactly what GIT MERGE and GIT
+ * CHERRY-PICK have always done via GITUDT.CHECKOUT. */
 static void merge_into_head(mv_ctx *ctx, git_repository *repo, const char *rp,
-                            const char *name, mv_value *out) {
+                            const char *name, mv_value *out, int materialise) {
     git_object *ho = NULL, *to = NULL;
     git_commit *ours = NULL, *theirs = NULL;
     git_annotated_commit *ann = NULL;
@@ -3330,7 +3340,7 @@ static void merge_into_head(mv_ctx *ctx, git_repository *repo, const char *rp,
     if (an & GIT_MERGE_ANALYSIS_UP_TO_DATE) {
         mv_set_str(out, "already up to date", 18);
     } else if (an & GIT_MERGE_ANALYSIS_FASTFORWARD) {
-        if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd) != 0) {
+        if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd, materialise) != 0) {
             fail(out, "fast-forward");
         } else {
             char msg[300];
@@ -3364,7 +3374,7 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[1], name, sizeof name);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
-    merge_into_head(ctx, repo, rp, name, argv[2]);
+    merge_into_head(ctx, repo, rp, name, argv[2], 1);
     git_repository_free(repo);
 }
 
@@ -3441,6 +3451,16 @@ void mvx_sub_GITPUSH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 /* GITPULL(repo, remote, branch, out) — fetch then merge into HEAD, re-materialising
    records (a plain `git pull` refuses: our working tree is the native form).
    Merges refs/remotes/<remote>/<branch>, or FETCH_HEAD when no branch is named. */
+/* GITPULLREF is GITPULL without the record write — see merge_into_head. */
+static int g_pull_materialise = 1;
+void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv);
+
+void mvx_sub_GITPULLREF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    g_pull_materialise = 0;
+    mvx_sub_GITPULL(ctx, argc, argv);
+    g_pull_materialise = 1;
+}
+
 void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 4) return;
     ensure_init();
@@ -3462,7 +3482,7 @@ void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char mref[320];
     if (br[0]) snprintf(mref, sizeof mref, "refs/remotes/%s/%s", rn, br);
     else       snprintf(mref, sizeof mref, "FETCH_HEAD");
-    merge_into_head(ctx, repo, rp, mref, argv[3]);
+    merge_into_head(ctx, repo, rp, mref, argv[3], g_pull_materialise);
     git_repository_free(repo);
 }
 
@@ -4118,6 +4138,11 @@ char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char 
 char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch) {
     const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
     return run_sub(mvx_sub_GITPULL, ctx, a, 3);
+}
+char *mv_git_pullref(mv_ctx *ctx, const char *repo, const char *remote,
+                     const char *branch) {
+    const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
+    return run_sub(mvx_sub_GITPULLREF, ctx, a, 3);
 }
 char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
                     const char *name, const char *url) {

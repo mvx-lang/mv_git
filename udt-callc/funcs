@@ -12,6 +12,7 @@ GITCAT:string:2:string,string
 GITCLONE:string:4:string,string,string,string
 GITFETCH:string:2:string,string
 GITPULL:string:3:string,string,string
+GITPULLREF:string:3:string,string,string
 GITPUSH:string:3:string,string,string
 GITREMOTE:string:4:string,string,string,string
 GITCONFIG:string:3:string,string,string

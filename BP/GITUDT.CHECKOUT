@@ -108,7 +108,9 @@ NEXTDEL:
          IF CHG THEN IXWANT<-1> = BASE
       END
    NEXT I
-   PRINT NREST : " record(s) restored across " : NFC : " file(s)"
+*  NFC counts files CREATED, not files touched — so a pull into an existing
+*  account correctly says 0, and "across 0 file(s)" read like a bug every time.
+   PRINT NREST : " record(s) restored, " : NFC : " file(s) created"
    IF NDEL > 0 THEN PRINT NDEL : " stale record(s) removed"
    GOSUB IXPROMPT
    RETURN

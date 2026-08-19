@@ -73,6 +73,12 @@ $IFNDEF MVX
 *     the ENCODED length, which is what the far end must read off the pipe.
       BODY = ""
       FOR AI = 1 TO NARGS
+*        RAW initialised before the CASE, not only inside it.  UniVerse reported
+*        "Variable RAW previously undefined, empty string used" here on every
+*        argument of every call — harmless in itself, but it is the same noise
+*        that hid the REM bug (mv_git#53 diagnosis), and a warning nobody can
+*        act on is a warning everybody learns to scroll past.
+         RAW = ""
          BEGIN CASE
          CASE AI = 1 ; RAW = A1
          CASE AI = 2 ; RAW = A2

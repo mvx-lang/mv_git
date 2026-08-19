@@ -91,6 +91,16 @@ char *GITINDEXIDS(char *repo, char *file) {
     return emit(repo, r);
 }
 
+/* GITPULLREF(repo, remote, branch) — fetch + move the ref, records left to the
+   caller.  Same reason as the daemon's: the records belong to the session. */
+char *GITPULLREF(char *repo, char *remote, char *branch) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_pullref(ctx, rp(repo), remote ? remote : "",
+                             branch ? branch : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {

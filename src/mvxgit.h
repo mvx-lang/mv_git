@@ -212,6 +212,11 @@ char *mv_git_clone(mv_ctx *ctx, const char *url, const char *dir, const char *re
 char *mv_git_fetch(mv_ctx *ctx, const char *repo, const char *remote);
 char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char *refspec);
 char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch);
+/* Pull WITHOUT writing records: fetch, move the ref, sync the git index — and
+   leave materialising to the caller.  For a server that has no record backend
+   (mvgitd), where the alternative is calling a record primitive and dying. */
+char *mv_git_pullref(mv_ctx *ctx, const char *repo, const char *remote,
+                     const char *branch);
 char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
                     const char *name, const char *url);
 char *mv_git_config(mv_ctx *ctx, const char *repo, const char *key, const char *value);

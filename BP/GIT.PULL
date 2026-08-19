@@ -12,16 +12,63 @@
 *  * @version 1.0
 *  */
 SUBROUTINE GIT.PULL
+      $INCLUDE BP.INC PLATFORM.H
+* PULL MATERIALISES, AND THAT DECIDES WHO CAN SERVE IT.
+*
+* A fast-forward writes the new commit's records back into the account, so pull
+* needs record access.  The background process does not have it — mvgitd is
+* built MVXGIT_NORECORDS precisely because the BASIC session owns the records
+* (Model B) — and its record primitives call mv_fatal.  So `GIT PULL` over
+* mvgitd did not fail: the daemon DIED mid-request, and the session sat waiting
+* for a reply that could never arrive.  Over an hour of zero CPU time asleep in
+* pipe_read, with no mvgitd left alive (mv_git#53).  A hang, not an error, which
+* is why it never showed as a test failure — every run was killed by its timeout
+* with the summary line never printed.
+*
+* uv-git and udt-git both have real record backends, and the CLI route has
+* passed pull all along.  So the verb hands over, exactly as GIT CLONE does and
+* for the same reason: this is the one shape of operation a session cannot serve
+* for itself.  The developer still types GIT PULL and never sees a shell.
 CALL GIT.SENT(S)
 RNAME = FIELD(S, " ", 3)
 BR = FIELD(S, " ", 4)
+* One thing each, then ordinary runtime code — the nesting that silently
+* compiled to nothing in GIT.CLONE (mv_git#52) is not worth repeating.
+PLAT = ""
 $IFDEF MVX
-OUT = ""
-CALL GITPULL(".git", RNAME, BR, OUT)
-PRINT OUT
-$ELSE
-CALL GIT.REPO(REPO)
-CALL GIT.OBJ("PULL", 3, REPO, RNAME, BR, "", "", OBJOUT)
-CALL GIT.ECHO(OBJOUT)
+PLAT = "MVX"
 $ENDIF
+$IFDEF UDT
+PLAT = "UDT"
+$ENDIF
+$IFDEF UV
+PLAT = "UV"
+$ENDIF
+IF PLAT = "" THEN
+   PRINT "GIT PULL: this build defines no platform - check BP.INC PLATFORM.H"
+   RETURN
+END
+BEGIN CASE
+   CASE PLAT = "MVX"
+$IFDEF MVX
+*     The engine IS the runtime here and reads the records itself.
+      OUT = ""
+      CALL GITPULL(".git", RNAME, BR, OUT)
+      PRINT OUT
+$ENDIF
+   CASE 1
+*     IN-SESSION, not a shell-out.  The git-object half (fetch, move the ref,
+*     sync the git index) touches no records, so the background process can
+*     still do it — PULLREF is PULL with the record write left out.  The records
+*     are then written natively, here, exactly as GIT MERGE and GIT CHERRY-PICK
+*     already do.
+*
+*     Handing over to uv-git/udt-git would also work and was tried first, but it
+*     costs a SECOND session for the length of the command.  UniData TE licenses
+*     two, so an in-session clone already exhausts them (mv_git#54) — and "one
+*     licence where one will do" is the rule this whole design follows.
+      CALL GIT.OBJ("PULLREF", 3, REPO, RNAME, BR, "", "", OBJOUT)
+      CALL GIT.ECHO(OBJOUT)             ;* fast-forward / up to date / conflict
+      CALL GITUDT.CHECKOUT(REPO)        ;* materialise the new HEAD natively
+END CASE
 RETURN
