@@ -36,6 +36,17 @@
 *
 * The connection is held in COMMON so it is opened once per session and reused:
 * the pipes, the token and the open flag all outlive a single call.
+      $INCLUDE BP.INC PLATFORM.H
+$IFDEF MVX
+*     NOT USED ON MVX, and excluded rather than merely unreached.  This is the
+*     client for the UniVerse background process; MVX's runtime IS the engine and
+*     calls it directly.  The body still has to COMPILE, because mkpkg bundles
+*     every BP item — and WRITEBLK/READBLK do not exist here, which failed the
+*     whole package build.
+      STATUS = 1 ; RESULT = "GIT.RPC: not used on MVX"
+      RETURN
+$ENDIF
+$IFNDEF MVX
       COMMON /GITRPC/ RPC.REQ, RPC.RSP, RPC.TOKEN, RPC.OPEN
 *
       MAGIC = "MVG1"
@@ -168,3 +179,4 @@ CONNECT:
       RETURN
 *
       END
+$ENDIF

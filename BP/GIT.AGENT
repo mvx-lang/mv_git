@@ -66,6 +66,19 @@
 *     before compiling it.  The alternative — keeping the transport
 *     platform-neutral — is not available: the two platforms genuinely have no
 *     statement in common for an exact-count timed read.
+$IFDEF MVX
+*     NOT USED ON MVX, and excluded rather than merely unreached.
+*
+*     There is no agent here: the runtime IS the engine and reads records
+*     itself, so nothing outside a session ever has to ask one for a record.
+*     The body still has to COMPILE though — mkpkg bundles every BP item and
+*     compiles them all — and it does not: `OPEN "DICT", NAME TO FV(NFV) ELSE`
+*     is rejected by the MVX compiler, which broke the whole package build and
+*     with it every MVX handler, not just this one.
+      CRT "GIT.AGENT: not used on MVX — the runtime reads records directly"
+      STOP
+$ENDIF
+$IFNDEF MVX
       AM = CHAR(254) ; VM = CHAR(253)
       MAGIC = "MVG1"
 *     Header widths, mirroring gitproto.h.  Fixed-width ASCII so both ends build
@@ -555,4 +568,4 @@ ZPAD:
       PADR = PADV : ""
       IF LEN(PADR) < PADW THEN PADR = STR("0", PADW - LEN(PADR)) : PADR
       RETURN
-
+$ENDIF

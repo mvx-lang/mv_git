@@ -253,7 +253,11 @@ else
   t  "push"          "pushed"        "$(GITV "$A" GIT PUSH origin main || GITV "$A" GIT PUSH origin master)"
   B="$WORK/B"
   # clone via the engine (GITCLONE) into a materialised account
-  clone_out="$(GITV "$A" GIT CLONE "$REM" "$B")"
+  # --flavour: a UniVerse account is created WITH a flavour and cannot be asked
+  # afterwards, and this repository's history carries no record of one (mv_git#15),
+  # so uv-git refuses to guess and asks.  PICK matches the flavour ACCT() answers
+  # (menu 3).  Harmless on the platforms that do not need it.
+  clone_out="$(GITV "$A" GIT CLONE "$REM" "$B" --flavour=PICK)"
   t  "clone"         "cloned"        "$clone_out"
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null

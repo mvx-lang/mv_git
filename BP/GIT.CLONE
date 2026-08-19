@@ -21,6 +21,27 @@ SUBROUTINE GIT.CLONE
 * and the whole body disappeared at compile time.  The symptom was a handler
 * that was entered, parsed its arguments, and then did nothing at all.
 CALL GIT.SENT(S)
+* --flavour=<name> is pulled OUT of the sentence before the positional fields are
+* read, so it may be typed anywhere and never lands in REF.
+*
+* A UniVerse account is created WITH a flavour and the choice is unrecoverable
+* afterwards — it is baked into the VOC's contents, not recorded anywhere a
+* program can read (mv_git#15).  So cloning a repository whose history holds a
+* VOC but no flavour is a question only the person can answer, and uv-git rightly
+* refuses to guess.  Before this the answer could only be given at the shell,
+* which is the one place the MV developer is not.
+FLAV = ""
+CLEAN = ""
+NW = DCOUNT(S, " ")
+FOR WI = 1 TO NW
+   W = FIELD(S, " ", WI)
+   IF W[1, 10] = "--flavour=" THEN
+      FLAV = W[11, LEN(W) - 10]
+   END ELSE
+      IF CLEAN = "" THEN CLEAN = W ELSE CLEAN := " " : W
+   END
+NEXT WI
+S = CLEAN
 URL = FIELD(S, " ", 3)
 DIR = FIELD(S, " ", 4)
 REF = FIELD(S, " ", 5)
@@ -81,6 +102,7 @@ $ENDIF
 *     GIT CLONE at the TCL prompt and never sees a shell.
       CMD = "uv-git clone " : URL : " " : DIR
       IF REF # "" THEN CMD := " " : REF
+      IF FLAV # "" THEN CMD := " --flavour=" : FLAV
 *     2>&1 because uv-git reports progress and failures on stderr and only the
 *     final line on stdout — CAPTURING takes stdout alone, so without this a
 *     clone that FAILED came back as silence.
