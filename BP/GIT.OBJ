@@ -79,6 +79,7 @@
 *     left in memory when ADD returns is lost.  ADD reported 1543 records staged
 *     and COMMIT committed nothing.
       CASE OP = "FLUSH"      ; R = CALLC GITFLUSH(REPO)
+      CASE OP = "PRUNE"      ; R = CALLC GITPRUNE(REPO, A2)
       CASE OP = "PING"       ; R = CALLC GITPING(REPO)
       CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
       CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)

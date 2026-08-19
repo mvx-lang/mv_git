@@ -44,6 +44,7 @@ if [ "$PLATFORM" = mvx ]; then
            "$MKACCOUNT" "$1" >/dev/null 2>&1; }
   LINK() { "$MVX" -a "$1" -c "LINK-PKG $GITPKG" >/dev/null 2>&1; }
   CF()   { "$MVX" -a "$1" -c "CREATE-FILE $2" >/dev/null 2>&1; }
+  DF()   { "$MVX" -a "$1" -c "DELETE-FILE $2" >/dev/null 2>&1; }
   GITV() { local a="$1"; shift; "$MVX" -a "$a" -c "$*" 2>&1; }
   CT()   { "$MVX" -a "$1" -c "CT $2 $3" 2>&1; }
   SEED() { local a="$1" body="$2" b="$WORK/seed.$RANDOM.b"
@@ -79,6 +80,8 @@ elif [ "$PLATFORM" = uv ]; then
   # in VOC attribute 1 as "F <description>" — leave it EMPTY or the account
   # scan, which matches attribute 1 against "F", cannot see the file.
   CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  # DELETE.FILE confirms before it acts; an unanswered prompt leaves the file.
+  DF()   { ( cd "$1" && printf 'DELETE.FILE %s\nY\nY\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   # strip the leading verb: uv-git takes the subcommand, not the whole sentence
   # TWO WAYS IN, and both are tested, because both ship (DECISIONS.md).
   #
@@ -120,6 +123,9 @@ else
   # NOT "CREATE.FILE <name> DYNAMIC": UniData accepts that sentence and silently
   # creates NOTHING — no file, no error, no output.  The modulo form works.
   CF()   { printf 'CREATE.FILE %s 2 101\nQUIT\n' "$2" \
+           | ( cd "$1" && "$MVX" ) >/dev/null 2>&1; }
+  # One confirmation, and UniData removes the dictionary with it.
+  DF()   { printf 'DELETE.FILE %s\nY\nQUIT\n' "$2" \
            | ( cd "$1" && "$MVX" ) >/dev/null 2>&1; }
   # -M fences the verb's own output so the session banner and TCL prompts do not
   # reach the assertions — the same reason the uv verb path uses it.
@@ -183,6 +189,33 @@ printf 'CUST/C9\n' > "$A/.gitignore"
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "x" ON F, "C9"'
 case "$(GITV "$A" GIT STATUS)" in *CUST/C9*) bad "ignore hides record" "no CUST/C9" "shown";; *) ok "ignore hides record";; esac
+
+say "-- DELETE.FILE: %FILE% is the file, so the whole file goes --"
+# %FILE% is a file's existence in git, so deleting the file must behave like
+# removing a directory: every record under <file>/ AND <file>.DICT/ is a
+# deletion, the control included.  Before this, a deleted file was invisible —
+# status skipped anything it could not open, the records stayed in HEAD, and a
+# clone brought the whole file back.
+CF "$A" TMPF
+SEED "$A" 'OPEN "TMPF" TO F ELSE STOP
+WRITE "one" ON F, "T1"
+WRITE "two" ON F, "T2"'
+GITV "$A" GIT ADD -A >/dev/null
+GITV "$A" GIT COMMIT -m withfile >/dev/null
+t  "file committed"   "one"       "$(GITV "$A" GIT SHOW TMPF T1)"
+DF "$A" TMPF
+t  "delete shows D"   "TMPF"      "$(GITV "$A" GIT STATUS)"
+GITV "$A" GIT ADD -A >/dev/null
+GITV "$A" GIT COMMIT -m nofile >/dev/null
+# The file and its dictionary are gone from the commit.  NOT asserting a fully
+# clean status: the VOC POINTER record for the file is a record deletion inside
+# a live file, and the BASIC add (UniVerse/UniData) has never staged record
+# deletions — only the C add reconciles those.  That gap predates this change
+# and is its own fix; asserting it here would just mark it "expected".
+case "$(GITV "$A" GIT SHOW TMPF T1)" in
+  *one*) bad "file gone from HEAD" "no TMPF/T1" "still there";;
+  *)     ok "file gone from HEAD";;
+esac
 
 if [ "$SKIP_NET" = 1 ]; then
   skip "remote/clone/fetch/pull/push" "SKIP_NET=1"

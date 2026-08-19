@@ -1,5 +1,6 @@
 GITINIT:string:1:string
 GITFLUSH:string:1:string
+GITPRUNE:string:2:string,string
 GITSTAGE:string:4:string,string,string,string
 GITSTAGEBLOB:string:3:string,string,string
 GITCOMMIT:string:2:string,string

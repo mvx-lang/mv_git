@@ -769,6 +769,9 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 /* Declared here, defined with the status helpers: whether the BACKEND calls this
    name one of the account's files. */
 static int backend_has_file(mv_ctx *ctx, const char *name);
+static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top);
+static int is_mv_file(const char *n);
+static void backend_files_reset(void);
 static void split_top(const char *path, char *out, size_t cap);
 
 /* The record-git model tracks records as git blobs, never the binary LMDB
@@ -1456,7 +1459,13 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         mv_clear(&fl);
     }
     free(seen.n);
-    if (repo) git_repository_free(repo);
+
+    if (repo) {
+        git_repository_free(repo);
+        repo = NULL;
+    }
+    /* 3b. Files that are GONE — see mv_git_prune_gone. */
+    { char *pr = mv_git_prune_gone(ctx, rp, ""); free(pr); }
 
     /* 4. open-account normalisation of the staged index */
     if (mv_openaccount()) {
@@ -1467,6 +1476,115 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char out[128];
     snprintf(out, sizeof out, "staged %lld file(s)", (long long)nfiles);
     mv_set_str(argv[1], out, (int64_t)strlen(out));
+}
+
+/* Drop from the index every record of a file the account no longer has.
+ *
+ * Passes that stage walk what EXISTS, so a deleted file is never visited and its
+ * records sit in the index for ever — committed again on every commit, and
+ * brought back whole by a clone of that commit.  %FILE% is the file's existence
+ * in git, so when it goes the file goes: <file>/ and <file>.DICT/ both.
+ *
+ * ITS OWN ENTRY POINT because the wholesale add is not one implementation.  On
+ * MVX it is the C GITADDALL; on UniVerse and UniData it is BASIC (GITUDT.ADD)
+ * walking files and staging each record.  A reconcile living inside GITADDALL
+ * therefore never ran on the two platforms that need it most — `add -A` left the
+ * deleted file staged and status reported it deleted for ever.  One function,
+ * called by both, is the only arrangement that cannot drift.
+ */
+/* The account's live files, as told to us by the CALLER.
+ *
+ * mvgitd is built MVXGIT_NORECORDS: it has no record backend, so
+ * backend_has_file() there is always 0 and every file looks deleted.  Letting it
+ * decide emptied the whole index.  The records live in the SESSION, so the
+ * session is the only thing that knows what exists — on UniVerse and UniData the
+ * BASIC add hands its file list in.  Empty means "no list given, ask the
+ * backend", which is the in-process case (MVX, and the CLI drivers). */
+static const char *g_live = NULL;
+static int64_t     g_livelen = 0;
+
+static int live_listed(const char *name) {
+    if (!g_live || g_livelen <= 0) return -1;      /* no list — cannot say */
+    size_t nl = strlen(name);
+    int64_t i = 0;
+    while (i < g_livelen) {
+        int64_t st = i;
+        /* Entries may be name<VM>type — stop at the VM, as every other reader of
+           a file list here does.  Comparing the whole field matched nothing and
+           made every file look deleted. */
+        while (i < g_livelen && (unsigned char)g_live[i] != 0xFE &&
+               (unsigned char)g_live[i] != 0xFD) i++;
+        if ((size_t)(i - st) == nl && memcmp(g_live + st, name, nl) == 0) return 1;
+        while (i < g_livelen && (unsigned char)g_live[i] != 0xFE) i++;
+        if (i < g_livelen) i++;
+    }
+    return 0;
+}
+
+void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    backend_files_reset();      /* judge liveness against the account as it IS */
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    char lnb[40];
+    g_live = NULL;
+    g_livelen = mv_val_chars(argv[1], lnb, sizeof lnb, &g_live);
+    openaccount_sync(rp);
+    git_repository *repo = NULL;
+    git_index *gidx = NULL;
+    if (repo_open(rp, &repo, &gidx) != 0) { fail(argv[2], "open"); return; }
+    /* DECIDE FIRST, THEN REMOVE.  The test is "is <base>.DICT/%FILE% still in
+       the index" — an entry this pass is itself deleting.  Removing as we went
+       dropped %FILE% and every later lookup then said "git never tracked this",
+       so the file's own records survived. */
+    char (*gonetop)[256] = NULL;
+    size_t ng = 0, gcap = 0;
+    for (size_t i = 0; i < git_index_entrycount(gidx); i++) {
+        const git_index_entry *e = git_index_get_byindex(gidx, i);
+        if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+        const char *rel = unprefix(e->path);
+        if (!rel || !strchr(rel, '/')) continue;
+        char top[256];
+        split_top(rel, top, sizeof top);
+        size_t k = 0;
+        for (; k < ng; k++) if (!strcmp(gonetop[k], top)) break;
+        if (k < ng) continue;                     /* already decided */
+        if (!tracked_file_gone(ctx, gidx, top)) continue;
+        if (ng == gcap) {
+            size_t nc = gcap ? gcap * 2 : 8;
+            char (*t)[256] = realloc(gonetop, nc * sizeof *gonetop);
+            if (!t) break;
+            gonetop = t;
+            gcap = nc;
+        }
+        snprintf(gonetop[ng++], 256, "%s", top);
+    }
+    long dropped = 0;
+    for (size_t i = git_index_entrycount(gidx); i-- > 0 && ng; ) {
+        const git_index_entry *e = git_index_get_byindex(gidx, i);
+        if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+        const char *rel = unprefix(e->path);
+        if (!rel || !strchr(rel, '/')) continue;
+        char top[256], path[700];
+        split_top(rel, top, sizeof top);
+        snprintf(path, sizeof path, "%s", e->path);
+        for (size_t k = 0; k < ng; k++) {
+            if (strcmp(gonetop[k], top)) continue;
+            git_index_remove_bypath(gidx, path);
+            dropped++;
+            break;
+        }
+    }
+    free(gonetop);
+    if (dropped) git_index_write(gidx);
+    git_index_free(gidx);
+    git_repository_free(repo);
+    char out[128];
+    snprintf(out, sizeof out, "%ld record(s) of deleted file(s) unstaged",
+             dropped);
+    g_live = NULL; g_livelen = 0;
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
 }
 
 /* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
@@ -1692,9 +1810,91 @@ static int backend_has_file(mv_ctx *ctx, const char *name) {
 #endif
 }
 
+
+/* Is this file actually THERE?
+ *
+ * Not is_mv_file(), which answers "could this name be a record file" and
+ * returns 1 for anything without an on-disk directory — it can never report a
+ * file gone, which is exactly what a deletion needs to know.  A file is live if
+ * it is a directory carrying its own %FILE% control (MVX, directory-backed) or
+ * the backend still lists it (a hash file on UniVerse/UniData, an LMDB file on
+ * MVX). */
+static int file_is_live(mv_ctx *ctx, const char *name) {
+    struct stat sb;
+    if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        char ctl[600];
+        snprintf(ctl, sizeof ctl, "%s.DICT/%%FILE%%", name);
+        if (stat(ctl, &sb) == 0) return 1;
+    }
+    return backend_has_file(ctx, name);
+}
+
+/* Did git track `top` as an MV FILE that the account no longer has?
+ *
+ * `%FILE%` is a file's EXISTENCE in git — a checkout creates the file from it —
+ * so an index entry for <base>.DICT/%FILE% is git saying "this is a file", and
+ * the file no longer being live is the account saying "it is gone".
+ *
+ * Deleting a file therefore behaves like removing a directory: every record
+ * under <file>/ AND <file>.DICT/ is a deletion, the %FILE% control included.
+ * Without this a DELETE.FILE was invisible — every entry whose file could not
+ * be opened was skipped, so its records stayed in the index and in HEAD, and a
+ * clone of that commit brought the entire file back.
+ */
+static char g_gone_memo[256];
+static int  g_gone_ans = -1;
+static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
+    if (!top || !top[0] || !index) return 0;
+    char base[256];
+    snprintf(base, sizeof base, "%s", top);
+    size_t bl = strlen(base);
+    if (bl > 5 && strcmp(base + bl - 5, ".DICT") == 0) base[bl - 5] = '\0';
+    if (!base[0]) return 0;
+    /* Index entries are sorted by path, so a file's records arrive together and
+       a one-entry memo makes the scan below effectively linear. */
+    if (g_gone_ans >= 0 && strcmp(g_gone_memo, base) == 0) return g_gone_ans;
+    int listed = live_listed(base);
+    int alive = listed >= 0 ? listed : file_is_live(ctx, base);
+    int ans = 0;
+    if (!alive) {
+        /* GIT TRACKED IT AS A FILE if the index holds anything under its
+           DICTIONARY.  Not "<base>.DICT/%FILE% is present": that control is only
+           staged in OPEN-account mode, so keying on it made the whole rule a
+           no-op on a native commit — which is most of them.  Every MV file has a
+           dictionary and no plain directory does, so the .DICT subtree is the
+           mark that works in both modes.  (It also keeps an ordinary tracked
+           directory — docs/, say — from ever looking like a deleted file.) */
+        char pfx[600];
+        int pn = snprintf(pfx, sizeof pfx, "%s%s.DICT/", g_prefix, base);
+        if (pn > 0) {
+            for (size_t i = 0; i < git_index_entrycount(index); i++) {
+                const git_index_entry *e = git_index_get_byindex(index, i);
+                if (e && strncmp(e->path, pfx, (size_t)pn) == 0) { ans = 1; break; }
+            }
+        }
+    }
+    snprintf(g_gone_memo, sizeof g_gone_memo, "%s", base);
+    g_gone_ans = ans;
+    return ans;
+}
+
 /* Drop what was cached about the account we were in.  Called when the prefix
    changes (a different account) and by the CLI between accounts. */
+/* Forget what the ACCOUNT looked like — its file list and the deletion memo.
+ * Both are answers about live state, and mvgitd serves many commands from one
+ * process, so a cache that outlives a command is a cache that reports a file
+ * created a moment ago as absent (and one just deleted as present).  Cheap: one
+ * FILELIST per command. */
+static void backend_files_reset(void) {
+    free(g_bfiles.n);
+    g_bfiles.n = NULL;
+    g_bfiles.c = g_bfiles.cap = 0;
+    g_bfiles_done = 0;
+    g_gone_ans = -1;
+}
+
 void mv_git_forget_account(void) {
+    g_gone_ans = -1;                 /* the memo belongs to the old account */
     free(g_bfiles.n);
     g_bfiles.n = NULL;
     g_bfiles.c = g_bfiles.cap = 0;
@@ -1749,6 +1949,7 @@ static int is_file_control(const char *path) {
 static int path_storable(const char *path);
 
 void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    backend_files_reset();      /* the account as it IS, not as it was cached */
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -1904,7 +2105,10 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (!rel) continue;               /* another account's record */
         char top[256];
         split_top(rel, top, sizeof top);
-        if (!is_mv_file(top) && !backend_has_file(ctx, top))
+        /* The whole file may be gone — DELETE.FILE, or a checkout that dropped
+           its %FILE%.  Then everything under it is deleted, not skipped. */
+        int gone_file = tracked_file_gone(ctx, index, top);
+        if (!gone_file && !is_mv_file(top) && !backend_has_file(ctx, top))
             continue;                     /* plain path — git tracks deletions */
         /* A record path is `<file>/<id>`.  An entry with no slash is a plain
            file at the account root, and git tracks its own deletions — but its
@@ -1919,7 +2123,13 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            exists to find.  Looking for one and not finding it is expected, so
            reporting it deleted would make every account permanently dirty the
            moment its files were described. */
-        if (strcmp(recid, "%FILE%") == 0) continue;
+        if (!gone_file && strcmp(recid, "%FILE%") == 0) continue;
+        if (gone_file) {                  /* the file itself went: all of it */
+            char line[700];
+            snprintf(line, sizeof line, " D %s", e->path);
+            sb_line(&s, line);
+            continue;
+        }
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int isrec = 0, gone = 0;
@@ -2665,6 +2875,56 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
            (see materialize_file) rather than reconcile-deleting them. */
         materialize_file(ctx, repo, tree, sub, name, strict, nw, nd);
         git_tree_free(sub);
+    }
+    /* FILES THIS COMMIT NO LONGER HAS.  The loop above walks what the TREE
+       holds, so a file dropped between commits is simply never visited and
+       survives the checkout — the account keeps a file the branch does not have.
+       %FILE% is the file's existence in git, so a commit without one is a commit
+       without the file: delete it, dictionary and all.
+       Not on a fresh clone (strict): there is nothing to reconcile against, and
+       the destination's own files are its own.  Only files GIT TRACKED are
+       touched — a file the account has that git never knew about is not ours to
+       remove — and never the VOC, which is the account itself. */
+    if (!strict) {
+        git_index *idx = NULL;
+        if (git_repository_index(&idx, repo) == 0) {
+            mv_value fl;
+            mv_init(&fl);
+            mv_filelist(ctx, &fl);
+            char nb[40];
+            const char *p;
+            int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p), i = 0;
+            while (i < len) {
+                int64_t st = i;
+                while (i < len && (unsigned char)p[i] != 0xFE &&
+                       (unsigned char)p[i] != 0xFD) i++;
+                int64_t nl = i - st;
+                if (nl > 0 && nl < 256) {
+                    char nm[256];
+                    memcpy(nm, p + st, (size_t)nl);
+                    nm[nl] = '\0';
+                    size_t l = strlen(nm);
+                    int is_dict = l > 5 && strcmp(nm + l - 5, ".DICT") == 0;
+                    if (!is_dict && strcasecmp(nm, "VOC") != 0 &&
+                        strcasecmp(nm, "MD") != 0 && !tree_is_mv_file(tree, nm)) {
+                        char ctl[600], path[700];
+                        snprintf(ctl, sizeof ctl, "%s.DICT", nm);
+                        record_path(path, sizeof path, ctl, "%FILE%");
+                        if (git_index_get_bypath(idx, path, 0)) {
+                            mv_value spec;
+                            mv_init(&spec);
+                            mv_set_str(&spec, nm, (int64_t)strlen(nm));
+                            if (mv_deletefile(ctx, &spec) && nd) (*nd)++;
+                            mv_clear(&spec);
+                        }
+                    }
+                }
+                while (i < len && (unsigned char)p[i] != 0xFE) i++;
+                if (i < len) i++;
+            }
+            mv_clear(&fl);
+            git_index_free(idx);
+        }
     }
     if (owned) git_tree_free(owned);
 }
@@ -3663,6 +3923,11 @@ static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
 char *mv_git_init(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITINIT, ctx, a, 1);
+}
+
+char *mv_git_prune_gone(mv_ctx *ctx, const char *repo, const char *live) {
+    const char *a[] = {repo, live ? live : ""};
+    return run_sub(mvx_sub_GITPRUNE, ctx, a, 2);
 }
 
 /* textconv (mvx#25 tidy diffs) — a git textconv filter: read the record blob at

@@ -70,6 +70,18 @@ char *GITFLUSH(char *repo) {
     return "";
 }
 
+/* GITPRUNE(repo) — unstage every record of a file the account no longer has.
+   The wholesale add is BASIC here, so it calls this when its walk is done; the
+   C add calls the same function directly. */
+char *GITPRUNE(char *repo, char *live) {
+    mv_git_batch_end();                 /* the index must be on disk first */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_prune_gone(ctx, rp(repo), live ? live : "");
+    mv_ctx_destroy(ctx);
+    free(r);
+    return "";
+}
+
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {

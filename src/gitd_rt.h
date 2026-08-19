@@ -64,6 +64,10 @@ int64_t mv_delete_rec(mv_ctx *ctx, const mv_value *fvar, const mv_value *id);
 void    mv_select(mv_ctx *ctx, const mv_value *fvar);
 int64_t mv_readnext(mv_ctx *ctx, mv_value *id);
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type);
+/* Delete the file named by `spec`, with its dictionary.  Non-zero if it is gone
+   afterwards (including "it was not there").  Used when a checkout removes a
+   file's %FILE% control — the control is the file's existence in git. */
+int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec);
 void    mv_filelist(mv_ctx *ctx, mv_value *dst);
 int64_t mv_fileclass(mv_ctx *ctx, const char *name, char *out, size_t cap);
 int64_t mv_indices(mv_ctx *ctx, const char *name, char *out, size_t cap);

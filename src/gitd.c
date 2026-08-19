@@ -347,6 +347,7 @@ static opres op_commit(const args *g) {
     return ok(r); }
 
 BRIDGE1(op_status,     mv_git_status(ctx, rp(A(g,0))))
+BRIDGE1(op_prune,      mv_git_prune_gone(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_log,        mv_git_log(ctx, rp(A(g,0)), A(g,1)[0] ? A(g,1) : "20"))
 BRIDGE1(op_branch,     mv_git_branch(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
@@ -389,6 +390,7 @@ static const struct {
     { "STAGEBLOB",   3, op_stageblob  },
     { "COMMIT",      2, op_commit     },
     { "STATUS",      1, op_status     },
+    { "PRUNE",       2, op_prune      },
     { "LOG",         2, op_log        },
     { "BRANCH",      2, op_branch     },
     { "FILES",       1, op_files      },

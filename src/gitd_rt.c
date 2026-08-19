@@ -104,6 +104,11 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id) {
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     (void)ctx; (void)spec; (void)type; norecords("mv_createfile");
 }
+
+int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec) {
+    (void)ctx; (void)spec; norecords("mv_deletefile");
+    return 0;
+}
 void mv_filelist(mv_ctx *ctx, mv_value *dst) {
     (void)ctx; (void)dst; norecords("mv_filelist");
 }

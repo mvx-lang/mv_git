@@ -59,6 +59,7 @@
 #  define mv_delete_rec   mvx_delete_rec
 #  define mv_select       mvx_select
 #  define mv_createfile   mvx_createfile
+#  define mv_deletefile   mvx_deletefile
 #  define mv_filelist     mvx_filelist
 #  define mv_openaccount  mvx_openaccount
 #  define mv_fatal        mvx_fatal
@@ -184,6 +185,14 @@ char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mv_git_commit(mv_ctx *ctx, const char *repo, const char *msg);
 char *mv_git_status(mv_ctx *ctx, const char *repo);
+/* Unstage every record of a file the account no longer has — %FILE% gone means
+   the file is gone.  Its own entry point because the wholesale add has three
+   implementations (C on MVX, BASIC on UniVerse and UniData) and all of them
+   must reconcile the same way.
+   `live` is the account's file names, @AM-separated, from whoever CAN see them:
+   mvgitd has no record backend, so it must be told rather than asked.  Empty
+   means "ask the backend" (in-process: MVX and the CLI drivers). */
+char *mv_git_prune_gone(mv_ctx *ctx, const char *repo, const char *live);
 char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count);
 char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file);
 char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,

@@ -332,6 +332,34 @@ static int udt_file_exists(const char *name) {
     return 1;
 }
 
+/* Delete a file, dictionary and all.
+ *
+ * DELETE.FILE asks ONCE — "Do you really want to delete file X?(Y/N):" — and
+ * then removes BOTH the data file and its dictionary (measured on 8.3: one "Y"
+ * prints "Deleting file D_ZAP2." and "Deleting file ZAP2.").  So the platform
+ * already does the directory-style removal; what this has to do is answer.
+ *
+ * ic_data is InterCall's DATA stack, the same mechanism the BASIC agent uses to
+ * answer the same prompt.  Without it udt_run_ecl sees the prompt (IE_AT_INPUT),
+ * cancels the execute to avoid leaving it active, and the file survives — a
+ * silent no-op, which for a delete is the worst possible failure.
+ */
+int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec) {
+    udt_ensure_session(ctx);
+    const char *name = spec->data ? spec->data : "";
+    if (!*name) return 0;
+    if (!udt_file_exists(name)) return 1;          /* already gone */
+    char yes[] = "Y";
+    long ylen = 1, code = 0;
+    ic_data(yes, &ylen, &code);
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd, "DELETE.FILE %s", name);
+    udt_run_ecl(cmd);
+    long ccode = 0;
+    ic_cleardata(&ccode);        /* nothing of ours left on the stack */
+    return !udt_file_exists(name);
+}
+
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     udt_ensure_session(ctx);
     const char *name = spec->data ? spec->data : "";

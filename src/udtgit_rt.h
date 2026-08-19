@@ -69,6 +69,10 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id);   /* 0 when the list is done */
 /* Create file `spec`; `type` is NULL for the account default (a dynamic hash
    file) or "DIR" for a directory file. */
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type);
+/* Delete the file named by `spec`, with its dictionary.  Non-zero if it is gone
+   afterwards (including "it was not there").  Used when a checkout removes a
+   file's %FILE% control — the control is the file's existence in git. */
+int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec);
 /* Fill `dst` with the account's files as "name<VM>type" rows, @AM-separated. */
 void    mv_filelist(mv_ctx *ctx, mv_value *dst);
 /* Report a live file's open-form class into `out`: "DIR", or the extended hash

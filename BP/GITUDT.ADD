@@ -36,6 +36,21 @@ $IFNDEF MVX
 *  COMMIT, which reads it from disk in a separate process — so a batch still
 *  held in memory here is a commit of nothing there.
    CALL GIT.OBJ("FLUSH", 1, REPO, "", "", "", "", OBJOUT)
+*  FILES THAT ARE GONE.  The walk above stages what EXISTS, so a file deleted
+*  from the account is never visited and its records stay staged for ever —
+*  committed again every time, and brought back whole by a clone.  %FILE% is the
+*  file's existence in git, so when it goes the file goes: PRUNE drops every
+*  record under <file>/ and <file>.DICT/.  Only on a blanket add — naming one
+*  file is about that file.  The engine does exactly this inside its own C
+*  add; calling the same primitive here is what keeps the two agreeing.
+*  FILES is the list this walk actually found, and it has to be US who says so:
+*  mvgitd has no record backend of its own — it cannot open the account — so
+*  asked to decide what is live it would answer "nothing" and unstage the lot.
+   IF BLANKET THEN
+      PRUNEOUT = ""
+      CALL GIT.OBJ("PRUNE", 2, REPO, FILES, "", "", "", PRUNEOUT)
+      IF PRUNEOUT # "" THEN CALL GIT.ECHO(PRUNEOUT)
+   END
 *  A record whose id cannot be a git path is not versioned, so say so rather
 *  than let the count quietly disagree with what was committed.
    IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)

@@ -215,6 +215,15 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id) {
     return 1;
 }
 
+int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec) {
+    (void)ctx;
+    const char *a[1] = { sdata(spec) };
+    char *body = NULL;
+    int ok = call("DELETEFILE", 1, a, NULL, &body, NULL);
+    free(body);
+    return ok ? 1 : 0;
+}
+
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
     (void)ctx;
     const char *a[2] = { sdata(spec), sdata(type) };
