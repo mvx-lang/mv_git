@@ -16,14 +16,23 @@
 set -eu
 
 PREFIX=/usr/local
+VERBONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -p|--prefix) PREFIX="$2"; shift 2 ;;
-        *) echo "usage: ./install.sh [-p prefix]" >&2; exit 2 ;;
+        # --verb-only: set up the in-session verb in the CURRENT account and
+        # nothing else — no binaries, no account creation.  It exists so a
+        # freshly cloned account can be made usable without a second copy of
+        # this recipe living in C (mv_git#56).  The sources come from the
+        # staged tree beside this script; the work happens in the caller's cwd.
+        --verb-only) VERBONLY=1; shift ;;
+        *) echo "usage: ./install.sh [-p prefix] [--verb-only]" >&2; exit 2 ;;
     esac
 done
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="$(cd "$(dirname "$0")" && pwd)"
+HERE="$SRC"
+[ "$VERBONLY" = 1 ] && HERE="$PWD"
 cd "$HERE"
 say() { printf '  %s\n' "$*"; }
 
@@ -45,17 +54,30 @@ if ldd ./bin/mvgitd 2>/dev/null | grep -q 'not found'; then
 fi
 
 # ---- binaries ---------------------------------------------------------------
+if [ "$VERBONLY" = 0 ]; then
 say "installing mvgitd + uv-git to $PREFIX/bin"
 mkdir -p "$PREFIX/bin"
 install -m 0755 bin/mvgitd  "$PREFIX/bin/mvgitd"
 install -m 0755 bin/uv-git  "$PREFIX/bin/uv-git"
+
+# Stage what a LATER clone will need to set itself up: the verb sources, the
+# platform header and this script.  Without it a cloned account has no route to
+# the verb at all, since UniVerse has no global catalog and every account must
+# compile its own (mv_git#56).
+say "staging the verb sources to $PREFIX/share/mvgit"
+mkdir -p "$PREFIX/share/mvgit"
+cp -r "$SRC/BP" "$PREFIX/share/mvgit/BP.staged" 2>/dev/null || \
+  cp -r "$SRC/BP.staged" "$PREFIX/share/mvgit/BP.staged" 2>/dev/null || true
+cp "$SRC/PLATFORM.H" "$PREFIX/share/mvgit/PLATFORM.H" 2>/dev/null || true
+install -m 0755 "$SRC/install.sh" "$PREFIX/share/mvgit/install.sh"
+fi
 
 # ---- make this directory an account ----------------------------------------
 # A fresh UniVerse directory becomes an account on its first `uv`, which asks to
 # update the VOC's RELLEVEL and then for a flavour.  The packages target classic
 # Pick, so the flavour is 3.  An existing account skips both prompts and the
 # extra answers are harmless.
-if [ ! -e VOC ]; then
+if [ "$VERBONLY" = 0 ] && [ ! -e VOC ]; then
     say "making this directory a UniVerse account (Pick flavour)"
     printf 'Y\n3\nQUIT\n' | uv >/dev/null 2>&1 || true
 fi
@@ -83,7 +105,8 @@ mkfile() {
 # the directory together, and refuses when the directory is already there.
 if [ ! -e D_BP ]; then
     say "registering BP as a UniVerse file"
-    mv BP BP.staged
+    [ -d BP ] && mv BP BP.staged
+    [ -d BP.staged ] || cp -r "$SRC/BP.staged" BP.staged
     mkfile BP
     [ -d BP ] || { echo "install.sh: CREATE.FILE did not create BP" >&2; exit 1; }
     for f in BP.staged/*; do [ -f "$f" ] && cp "$f" "BP/"; done
@@ -97,8 +120,8 @@ mkfile BP.INC
 # installed account could disagree about what was compiled.
 say "installing BP.INC/PLATFORM.H (UniVerse platform defines)"
 mkdir -p BP.INC
-if [ -f PLATFORM.H ]; then
-    cp PLATFORM.H BP.INC/PLATFORM.H
+if [ -f PLATFORM.H ] || [ -f "$SRC/PLATFORM.H" ]; then
+    cp "$([ -f PLATFORM.H ] && echo PLATFORM.H || echo "$SRC/PLATFORM.H")" BP.INC/PLATFORM.H
 else
     echo "install.sh: PLATFORM.H is missing from this package — it is produced" >&2
     echo "            by build-uv.sh; this tarball was not built properly." >&2

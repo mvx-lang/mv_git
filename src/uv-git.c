@@ -881,6 +881,45 @@ static int run_account(int argc, char **argv, int i) {
    account is stock precisely because nothing has been installed into it, so it
    cannot answer until this is done — and seeding it is cheaper and far more
    honest than trying to read a VOC without a session. */
+/* Put the in-session GIT verb into the account we are standing in.
+ *
+ * UniVerse has NO GLOBAL CATALOG, so every account compiles and catalogs its
+ * own copy of the verb and each handler it dispatches to.  A cloned account had
+ * none, so the first thing a developer typed there failed with "Unable to open
+ * the operating system file BP.O/GIT" — and the only remedy was running the
+ * installer by hand, at a shell, which is the one place the MV developer is not
+ * (mv_git#56).
+ *
+ * The recipe is NOT duplicated here.  Standing an account's verb up has real
+ * subtleties — CREATE.FILE's seven prompts, the empty file DESCRIPTION that
+ * keeps the VOC type readable as plain "F", the trailing newline UniVerse's
+ * compiler insists on — all of which install.sh already gets right and
+ * documents.  A second copy in C would drift from it.  So install.sh is staged
+ * at install time and re-run here with --verb-only.
+ */
+static void deploy_git_verb(void) {
+    const char *share = getenv("MVGIT_SHARE");
+    char base[4096], script[4200];
+    snprintf(base, sizeof base, "%s", share && share[0] ? share
+                                                        : "/usr/local/share/mvgit");
+    snprintf(script, sizeof script, "%s/install.sh", base);
+    if (access(script, R_OK) != 0) {
+        fprintf(stderr,
+                "uv-git: no staged verb sources at %s, so this account cannot run\n"
+                "        the GIT verb yet — run install.sh inside it, or set\n"
+                "        MVGIT_SHARE to the staged package.\n", base);
+        return;
+    }
+    char cmd[8500];
+    snprintf(cmd, sizeof cmd, "sh '%s' --verb-only >/dev/null 2>&1", script);
+    if (system(cmd) == 0 && access("BP.O/GIT", F_OK) == 0)
+        printf("uv-git: in-session GIT verb set up in this account "
+               "(try: GIT STATUS)\n");
+    else
+        fprintf(stderr, "uv-git: could not set up the in-session GIT verb here; "
+                        "run install.sh in this account to see why\n");
+}
+
 static int build_stock(const char *flavour, const char *code, const char *out) {
     char tmpl[] = "/tmp/uvstockXXXXXX";
     if (!mkdtemp(tmpl)) return -1;
@@ -1383,7 +1422,10 @@ static int clone_cmd(int argc, char **argv, int i) {
         free(out);
     }
     mv_ctx_destroy(ctx);
-    mv_agent_release();
+    mv_agent_release();      /* the seeding session goes before the verb build */
+
+    /* An account that cannot run GIT is not finished being cloned. */
+    deploy_git_verb();
 
     printf("cloned into %s as a UniVerse account (%s flavour)\n",
            dir, uv_flavours[fi].name);
