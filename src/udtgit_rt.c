@@ -27,7 +27,6 @@
 
 #include "udtgit_rt.h"
 
-#include <execinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,12 +135,6 @@ static const char *udt_setting(const char *env, const char *cfgkey,
    UniData account. */
 static void udt_ensure_session(mv_ctx *ctx) {
     if (ctx->open) return;
-    if (getenv("MVGIT_TRACE_SESSION")) {   /* who is asking for records? */
-        void *bt[12];
-        int n = backtrace(bt, 12);
-        fprintf(stderr, "--- udt_ensure_session called from:\n");
-        backtrace_symbols_fd(bt, n, 2);
-    }
     char ub[256], pb[256], hb[256], sb[64];
     const char *host = udt_setting("UDT_HOST", "host", hb, sizeof hb, "localhost");
     const char *user = udt_setting("UDT_USER", "user", ub, sizeof ub, getenv("USER"));

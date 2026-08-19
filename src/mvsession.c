@@ -62,6 +62,7 @@ struct mv_session {
     int   nopens, capopens;
     int   in_replay;                /* guard: no reconnect while reconnecting */
     int   reconnects;               /* consecutive rebuilds; a runaway guard   */
+    char  chatter[MVG_PATH_MAX + 16]; /* what the session printed, for diagnosis */
     struct mv_session *next;
 };
 
@@ -280,6 +281,7 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
     mkdir(s->dir, 0700);
 
     char reqp[MVG_PATH_MAX + 8], rspp[MVG_PATH_MAX + 8], runp[MVG_PATH_MAX + 8];
+    snprintf(s->chatter, sizeof s->chatter, "%s/chatter", s->dir);
     snprintf(reqp, sizeof reqp, "%s/req", s->dir);
     snprintf(rspp, sizeof rspp, "%s/rsp", s->dir);
     snprintf(runp, sizeof runp, "%s/run", s->dir);
@@ -337,10 +339,17 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
            $MVGIT_AGENT_LOG keeps it instead, which is the only way to see a BASIC
            error that killed the agent: from out here that looks like a session
            which stopped answering, and the reason is in the output we throw away. */
+        /* ALWAYS capture, not only when $MVGIT_AGENT_LOG is set.  What the
+           session prints is the only place the real reason ever appears — a
+           BASIC error that killed the agent, or the platform refusing to start
+           one at all — and discarding it is what made every such failure read as
+           "the agent did not answer".  On UniData that hid "Licensed # of users
+           has been reached" behind a message about BP/GIT.AGENT, and cost this
+           bug two wrong diagnoses. */
         const char *logf = getenv("MVGIT_AGENT_LOG");
         int sink = (logf && logf[0])
                  ? open(logf, O_WRONLY | O_CREAT | O_APPEND, 0600)
-                 : open("/dev/null", O_WRONLY);
+                 : open(s->chatter, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (sink >= 0) {
             dup2(sink, STDOUT_FILENO);
             dup2(sink, STDERR_FILENO);
@@ -358,9 +367,26 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
     int st = call_raw(s, "PING", 0, NULL, NULL, &body, NULL);
     free(body);
     if (st != MVG_OK) {
-        snprintf(err, errcap,
-                 "the account I/O agent did not answer in %s — is BP/GIT.AGENT "
-                 "compiled there?", s->account);
+        char said[512] = "";
+        FILE *c = fopen(s->chatter, "r");
+        if (c) {
+            /* the last non-empty line is the complaint, if there was one */
+            char line[512];
+            while (fgets(line, sizeof line, c)) {
+                size_t n = strlen(line);
+                while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+                if (n && line[0] != ':') snprintf(said, sizeof said, "%s", line);
+            }
+            fclose(c);
+        }
+        if (said[0])
+            snprintf(err, errcap,
+                     "the account I/O agent did not answer in %s.\n"
+                     "        %s said: %s", s->account, g_shell, said);
+        else
+            snprintf(err, errcap,
+                     "the account I/O agent did not answer in %s — is BP/GIT.AGENT "
+                     "compiled there?", s->account);
         return -1;
     }
     return 0;
