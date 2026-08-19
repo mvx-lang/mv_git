@@ -29,8 +29,26 @@ $IFNDEF MVX
       IF NSKIP > 0 THEN PRINT NSKIP : " virtual file(s) skipped (SQL catalog / DataView — no data to stage)"
    END ELSE
       FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0 ; BLANKET = 0
-      GOSUB STAGEDATA
-      PRINT NSTAGED : " record(s) staged"
+*     A NAMED RECORD stages just that record.  This arm ignored the id entirely
+*     and staged the whole file — `GIT ADD VOC ZZPULL` reported "617 record(s)
+*     staged" — while MVX and UniVerse both stage the one record named.  Three
+*     implementations, and this was the one that had never been asked.
+      ONEID = FIELD(S, " ", 4)
+      IF ONEID # "" AND ONEID[1,1] # "-" THEN
+         OPEN FILE TO OF1 ELSE
+            PRINT "GIT: cannot open " : FILE
+            RETURN
+         END
+         READ OREC FROM OF1, ONEID THEN
+            CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, ONEID, OREC, "", OBJOUT)
+            PRINT "1 record(s) staged"
+         END ELSE
+            PRINT "GIT: no record " : ONEID : " in " : FILE
+         END
+      END ELSE
+         GOSUB STAGEDATA
+         PRINT NSTAGED : " record(s) staged"
+      END
    END
 *  Write the staged index to disk before returning.  It is the handover to
 *  COMMIT, which reads it from disk in a separate process — so a batch still
@@ -192,7 +210,9 @@ RECONCILE:
          READ RCHK FROM RCV, RID THEN
             NULL
          END ELSE
-            CALL GIT.OBJ("RM", 3, REPO, RCFILE, RID, "", "", OBJOUT)
+*           RCOUT, not OBJOUT: OBJOUT is echoed when this handler returns, so
+*           borrowing it here made the reconcile's chatter the command's output.
+            CALL GIT.OBJ("RM", 3, REPO, RCFILE, RID, "", "", RCOUT)
          END
       END
    NEXT RI

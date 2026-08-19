@@ -72,6 +72,17 @@
 *     accepts the matrix form happily, so this only shows up on UniData.
       REPO = A1
       ISCAT = 0
+*     CLEAR THE SIDE CHANNEL FIRST.  The result comes back through files —
+*     REPO/gitmsg, or REPO/gitcat for CAT — and an opcode that produces no
+*     message never writes one.  So OUT came back holding the PREVIOUS call's
+*     text, and the caller printed it as its own: `GIT ADD VOC ZZPULL` answered
+*     "1 record(s) staged" and then echoed the whole dictionary id list left by
+*     an INDEXIDS, which UniData then PAGINATED — "Enter <New line> to
+*     continue..." — swallowing the next commands in a piped session.  Stale
+*     output that reads as this command's is worse than none.
+      EMPTY = ""
+      OSWRITE EMPTY ON REPO : "/gitmsg" ELSE NULL
+      OSWRITE EMPTY ON REPO : "/gitcat" ELSE NULL
       BEGIN CASE
 *     FLUSH is REAL here now.  It was a no-op, with a note wondering whether
 *     UniData needed it; measured on 8.3, it does, for exactly the reason the

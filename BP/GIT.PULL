@@ -67,6 +67,12 @@ $ENDIF
 *     costs a SECOND session for the length of the command.  UniData TE licenses
 *     two, so an in-session clone already exhausts them (mv_git#54) — and "one
 *     licence where one will do" is the rule this whole design follows.
+*     REPO first — dropping this when the handler was restructured cost a run:
+*     UniVerse survived it (mvgitd resolves its own repo path when handed an
+*     empty one) while UniData reported "UNINITIALIZED VARIABLE USED! Zero
+*     Assumed!" and pulled nothing.  A thing that works on one platform by luck
+*     is exactly what the other platform is for.
+      CALL GIT.REPO(REPO)
       CALL GIT.OBJ("PULLREF", 3, REPO, RNAME, BR, "", "", OBJOUT)
       CALL GIT.ECHO(OBJOUT)             ;* fast-forward / up to date / conflict
       CALL GITUDT.CHECKOUT(REPO)        ;* materialise the new HEAD natively

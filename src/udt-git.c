@@ -477,6 +477,11 @@ static int do_clone(const char *repo, const char *dir) {
         free(report);
     }
     deploy_git_verb();   /* the cloned account can run the in-session GIT verb too */
+    /* The same closing line uv-git prints.  Without it the caller had no single
+       statement that the clone had succeeded — only a record count — and the
+       suite, which looks for exactly this, reported every good clone as a
+       failure. */
+    printf("cloned into %s as a UniData account\n", dir);
     return 0;
 }
 
@@ -614,11 +619,20 @@ static void deploy_git_verb(void) {
     if (!u) { fprintf(stderr, "udt-git: could not run udt to catalog the GIT verb\n"); return; }
     fputs("BASIC BP GIT\n", u);
     fputs("CATALOG BP GIT LOCAL FORCE\n", u);
-    if (pclose(u) == 0)
+    fputs("QUIT\n", u);            /* leave properly; EOF alone exits non-zero */
+    pclose(u);
+    /* JUDGE BY THE ARTIFACT, NOT THE EXIT CODE.  A piped `udt` reports whatever
+       it likes — install.sh already records that it exits 0 when an internal
+       command failed, and this found the reverse: the compile and the catalog
+       both SUCCEEDED and the account ran GIT afterwards, while pclose said
+       non-zero and clone announced "could not catalog the GIT verb (is the
+       package's CallC library built?)".  A false failure on a good clone sends
+       the reader hunting a library that was never the problem. */
+    if (access("CTLG/GIT", F_OK) == 0)
         printf("udt-git: in-session GIT verb set up in this account (try: GIT STATUS)\n");
     else
-        fprintf(stderr, "udt-git: could not catalog the GIT verb"
-                        " (is the package's CallC library built?)\n");
+        fprintf(stderr, "udt-git: the GIT verb did not catalog into this account"
+                        " (no CTLG/GIT); run `BASIC BP GIT` there to see why\n");
 }
 
 int main(int argc, char **argv) {
