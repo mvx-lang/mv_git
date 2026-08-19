@@ -193,6 +193,10 @@ char *mv_git_status(mv_ctx *ctx, const char *repo);
    mvgitd has no record backend, so it must be told rather than asked.  Empty
    means "ask the backend" (in-process: MVX and the CLI drivers). */
 char *mv_git_prune_gone(mv_ctx *ctx, const char *repo, const char *live);
+/* The record ids staged under <file>/, @AM-separated — so a caller that CAN read
+   the account can tell which of them are gone.  Neither side can reconcile a
+   record deletion alone: BASIC cannot see the index, mvgitd cannot read records. */
+char *mv_git_index_ids(mv_ctx *ctx, const char *repo, const char *file);
 char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count);
 char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file);
 char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,

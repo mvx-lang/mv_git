@@ -190,6 +190,25 @@ SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "x" ON F, "C9"'
 case "$(GITV "$A" GIT STATUS)" in *CUST/C9*) bad "ignore hides record" "no CUST/C9" "shown";; *) ok "ignore hides record";; esac
 
+say "-- a deleted RECORD leaves history too --"
+# Staging only ever ADDS, so a record deleted from the account used to stay in
+# the index and go on being committed — and a clone brought it back.  status has
+# always reported it correctly, so the two disagreed about the same account.
+SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+WRITE "gone soon" ON F, "CZ"'
+GITV "$A" GIT ADD -A >/dev/null
+GITV "$A" GIT COMMIT -m withcz >/dev/null
+t  "record committed" "gone soon"  "$(GITV "$A" GIT SHOW CUST CZ)"
+SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+DELETE F, "CZ"'
+t  "delete shows D"   "CZ"         "$(GITV "$A" GIT STATUS)"
+GITV "$A" GIT ADD -A >/dev/null
+GITV "$A" GIT COMMIT -m nocz >/dev/null
+case "$(GITV "$A" GIT SHOW CUST CZ)" in
+  *"gone soon"*) bad "record gone from HEAD" "no CUST/CZ" "still there";;
+  *)             ok "record gone from HEAD";;
+esac
+
 say "-- DELETE.FILE: %FILE% is the file, so the whole file goes --"
 # %FILE% is a file's existence in git, so deleting the file must behave like
 # removing a directory: every record under <file>/ AND <file>.DICT/ is a
@@ -204,7 +223,7 @@ GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m withfile >/dev/null
 t  "file committed"   "one"       "$(GITV "$A" GIT SHOW TMPF T1)"
 DF "$A" TMPF
-t  "delete shows D"   "TMPF"      "$(GITV "$A" GIT STATUS)"
+t  "file delete shows D" "TMPF"   "$(GITV "$A" GIT STATUS)"
 GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m nofile >/dev/null
 # The file and its dictionary are gone from the commit.  NOT asserting a fully

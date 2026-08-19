@@ -36,6 +36,27 @@ $IFNDEF MVX
 *  COMMIT, which reads it from disk in a separate process — so a batch still
 *  held in memory here is a commit of nothing there.
    CALL GIT.OBJ("FLUSH", 1, REPO, "", "", "", "", OBJOUT)
+*  RECORDS DELETED from a live file.  Staging only ever ADDS, so a record removed
+*  from the account stayed in the index and went on being committed — and a clone
+*  brought it back.  status has always reported these correctly, so the two
+*  disagreed about the same account.  The C add reconciles this per file; this is
+*  that, for the platforms whose add is BASIC.
+*
+*  AFTER THE FLUSH, not during the walk.  Staging batches in memory and only the
+*  flush writes it; unstaging edits the index ON DISK, so a reconcile done inside
+*  the loop was silently undone the moment the batch landed on top of it.  That
+*  is why this worked on UniData (CallC flushes per op) and not on UniVerse.
+   IF BLANKET THEN
+      NRC = DCOUNT(FILES, AM)
+      FOR RK = 1 TO NRC
+         RCBASE = FIELD(FILES<RK>, VM, 1)
+         RCFILE = RCBASE            ; GOSUB RECONCILE
+         RCFILE = RCBASE : ".DICT"  ; GOSUB RECONCILE
+      NEXT RK
+   END ELSE
+      RCFILE = FILE           ; GOSUB RECONCILE
+      RCFILE = FILE : ".DICT" ; GOSUB RECONCILE
+   END
 *  FILES THAT ARE GONE.  The walk above stages what EXISTS, so a file deleted
 *  from the account is never visited and its records stay staged for ever —
 *  committed again every time, and brought back whole by a clone.  %FILE% is the
@@ -145,6 +166,36 @@ STAGEDATA:
          END
       END
    REPEAT
+   RETURN
+*  Unstage every id git holds for RCFILE that the account no longer has.  The
+*  engine says what it has (INDEXIDS) and we say what still READs — neither side
+*  can do it alone: BASIC cannot see the index, and mvgitd has no record backend.
+*  The READs are local, so the only traffic is one INDEXIDS and one RM per record
+*  actually deleted; an account with no deletions costs a single call per file.
+RECONCILE:
+   IDS = ""
+   CALL GIT.OBJ("INDEXIDS", 2, REPO, RCFILE, "", "", "", IDS)
+   IF IDS = "" THEN RETURN
+*  A dictionary is not opened by name: "CUST.DICT" is not a file, DICT CUST is.
+   RCL = LEN(RCFILE)
+   IF RCL > 5 AND RCFILE[RCL - 4, 5] = ".DICT" THEN
+      OPEN "DICT", RCFILE[1, RCL - 5] TO RCV ELSE RETURN
+   END ELSE
+      OPEN RCFILE TO RCV ELSE RETURN
+   END
+   NID = DCOUNT(IDS, AM)
+   FOR RI = 1 TO NID
+      RID = IDS<RI>
+*     %FILE% is SYNTHESISED from the live file's geometry, never a record — so it
+*     can never be read and must never be reported gone.
+      IF RID # "%FILE%" AND RID # "%INDEXES%" THEN
+         READ RCHK FROM RCV, RID THEN
+            NULL
+         END ELSE
+            CALL GIT.OBJ("RM", 3, REPO, RCFILE, RID, "", "", OBJOUT)
+         END
+      END
+   NEXT RI
    RETURN
 STAGEDICT:
    OPEN "DICT", FILE TO DCF ELSE RETURN

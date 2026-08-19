@@ -1657,6 +1657,43 @@ void mvx_sub_GITRM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[3], "removed from tracking", 21);
 }
 
+/* GITINDEXIDS(repo, file, out) — the record ids currently staged under <file>/,
+ * @AM-separated.
+ *
+ * NEITHER SIDE CAN RECONCILE ALONE, which is why this exists.  Staging a deleted
+ * record's removal needs two facts: what git has, and what the account still
+ * has.  The BASIC add can read the account but cannot see the index; mvgitd can
+ * see the index but has no record backend at all.  So the engine answers "what
+ * do I have for this file" and the caller — which can READ — decides.
+ */
+void mvx_sub_GITINDEXIDS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], fn[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], fn, sizeof fn);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+    char pfx[600];
+    int pn = snprintf(pfx, sizeof pfx, "%s%s/", g_prefix, fn);
+    sbuf b = {0};
+    if (pn > 0) {
+        for (size_t i = 0; i < git_index_entrycount(index); i++) {
+            const git_index_entry *e = git_index_get_byindex(index, i);
+            if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+            if (strncmp(e->path, pfx, (size_t)pn) != 0) continue;
+            const char *id = e->path + pn;
+            if (!*id || strchr(id, '/')) continue;     /* not a plain record id */
+            sb_line(&b, id);
+        }
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&b, argv[2], "");
+}
+
 /* GITCOMMIT(repo, message, out) — commit the staged index. */
 void mvx_sub_GITCOMMIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -3923,6 +3960,11 @@ static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
 char *mv_git_init(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITINIT, ctx, a, 1);
+}
+
+char *mv_git_index_ids(mv_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITINDEXIDS, ctx, a, 2);
 }
 
 char *mv_git_prune_gone(mv_ctx *ctx, const char *repo, const char *live) {

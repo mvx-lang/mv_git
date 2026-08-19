@@ -82,6 +82,15 @@ char *GITPRUNE(char *repo, char *live) {
     return "";
 }
 
+/* GITINDEXIDS(repo, file) — the ids staged under <file>/, @AM-separated. */
+char *GITINDEXIDS(char *repo, char *file) {
+    mv_git_batch_end();                 /* the index must be on disk first */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_index_ids(ctx, rp(repo), file ? file : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {
