@@ -124,6 +124,18 @@ $ENDIF
 *     udt-git already clones correctly (it creates the account, then materialises
 *     into it), so the verb hands over rather than keeping a second, broken
 *     implementation.  The developer still types GIT CLONE and never sees a shell.
+*     THE ONE PLACE THE SESSION CANNOT SERVE ITSELF.
+*
+*     Every other verb works on the account it is running in, so the session it
+*     already holds can answer for its own records — that is how PULL avoids a
+*     second licence (mv_git#54).  Clone cannot use that: it creates an account
+*     that does not exist yet, and an agent running in THIS account cannot
+*     materialise records into THAT one.  Tried, and it stops right after
+*     "Cloning into ..." for exactly that reason.
+*
+*     So clone is the exception, and it costs the second licence honestly: the
+*     caller's session, plus one in the account being built.  Anything cheaper
+*     would mean this session leaving the user's account to become the new one.
       CMD = "udt-git clone " : URL : " " : DIR
       IF REF # "" THEN CMD := " " : REF
 *     2>&1 because udt-git reports progress and failures on stderr and only the

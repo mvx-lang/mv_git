@@ -84,6 +84,18 @@ char *AGOPEN(char *reqp, char *rspp) {
     if (g_req >= 0) close(g_req);
     if (g_rsp >= 0) close(g_rsp);
     tlog("AGOPEN req=[%s] rsp=[%s]\n", reqp, rspp);
+    /* WAIT FOR THE PIPES, briefly.  In the ordinary case the driver made them
+       before starting us and they are already there.  In ATTACH mode the order
+       is reversed — the verb backgrounds the CLI and then becomes the agent — so
+       we may arrive first.  A short retry costs nothing when they exist and is
+       the difference between working and a puzzling failure when they do not
+       yet. */
+    for (int tries = 0; tries < 100; tries++) {
+        if (access(reqp ? reqp : "", F_OK) == 0 &&
+            access(rspp ? rspp : "", F_OK) == 0) break;
+        struct timespec ts = { 0, 100 * 1000 * 1000 };   /* 100ms */
+        nanosleep(&ts, NULL);
+    }
     g_req = open(reqp ? reqp : "", O_RDWR);
     g_rsp = open(rspp ? rspp : "", O_RDWR);
     tlog("AGOPEN done%s%s\n", "", "");

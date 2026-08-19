@@ -63,6 +63,7 @@ struct mv_session {
     int   in_replay;                /* guard: no reconnect while reconnecting */
     int   reconnects;               /* consecutive rebuilds; a runaway guard   */
     char  chatter[MVG_PATH_MAX + 16]; /* what the session printed, for diagnosis */
+    int   attached;                 /* serving session is the caller's, not ours */
     struct mv_session *next;
 };
 
@@ -154,6 +155,7 @@ static int write_all(int fd, const char *p, long n) {
  * "working on it" from "gone".  Without it a died agent left us polling a pipe
  * that would never deliver, for as long as the deadline allowed, over and over. */
 static int session_alive(pid_t pid) {
+    if (pid < 0) return 1;          /* attached: not our child, assume alive */
     if (pid <= 0) return 0;
     int st;
     return waitpid(pid, &st, WNOHANG) == 0;
@@ -273,6 +275,50 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
                  "or mvs_set_shell(\"udt\") before opening a session");
         return -1;
     }
+    /* ATTACH: SERVE ME, DO NOT START A SESSION.
+     *
+     * When the GIT VERB shells out to this CLI, a session already exists — the
+     * one the verb is running in — and starting another costs a second licence
+     * to reach the account we are already inside.  So the verb hands us a pipe
+     * pair and a token and then becomes the agent itself: we open what is
+     * already there and skip fork/exec entirely.
+     *
+     * The protocol is untouched.  The only difference is who owns the session,
+     * and that is exactly what was costing a licence. */
+    const char *adir = getenv("MVGIT_ATTACH_DIR");
+    const char *atok = getenv("MVGIT_ATTACH_TOKEN");
+    if (adir && adir[0] && atok && atok[0]) {
+        snprintf(s->dir, sizeof s->dir, "%s", adir);
+        snprintf(s->token, sizeof s->token, "%s", atok);
+        mkdir(s->dir, 0700);
+        char rq[MVG_PATH_MAX + 8], rs[MVG_PATH_MAX + 8];
+        snprintf(rq, sizeof rq, "%s/req", s->dir);
+        snprintf(rs, sizeof rs, "%s/rsp", s->dir);
+        /* We create them: we run first, and the agent retries until they
+           appear.  Existing ones are reused, not an error. */
+        mkfifo(rq, 0600);
+        mkfifo(rs, 0600);
+        s->req = open(rq, O_RDWR);
+        s->rsp = open(rs, O_RDWR);
+        if (s->req < 0 || s->rsp < 0) {
+            snprintf(err, errcap, "cannot open the attached pipes in %s: %s",
+                     s->dir, strerror(errno));
+            return -1;
+        }
+        s->pid = -1;                 /* nobody's child; the verb owns it */
+        s->attached = 1;
+        char *body = NULL;
+        int st = call_raw(s, "PING", 0, NULL, NULL, &body, NULL);
+        free(body);
+        if (st != MVG_OK) {
+            snprintf(err, errcap,
+                     "attached to %s but the session did not answer — is it "
+                     "running BP/GIT.AGENT on these pipes?", s->dir);
+            return -1;
+        }
+        return 0;
+    }
+
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !tmp[0]) tmp = "/tmp";
     /* A private directory for the pipes: 0700, since the token travels through
@@ -396,6 +442,13 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
 static void teardown(mv_session *s, int ask) {
     if (ask && s->req >= 0)
         call_raw(s, "QUIT", 0, NULL, NULL, NULL, NULL);
+    if (s->attached) {
+        /* Not ours: the QUIT above releases the agent loop and the verb carries
+           on.  Killing or reaping here would be killing the caller's session. */
+        if (s->req >= 0) { close(s->req); s->req = -1; }
+        if (s->rsp >= 0) { close(s->rsp); s->rsp = -1; }
+        return;
+    }
     if (s->req >= 0) { close(s->req); s->req = -1; }
     if (s->rsp >= 0) { close(s->rsp); s->rsp = -1; }
     if (s->pid > 0) {
