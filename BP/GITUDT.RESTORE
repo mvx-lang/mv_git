@@ -26,8 +26,7 @@ $IFNDEF MVX
          RETURN
       END
    END
-   R = CALLC GITFILES(REPO)
-   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    PFX = FN : "/" ; LPF = LEN(PFX)
    NR = 0
@@ -36,8 +35,7 @@ $IFNDEF MVX
       IF LEN(P) > LPF AND P[1, LPF] = PFX THEN
          ID = P[LPF+1, LEN(P)]
          IF ID # "" AND ID[1, 1] # "%" THEN     ;* skip the %FILE%/%INDEXES% controls
-            R = CALLC GITCAT(REPO, P)
-            OSREAD REC FROM REPO : "/gitcat" ELSE REC = ""
+            CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", REC)
             WRITE REC ON FV, ID
             NR += 1
          END

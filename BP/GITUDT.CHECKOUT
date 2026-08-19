@@ -16,16 +16,14 @@ $IFNDEF MVX
    AM = CHAR(254)
    NREST = 0 ; NFC = 0 ; NDEL = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
    IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)
-   R = CALLC GITFILES(REPO)
-   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
 *  pass 1 - create each file from its %FILE% control (open format)
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)
       IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN
          BASE = P[1, LP-LC]
-         R = CALLC GITCAT(REPO, P)
-         OSREAD TY FROM REPO : "/gitcat" ELSE TY = ""
+         CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", TY)
          TY = TRIM(TY)
          IF TY = "DIR" THEN
             EXECUTE "CREATE.FILE DIR ":BASE CAPTURING JUNK
@@ -45,8 +43,7 @@ $IFNDEF MVX
       SL = INDEX(P, "/", 1)
       IF SL = 0 THEN GOTO NEXTREC
       FN = P[1, SL-1] ; ID = P[SL+1, LP]
-      R = CALLC GITCAT(REPO, P)
-      OSREAD REC FROM REPO : "/gitcat" ELSE REC = ""
+      CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", REC)
       LFN = LEN(FN)
       IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
          OPEN "DICT", FN[1, LFN-5] TO FV ELSE GOTO NEXTREC
@@ -80,9 +77,12 @@ NEXTREC:
          END
       NEXT J
       OPEN FN TO DV ELSE GOTO NEXTDEL
-      SELECT DV TO 9
+*     A select-list VARIABLE, not the numbered list 9: UniVerse rejects
+*     `SELECT DV TO 9` ("option 'S' requires variable name"), while both
+*     platforms accept a variable, so this is the portable spelling.
+      SELECT DV TO DLIST
       LOOP
-         READNEXT LID FROM 9 ELSE EXIT
+         READNEXT LID FROM DLIST ELSE EXIT
          IF INDEX(HW, AM:LID:AM, 1) = 0 THEN
             DELETE DV, LID
             NDEL += 1
@@ -96,8 +96,7 @@ NEXTDEL:
       P = PATHS<I> ; LP = LEN(P)
       IF LP > LIC AND P[LP-LIC+1, LIC] = IXCTL THEN
          BASE = P[1, LP-LIC]
-         R = CALLC GITCAT(REPO, P)
-         OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+         CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", IXL)
          LIVE = "" ; OPEN BASE TO IXOV THEN LIVE = INDICES(IXOV)
          CHG = 0 ; DW = AM:IXL:AM ; LW = AM:LIVE:AM
          FOR J = 1 TO DCOUNT(IXL, AM)
@@ -109,7 +108,9 @@ NEXTDEL:
          IF CHG THEN IXWANT<-1> = BASE
       END
    NEXT I
-   PRINT NREST : " record(s) restored across " : NFC : " file(s)"
+*  NFC counts files CREATED, not files touched — so a pull into an existing
+*  account correctly says 0, and "across 0 file(s)" read like a bug every time.
+   PRINT NREST : " record(s) restored, " : NFC : " file(s) created"
    IF NDEL > 0 THEN PRINT NDEL : " stale record(s) removed"
    GOSUB IXPROMPT
    RETURN
@@ -120,8 +121,7 @@ IXPROMPT:
    PRINT "Indexes have changed for " : NW2 : " file(s):"
    FOR I = 1 TO NW2
       BASE = IXWANT<I>
-      R = CALLC GITCAT(REPO, BASE:IXCTL)
-      OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+      CALL GIT.OBJ("CAT", 2, REPO, BASE:IXCTL, "", "", "", IXL)
       PRINT "  " : BASE : " (" : CONVERT(AM, " ", TRIM(IXL)) : ")"
    NEXT I
    PRINT "Rebuild them now? (Y/N) " :
@@ -133,8 +133,7 @@ IXPROMPT:
    NIX = 0
    FOR I = 1 TO NW2
       BASE = IXWANT<I>
-      R = CALLC GITCAT(REPO, BASE:IXCTL)
-      OSREAD IXL FROM REPO : "/gitcat" ELSE IXL = ""
+      CALL GIT.OBJ("CAT", 2, REPO, BASE:IXCTL, "", "", "", IXL)
       NF2 = DCOUNT(IXL, AM)
       FOR J = 1 TO NF2
          FLD = TRIM(IXL<J>)

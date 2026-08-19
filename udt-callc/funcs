@@ -1,4 +1,7 @@
 GITINIT:string:1:string
+GITFLUSH:string:1:string
+GITPRUNE:string:2:string,string
+GITINDEXIDS:string:2:string,string
 GITSTAGE:string:4:string,string,string,string
 GITSTAGEBLOB:string:3:string,string,string
 GITCOMMIT:string:2:string,string
@@ -9,6 +12,7 @@ GITCAT:string:2:string,string
 GITCLONE:string:4:string,string,string,string
 GITFETCH:string:2:string,string
 GITPULL:string:3:string,string,string
+GITPULLREF:string:3:string,string,string
 GITPUSH:string:3:string,string,string
 GITREMOTE:string:4:string,string,string,string
 GITCONFIG:string:3:string,string,string
@@ -19,3 +23,7 @@ GITMERGE:string:2:string,string
 GITCHERRYPICK:string:2:string,string
 GITSWITCH:string:2:string,string
 GITPING:string:1:string
+AGOPEN:string:2:string,string
+AGREAD:string:2:string,string
+AGWRITE:string:1:string
+AGCLOSE:string:1:string

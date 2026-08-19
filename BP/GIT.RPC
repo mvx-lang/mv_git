@@ -1,0 +1,188 @@
+      SUBROUTINE GIT.RPC(OP, NARGS, A1, A2, A3, A4, A5, STATUS, RESULT)
+*
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+*
+* GIT.RPC — call the per-user background process that runs libgit2 (mv_git#40).
+*
+* On UniVerse, BASIC cannot reach libgit2: GCI is licensed and does not work in
+* the Trial Edition.  So the session hands the git-object work to a background
+* process it owns, over named pipes, and keeps the records itself — the same
+* Model B split as the UniData CallC bridge.
+*
+*   OP      the opcode, e.g. "STATUS", "STAGE", "COMMIT"
+*   NARGS   how many arguments follow are meaningful (0 is legal, e.g. PING)
+*   A1..A5  the arguments in the opcode's order; 5 covers every opcode (TAG
+*           needs the most).  Pass "" for the ones the opcode does not use.
+*   STATUS  0 on success; otherwise the protocol's error code, and RESULT
+*           carries the message
+*   RESULT  the reply body — engine output (@AM-separated) or raw content
+*
+* WHY SEPARATE ARGUMENTS AND NOT AN @AM-SEPARATED STRING.  Record content
+* contains attribute marks — that is what a record IS — so an @AM-separated
+* argument list splits a record at its own marks and silently stages the first
+* attribute only.  It is the same rule the wire protocol obeys with length
+* prefixes: no byte is safe as a separator here.  Separate parameters have no
+* separator at all.  They are scalars rather than a dimensioned array because
+* UniData cannot subscript a MAT parameter — see GIT.OBJ.
+*
+* THE READS ARE EXACT-COUNT, DELIBERATELY.  READBLK does not short-return at
+* EOF on a FIFO: OPENSEQ holds the pipe read/write, so the reader is also a
+* writer, EOF never arrives, and asking for more bytes than are present hangs
+* forever.  Every read below is therefore for a count the header has already
+* told us.  Never "read what is there" — there is no such operation here.
+*
+* The connection is held in COMMON so it is opened once per session and reused:
+* the pipes, the token and the open flag all outlive a single call.
+      $INCLUDE BP.INC PLATFORM.H
+$IFDEF MVX
+*     NOT USED ON MVX, and excluded rather than merely unreached.  This is the
+*     client for the UniVerse background process; MVX's runtime IS the engine and
+*     calls it directly.  The body still has to COMPILE, because mkpkg bundles
+*     every BP item — and WRITEBLK/READBLK do not exist here, which failed the
+*     whole package build.
+      STATUS = 1 ; RESULT = "GIT.RPC: not used on MVX"
+      RETURN
+$ENDIF
+$IFNDEF MVX
+      COMMON /GITRPC/ RPC.REQ, RPC.RSP, RPC.TOKEN, RPC.OPEN
+*
+      MAGIC = "MVG1"
+      STATUS = 0
+      RESULT = ""
+*
+* Connect on first use in this session.  The connect step is what makes the
+* process lazy: it starts one if none is running, creates this session's pipe
+* pair, and announces it — all idempotent, so calling it again costs nothing.
+      IF RPC.OPEN # 1 THEN
+         GOSUB CONNECT
+         IF STATUS # 0 THEN RETURN
+      END
+*
+* ---- build the request ------------------------------------------------------
+* Header: magic(4) token(32) opcode(16, left-justified) nargs(2) bodylen(10).
+* Body: each argument as a 10-digit length followed by its bytes — length
+* prefixes, not separators, because no byte is safe as a separator in record
+* content.
+*     Payloads travel hex-encoded, so no non-ASCII byte ever crosses the pipe —
+*     see the note above.  OCONV "MX0C" is the platform's builtin conversion, so
+*     this runs at native speed rather than as a per-byte BASIC loop, and it
+*     round-trips every byte including NUL and the marks.  The length written is
+*     the ENCODED length, which is what the far end must read off the pipe.
+      BODY = ""
+      FOR AI = 1 TO NARGS
+*        RAW initialised before the CASE, not only inside it.  UniVerse reported
+*        "Variable RAW previously undefined, empty string used" here on every
+*        argument of every call — harmless in itself, but it is the same noise
+*        that hid the REM bug (mv_git#53 diagnosis), and a warning nobody can
+*        act on is a warning everybody learns to scroll past.
+         RAW = ""
+         BEGIN CASE
+         CASE AI = 1 ; RAW = A1
+         CASE AI = 2 ; RAW = A2
+         CASE AI = 3 ; RAW = A3
+         CASE AI = 4 ; RAW = A4
+         CASE 1      ; RAW = A5
+         END CASE
+         AV = OCONV(RAW, "MX0C")
+         PADV = LEN(AV) ; PADW = 10 ; GOSUB ZPAD
+         BODY = BODY : PADR : AV
+      NEXT AI
+*
+      HDR = MAGIC
+      HDR = HDR : RPC.TOKEN
+      HDR = HDR : OP : SPACE(16 - LEN(OP))
+      PADV = NARGS ; PADW = 2 ; GOSUB ZPAD ; HDR = HDR : PADR
+      PADV = LEN(BODY) ; PADW = 10 ; GOSUB ZPAD ; HDR = HDR : PADR
+*
+      WRITEBLK HDR TO RPC.REQ ELSE
+         STATUS = 1 ; RESULT = "cannot write to the git background process"
+         RETURN
+      END
+      IF LEN(BODY) THEN
+         WRITEBLK BODY TO RPC.REQ ELSE
+            STATUS = 1 ; RESULT = "cannot write the request body"
+            RETURN
+         END
+      END
+*
+* ---- read the reply ---------------------------------------------------------
+* Header: magic(4) status(4) bodylen(10) = 18 bytes, an exact-count read.
+      RHDR = ""
+      READBLK RHDR FROM RPC.RSP, 18 ELSE
+         STATUS = 1 ; RESULT = "no reply from the git background process"
+         RETURN
+      END
+      IF RHDR[1, 4] # MAGIC THEN
+*        A length-framed stream has no resynchronisation point, so this is not
+*        recoverable: the two ends have lost each other and every later byte is
+*        garbage.  Drop the connection so the next call reconnects cleanly.
+         RPC.OPEN = 0
+         STATUS = 1
+         RESULT = "the reply stream is out of frame — connection dropped"
+         RETURN
+      END
+      STATUS = RHDR[5, 4] + 0
+      BLEN = RHDR[9, 10] + 0
+      IF BLEN > 0 THEN
+*        BLEN counts encoded characters — exactly what to take off the pipe.
+         ENC = ""
+         READBLK ENC FROM RPC.RSP, BLEN ELSE
+            STATUS = 1 ; RESULT = "reply body truncated"
+            RETURN
+         END
+         RESULT = ICONV(ENC, "MX0C")
+      END
+      RETURN
+*
+* ---- a fixed-width, zero-filled number -------------------------------------
+* NOT FMT: its "%" zero-fill is honoured on UniVerse and ignored on UniData,
+* which returns the mask itself.  See the same routine in GIT.AGENT.
+ZPAD:
+      PADR = PADV : ""
+      IF LEN(PADR) < PADW THEN PADR = STR("0", PADW - LEN(PADR)) : PADR
+      RETURN
+*
+* ---- connect ----------------------------------------------------------------
+CONNECT:
+*     One session id per session, so two sessions never share a pipe pair.
+*     @USERNO is the port/user number — unique among live sessions.
+      SID = @USERNO
+      IF SID = "" THEN SID = "0"
+*
+*     Ensure the process is up and this session's pipes exist, and learn where
+*     they are.  --connect prints four lines — directory, request pipe, reply
+*     pipe, token — so the session never has to know the run-state layout, and
+*     there is no environment lookup to do (UniVerse BASIC has no GETENV).
+*     It must run before the OPENSEQs below: OPENSEQ on a missing FIFO fails.
+*
+*     $PPID is passed as the session's process id, and it is how the background
+*     process knows to leave when we do.  The shell we fork here is our own
+*     child, so ITS parent is this session — which the shell knows as $PPID and
+*     BASIC has no way to ask for directly.  Single quotes keep it from BASIC;
+*     the shell expands it.
+      EXECUTE "SH -c 'mvgitd --connect " : SID : " $PPID'" CAPTURING CONN
+      IF CONN<4> = "" THEN
+         STATUS = 1
+         RESULT = "the git background process would not start: " : CONN<1>
+         RETURN
+      END
+      REQP = CONN<2>
+      RSPP = CONN<3>
+      RPC.TOKEN = CONN<4>
+*
+      OPENSEQ REQP TO RPC.REQ ELSE
+         STATUS = 1 ; RESULT = "cannot open " : REQP
+         RETURN
+      END
+      OPENSEQ RSPP TO RPC.RSP ELSE
+         STATUS = 1 ; RESULT = "cannot open " : RSPP
+         RETURN
+      END
+      RPC.OPEN = 1
+      RETURN
+*
+      END
+$ENDIF

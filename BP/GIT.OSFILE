@@ -1,0 +1,78 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.OSFILE
+*  * @version 1.0
+*  */
+* GIT.OSFILE(op, path, data, ok) — read or write a whole OS file.
+*
+*   op    "READ"  — data = the file's contents; ok = 0 if it does not exist
+*         "WRITE" — write data, replacing whatever was there; ok = 0 on failure
+*
+* The second platform seam, for the same reason as GIT.OBJ: OSREAD and OSWRITE
+* are UniData statements that UniVerse does not have at all — it parses
+* `OSWRITE IG ON IGF` as a variable followed by a variable and refuses the file.
+* So, as with CALLC, the UniData spelling must be excluded by the PREPROCESSOR
+* rather than by a runtime branch, because the text still has to compile.
+*
+* The content is arbitrary bytes — the caller's is 0xFE-separated — so both arms
+* move it whole and unaltered.  On UniVerse that means WRITEBLK/READBLK rather
+* than the line-oriented WRITESEQ/READSEQ, which would be at the mercy of any
+* newline in the data.
+*
+* Not needed on MVX: its callers reach the same state as a record in the account
+* file, which is the native shape there.
+      SUBROUTINE GIT.OSFILE(OP, PATH, DATA, OK)
+      $INCLUDE BP.INC PLATFORM.H
+      OK = 0
+*
+      $IFDEF UDT
+      IF OP = "READ" THEN
+         OSREAD DATA FROM PATH THEN OK = 1 ELSE DATA = ""
+      END ELSE
+         OSWRITE DATA ON PATH
+         OK = 1
+      END
+      $ENDIF
+*
+      $IFDEF UV
+      IF OP = "READ" THEN
+         DATA = ""
+         OPENSEQ PATH TO OSF THEN
+*           Read to the end in chunks.  A regular file DOES short-return at EOF
+*           (a FIFO does not — see GIT.RPC), so a short chunk means the end.
+            LOOP
+               CHUNK = ""
+               READBLK CHUNK FROM OSF, 8192 THEN
+                  DATA = DATA : CHUNK
+                  IF LEN(CHUNK) < 8192 THEN EXIT
+               END ELSE
+                  EXIT
+               END
+            REPEAT
+            CLOSESEQ OSF
+            OK = 1
+         END ELSE
+            DATA = ""
+         END
+      END ELSE
+         OPENSEQ PATH TO OSF ELSE
+            CREATE OSF ELSE RETURN
+         END
+*        WEOFSEQ after the write truncates at the current position, so replacing
+*        the contents with something SHORTER does not leave the old tail behind.
+         WRITEBLK DATA TO OSF THEN OK = 1 ELSE OK = 0
+         WEOFSEQ OSF
+         CLOSESEQ OSF
+      END
+      $ENDIF
+*
+      RETURN
+      END

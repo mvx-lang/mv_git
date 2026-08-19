@@ -1,0 +1,132 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.OBJ
+*  * @version 1.0
+*  */
+* GIT.OBJ(op, nargs, a1..a5, out) — do one git-object operation, whatever this
+* platform's way of reaching libgit2 happens to be.
+*
+* This is the seam between the record loop and the git objects, and it exists
+* because those two things vary independently.  Model B is the same everywhere —
+* BASIC drives the records on the live session, C does the git objects, C never
+* calls back — so the whole record loop above this line is already portable.
+* Only the "call C" step differs per platform, and now it differs in one place
+* instead of at every call site:
+*
+*   UniData   CallC.  A CALLC per function (calls cannot be built by name), then
+*             the result is OSREAD back from a side-channel file, because CallC
+*             marshals with strlen and so cannot return binary or fill an output
+*             buffer.  <repo>/gitcat for content, <repo>/gitmsg for everything
+*             else.
+*   UniVerse  the background process (mv_git#40), over a framed pipe.  GCI is
+*             licensed and non-functional in the Trial Edition, so there is no
+*             in-process bridge to use.  The frame carries an explicit length, so
+*             the result comes back inline and needs no side-channel file.
+*
+* MVX never gets here: its handlers call the engine directly, since the engine
+* IS its runtime and reads the records itself.
+*
+* `out` is the operation's output — @AM-separated engine text, or raw record
+* content for CAT.  Staging ops produce none.
+*
+* Opcodes are the shared vocabulary of the two transports (gitcallcb.c's CallC
+* entry points and gitd.c's dispatch table), which is why they carry the same
+* names and arity on both sides.
+      SUBROUTINE GIT.OBJ(OP, NARGS, A1, A2, A3, A4, A5, OUT)
+      $INCLUDE BP.INC PLATFORM.H
+      OUT = ""
+*
+      $IFDEF UV
+*     ---- UniVerse: the background process ---------------------------------
+*     One call, result inline.  A non-zero status is a real failure (the process
+*     would not start, the stream lost frame, the opcode was refused) — surface
+*     it as the output rather than swallowing it, so the caller's own error
+*     reporting shows the reason instead of an empty result.
+      ST = 0
+      CALL GIT.RPC(OP, NARGS, A1, A2, A3, A4, A5, ST, OUT)
+      IF ST # 0 THEN OUT = "GIT: " : OUT
+      RETURN
+      $ENDIF
+*
+      $IFDEF UDT
+*     ---- UniData: CallC + the side-channel file ---------------------------
+*     Guarded on UDT, not on "not MVX".  CALLC is a UniData statement that no
+*     other compiler knows: UniVerse parses `R = CALLC GITPING(x)` as an array
+*     reference and fails to compile it.  So this arm must be excluded by the
+*     PREPROCESSOR on every other platform — a runtime branch around it is not
+*     enough, because the text still has to compile.
+*     A CALLC cannot be built from a name, so each opcode is spelled out.  Every
+*     branch does the same two things: call, then read the result back.
+*     Arguments arrive as plain scalars rather than a dimensioned array, which
+*     is not a style choice: UniData cannot subscript a MAT parameter at all —
+*     `OUT = ARGV(1)` off `SUBROUTINE X(MAT ARGV)` is "redefined variable ARGV",
+*     and putting the dimension in the signature is a syntax error.  UniVerse
+*     accepts the matrix form happily, so this only shows up on UniData.
+      REPO = A1
+      ISCAT = 0
+*     CLEAR THE SIDE CHANNEL FIRST.  The result comes back through files —
+*     REPO/gitmsg, or REPO/gitcat for CAT — and an opcode that produces no
+*     message never writes one.  So OUT came back holding the PREVIOUS call's
+*     text, and the caller printed it as its own: `GIT ADD VOC ZZPULL` answered
+*     "1 record(s) staged" and then echoed the whole dictionary id list left by
+*     an INDEXIDS, which UniData then PAGINATED — "Enter <New line> to
+*     continue..." — swallowing the next commands in a piped session.  Stale
+*     output that reads as this command's is worse than none.
+      EMPTY = ""
+      OSWRITE EMPTY ON REPO : "/gitmsg" ELSE NULL
+      OSWRITE EMPTY ON REPO : "/gitcat" ELSE NULL
+      BEGIN CASE
+*     FLUSH is REAL here now.  It was a no-op, with a note wondering whether
+*     UniData needed it; measured on 8.3, it does, for exactly the reason the
+*     note guessed — GIT ADD and GIT COMMIT are separate processes, so a batch
+*     left in memory when ADD returns is lost.  ADD reported 1543 records staged
+*     and COMMIT committed nothing.
+      CASE OP = "FLUSH"      ; R = CALLC GITFLUSH(REPO)
+      CASE OP = "PRUNE"      ; R = CALLC GITPRUNE(REPO, A2)
+      CASE OP = "INDEXIDS"   ; R = CALLC GITINDEXIDS(REPO, A2)
+      CASE OP = "PING"       ; R = CALLC GITPING(REPO)
+      CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
+      CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)
+      CASE OP = "STAGEBLOB"  ; R = CALLC GITSTAGEBLOB(REPO, A2, A3)
+      CASE OP = "COMMIT"     ; R = CALLC GITCOMMIT(REPO, A2)
+      CASE OP = "LOG"        ; R = CALLC GITLOG(REPO, A2)
+      CASE OP = "BRANCH"     ; R = CALLC GITBRANCH(REPO, A2)
+      CASE OP = "FILES"      ; R = CALLC GITFILES(REPO)
+      CASE OP = "CAT"        ; R = CALLC GITCAT(REPO, A2) ; ISCAT = 1
+      CASE OP = "SHOW"       ; R = CALLC GITSHOW(REPO, A2, A3)
+      CASE OP = "RM"         ; R = CALLC GITRM(REPO, A2, A3)
+      CASE OP = "MERGE"      ; R = CALLC GITMERGE(REPO, A2)
+      CASE OP = "CHERRYPICK" ; R = CALLC GITCHERRYPICK(REPO, A2)
+      CASE OP = "SWITCH"     ; R = CALLC GITSWITCH(REPO, A2)
+      CASE OP = "TAG"        ; R = CALLC GITTAG(REPO, A2, A3, A4, A5)
+      CASE OP = "CONFIG"     ; R = CALLC GITCONFIG(REPO, A2, A3)
+      CASE OP = "REMOTE"     ; R = CALLC GITREMOTE(REPO, A2, A3, A4)
+      CASE OP = "CLONE"      ; R = CALLC GITCLONE(REPO, A2, A3, A4)
+      CASE OP = "FETCH"      ; R = CALLC GITFETCH(REPO, A2)
+      CASE OP = "PUSH"       ; R = CALLC GITPUSH(REPO, A2, A3)
+      CASE OP = "PULL"       ; R = CALLC GITPULL(REPO, A2, A3)
+      CASE OP = "PULLREF"    ; R = CALLC GITPULLREF(REPO, A2, A3)
+      CASE 1
+         OUT = "GIT: unknown git-object operation '" : OP : "'"
+         RETURN
+      END CASE
+*
+*     CAT returns record content, which is why it has a file of its own — a raw
+*     record, marks and all, kept apart from the message stream.
+      IF ISCAT THEN
+         OSREAD OUT FROM REPO : "/gitcat" ELSE OUT = ""
+      END ELSE
+         OSREAD OUT FROM REPO : "/gitmsg" ELSE OUT = ""
+      END
+      $ENDIF
+*
+      RETURN
+      END

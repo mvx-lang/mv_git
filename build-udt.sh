@@ -25,7 +25,8 @@
 set -e
 STAGE="${1:?usage: build-udt.sh <stagedir>}"
 : "${UDTHOME:?set UDTHOME to your UniData installation}"
-SRC="$(cd "$(dirname "$0")" && pwd)/src"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="$HERE/src"
 CC="${CC:-cc}"
 UGVER="${UDTGIT_VERSION:-${GITHUB_REF_NAME:-0}}"   # stamped for MVPKG self-registration
 
@@ -48,11 +49,27 @@ else
     LG2LIBS="-L$LG2LIB -Wl,-rpath,$LG2LIB -lgit2"
 fi
 
-"$CC" -std=c11 -O2 -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
+# BOTH macros, and they mean different things.  MVXGIT_GITD selects the shared
+# value type and the session-backed record layer (agent_rt.c); MVXGIT_UDT keeps
+# UniData's DATA conventions — the dictionary D/I attribute remap.  mvxgit.h
+# prefers GITD when both are set, which is exactly what this build wants: records
+# through the agent, dictionaries in UniData's shape.
+#
+# No -luvic: InterCall is gone from this driver (mv_git#45).  It authenticated
+# with a stored password rather than as the person running the command, and the
+# The agent's source is compiled into udt-git so it can seed an account where
+# nothing is installed.  GENERATED HERE, not assumed present: it used to be
+# produced only by build-gitd.sh (the UniVerse build), so this build embedded
+# whatever stale copy was in the tree — one with the $IFDEFs already flattened
+# to UniVerse, which then would not compile on UniData.
+sh "$HERE/embed-agent.sh"
+
+# session inherits the caller's own identity instead.
+"$CC" -std=c11 -O2 -DMVXGIT_GITD -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
-    "$SRC/mvxgit.c" "$SRC/udtgit_rt.c" "$SRC/udt-git.c" \
+    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/agentcmd.c" "$SRC/agentseed.c" \
+    "$SRC/udt-git.c" \
     $LG2LIBS \
-    -L"$UDTHOME/bin/lib" -luvic \
     -o udt-git
 echo "built udt-git"
 
@@ -61,12 +78,19 @@ echo "built udt-git"
 # (udtgit_rt.c).  Shipped in udt-callc/ so MVPKG's CALLC op aggregates them into
 # UniData's libu2callc.so on install (with udt-callc/funcs + libs).
 mkdir -p udt-callc
-for c in gitcallcb mvxgit udtgit_rt; do
-    "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT \
+# agentcallc.c is the AGENT's transport (mv_git#45): UniData BASIC has no
+# READBLK and no TIMEOUT, so the pipe I/O the framed protocol needs goes
+# through CallC.  Registered in udt-callc/funcs alongside the GIT* entries.
+# -DMVXGIT_INSESSION: these objects load INTO a udt session, which already holds
+# a licence.  One is enough — the define makes any record primitive here refuse
+# rather than open a SECOND session back into the account we are already in
+# (mv_git#54).
+for c in gitcallcb agentcallc mvxgit udtgit_rt; do
+    "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT -DMVXGIT_INSESSION \
         -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
         -c "$SRC/$c.c" -o "udt-callc/$c.o"
 done
-echo "built udt-callc/{gitcallcb,mvxgit,udtgit_rt}.o"
+echo "built udt-callc/{gitcallcb,agentcallc,mvxgit,udtgit_rt}.o"
 
 # ---- stage the release as a UniData account dir named 'git' -----------------
 # The tar wraps this one dir, so the tarball unpacks to ./git/ — a self-sufficient
@@ -84,14 +108,36 @@ ACCT="$STAGE/git"
 mkdir -p "$ACCT/BP" "$ACCT/udt-callc"
 # The GIT verb is one $IFDEF source in BP/GIT: MVX takes the CMD-dispatch branch,
 # UniData takes the $ELSE (Model B) branch — so udt compiles the same file.
-cp BP/* "$ACCT/BP/"                 # the GIT verb + its whole handler/sub set
+# The GIT verb + its whole handler/sub set — FILES only.  A plain `cp BP/*`
+# aborts the build on any directory under BP/, and there is one on a working
+# tree: the generators write a per-platform BP/BP.INC/PLATFORM.H beside the
+# sources.  CI never saw it because a fresh checkout has only tracked files.
+find BP -maxdepth 1 -type f -exec cp {} "$ACCT/BP/" \;
 cp BP/GIT "$ACCT/GIT.udt.b"
-# PLATFORM.H — the compile-time platform defines BP/GIT $INCLUDEs (as `$INCLUDE
-# BP.INC PLATFORM.H`) — is deliberately NOT shipped here.  On UniData the BP.INC
+# PLATFORM.H — the compile-time platform defines the BASIC sources $INCLUDE (as
+# `$INCLUDE BP.INC PLATFORM.H`).  BUILT HERE, not written by install.sh: it is
+# build output, and build output belongs to the build.  Shipping it means the
+# package carries exactly what its sources will be compiled against, so it can be
+# read in the tarball, diffed between releases, and installed rather than
+# regenerated.
+#
+# It ships at the package ROOT, not inside BP.INC/.  On UniData the BP.INC
 # include file must be a VOC-registered directory-file, and `CREATE.FILE DIR`
 # fails if the directory already exists — so install.sh creates BP.INC (dir + VOC
-# pointer) and writes the UDT defines into it, on the target, just before it
-# compiles + catalogs GIT.
+# pointer) and copies this in, rather than finding the directory pre-made.
+cat > "$ACCT/PLATFORM.H" <<'PLATEOF'
+* PLATFORM.H - compile-time platform defines for the MV BASIC sources.
+*
+* Generated by build-udt.sh.  MV is every MultiValue platform; UDT is this one.
+* A source that must differ per platform tests these, so the difference is
+* visible in the code rather than in which copy of a file was installed.
+*
+* ASCII ONLY, deliberately: every BASIC source on every platform $INCLUDEs this
+* file, so it is the worst possible place to find out that some compiler does
+* not like a byte above 127 in a comment.
+$DEFINE MV
+$DEFINE UDT
+PLATEOF
 cp udt/preflight.sh "$ACCT/preflight.sh"
 cp udt/install.sh "$ACCT/install.sh";            chmod +x "$ACCT/install.sh"
 cp udt/udt-callc-build.sh "$ACCT/udt-callc-build.sh"; chmod +x "$ACCT/udt-callc-build.sh"

@@ -1,0 +1,24 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.ECHO
+*  * @version 1.0
+*  */
+* GIT.ECHO(text) — print git-object output, one @AM-separated line per PRINT.
+*
+* Replaces GITUDT.SHOW, which had to OSREAD the CallC message file because
+* CallC cannot marshal a string return.  That file is an artefact of one
+* transport, so it now lives behind GIT.OBJ; every caller has the text in hand
+* and only needs it printed.  Nothing here is platform-specific.
+      SUBROUTINE GIT.ECHO(TEXT)
+      IF TEXT # "" THEN
+         AM = CHAR(254)
+         NL = DCOUNT(TEXT, AM)
+         FOR I = 1 TO NL
+            PRINT TEXT<I>
+         NEXT I
+      END
+      RETURN
+      END

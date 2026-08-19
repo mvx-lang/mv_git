@@ -14,8 +14,7 @@ SUBROUTINE GITUDT.DIFF(REPO, DFILE)
 $IFNDEF MVX
    AM = CHAR(254) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NDF = 0
-   R = CALLC GITFILES(REPO)
-   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)
@@ -24,8 +23,7 @@ $IFNDEF MVX
       SL = INDEX(P, "/", 1) ; IF SL = 0 THEN GOTO NEXTD
       FN = P[1, SL-1] ; RID = P[SL+1, LP]
       IF DFILE # "" AND FN # DFILE THEN GOTO NEXTD
-      R = CALLC GITCAT(REPO, P)
-      OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+      CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
       GOSUB OPENREC ; LV = ""
       IF ROK THEN
          READ LV FROM RV, RID ELSE LV = ""

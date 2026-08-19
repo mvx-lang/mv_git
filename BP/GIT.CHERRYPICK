@@ -25,9 +25,9 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
-REPO = @PATH : "/.git"
-R = CALLC GITCHERRYPICK(REPO, CM)
-CALL GITUDT.SHOW(REPO)                ;* the cherry-pick result
+CALL GIT.REPO(REPO)
+CALL GIT.OBJ("CHERRYPICK", 2, REPO, CM, "", "", "", OBJOUT)
+CALL GIT.ECHO(OBJOUT)                ;* the cherry-pick result
 CALL GITUDT.CHECKOUT(REPO)           ;* re-materialise the new HEAD natively
 $ENDIF
 RETURN

@@ -25,7 +25,7 @@ EXECUTE "IMPORT ":FN
 $ELSE
 * UniData writes hash-file records directly (no directory-file intermediate to
 * import from as on MVX), so re-materialise FN's records from HEAD instead.
-REPO = @PATH : "/.git"
+CALL GIT.REPO(REPO)
 CALL GITUDT.RESTORE(REPO, FN)
 $ENDIF
 RETURN

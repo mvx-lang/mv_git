@@ -31,6 +31,7 @@
 
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <fnmatch.h>
 #include <git2.h>
@@ -171,6 +172,50 @@ static void load_ignores(void) {
     fclose(fp);
 }
 
+/* --- the account's place in its repository (mv_git#44) --------------------
+ *
+ * A repository may hold several accounts, and then a record cannot be committed
+ * at `<file>/<id>`: two accounts would both claim `CUST/C1` and silently
+ * overwrite each other.  Each account's records therefore live under its own
+ * directory, `<account>/<file>/<id>`, which is the layout the mvx repository
+ * already uses.
+ *
+ * The engine works INSIDE one account at a time — it chdir's there and every
+ * record primitive is account-relative — so the prefix is applied at exactly one
+ * boundary: where a record's git path is built.  The caller sets it once per
+ * account; empty (the default) means the account IS the repository root, which
+ * is every single-account package and therefore unchanged. */
+static char g_prefix[256];
+void mv_git_forget_account(void);
+
+void mv_git_set_prefix(const char *p) {
+    /* The prefix changes exactly when the ACCOUNT changes, so this is also the
+       point at which anything cached about the account stops being true.  The
+       backend's file list is the one that matters: reused across a multi-account
+       walk it would answer account B with account A's files. */
+    mv_git_forget_account();
+    if (!p || !*p) { g_prefix[0] = '\0'; return; }
+    size_t n = strlen(p);
+    if (n && p[n - 1] == '/')
+        snprintf(g_prefix, sizeof g_prefix, "%s", p);
+    else
+        snprintf(g_prefix, sizeof g_prefix, "%s/", p);
+}
+
+/* The git path of a record: `<prefix><file>/<id>`. */
+static void record_path(char *out, size_t cap, const char *fn, const char *id) {
+    snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
+}
+
+/* The account-relative part of a repo path, or NULL when the path belongs to a
+   different account.  Used where a name has to travel back the other way —
+   status derives which FILES to scan from the paths already in the index. */
+static const char *unprefix(const char *path) {
+    if (!g_prefix[0]) return path;
+    size_t n = strlen(g_prefix);
+    return strncmp(path, g_prefix, n) == 0 ? path + n : NULL;
+}
+
 static int ignored(const char *file, const char *path) {
     load_ignores();
     for (int i = 0; i < g_nign; i++) {
@@ -226,6 +271,40 @@ static void openaccount_sync(const char *rp) {
    never reports it as untracked — a fresh open clone reads clean after BUILD
    runs (mvx#77).  An explicit `add VOC CATALOG` still stages it (the escape
    hatch), the same shape as the compiled-object skip (mv_git#9). */
+/* Is this record a compiled object rather than content?
+ *
+ * UniData writes the object of <PROG> as _<PROG> in the SAME file — an
+ * underscore PREFIX, measured on 8.3: compiling BP/GIT.AGENT produces
+ * BP/_GIT.AGENT.  (It is not a ".O" suffix; that is UniVerse, where the object
+ * lives in a separate FILE named <X>.O and is excluded a level up, by file.)
+ * Checked by name and only when the source really is there, so a record
+ * legitimately called _SOMETHING is never lost.
+ *
+ * $MVX_GIT_SKIP_OBJECTS keeps the old content test as a backstop for whatever
+ * the naming rule does not cover: an object is binary, and no record this tool
+ * should version contains a NUL.
+ *
+ * ADD AND STATUS BOTH CALL THIS, which is the whole point of it being a
+ * function.  Every time those two have disagreed about what to skip, the result
+ * was the same bug: status reports a record that add will never stage, so the
+ * account is dirty forever and no commit can clear it.
+ */
+static int record_is_object(mv_ctx *ctx, mv_value *fvar, const char *idb,
+                            const char *cp, int64_t clen) {
+    if (idb[0] == '_' && idb[1]) {
+        mv_value bid, brec;
+        mv_init(&bid); mv_init(&brec);
+        mv_set_str(&bid, idb + 1, (int64_t)(strlen(idb) - 1));
+        int have_src = mv_read(ctx, &brec, fvar, &bid, 0);
+        mv_clear(&bid); mv_clear(&brec);
+        if (have_src) return 1;
+    }
+    static int backstop = -1;
+    if (backstop < 0) backstop = getenv("MVX_GIT_SKIP_OBJECTS") != NULL;
+    if (backstop && cp && clen > 0 && memchr(cp, 0, (size_t)clen)) return 1;
+    return 0;
+}
+
 static int is_provision_pointer(const char *file, const char *id) {
     if (strcasecmp(id, "CATALOG") != 0) return 0;
     return strcasecmp(file, "VOC") == 0 || strcasecmp(file, "MD") == 0;
@@ -341,6 +420,104 @@ static int record_oid(const char *content, int64_t len, git_oid *oid) {
     return rc;
 }
 
+/* --- the stock account baseline (mv_git#46) -------------------------------
+ *
+ * An account created on UniVerse is born with a VOC full of records nobody
+ * wrote: 847 of them for the PICK flavour, 840 for Ideal, 851 for Reality — the
+ * verbs, keywords and pointers the system supplies.  Committing them makes a
+ * repository where 92% of the content is furniture, buries the real change in a
+ * diff, and — worse — restores one release's stock VOC over another's on
+ * checkout, silently.
+ *
+ * So a record identical to the one a fresh account of the same flavour would
+ * have is not this account's content, and is not committed.  What IS committed
+ * is what the account added, and what it changed: the comparison is by content,
+ * not just by name, so an edited stock verb still travels.
+ *
+ * THE BASELINE IS SUPPLIED, NOT DISCOVERED.  Building it means standing up an
+ * account of the right flavour and reading its VOC, which needs a session and is
+ * therefore platform work; the driver does it and hands the file over here.  All
+ * the engine needs is a set of (id, content) pairs to recognise, which is
+ * platform-neutral — and being a plain file, it is equally available to the
+ * verb route through mvgitd and to the CLI, which matters now that both are
+ * kept (DECISIONS.md).
+ *
+ * The file is per clone, not committed: the stock VOC belongs to a particular
+ * UniVerse release, and a committed baseline would subtract 14.2's furniture
+ * from a 14.3 account.  Format is one `<oid> <id>` per line, `#` comments.
+ *
+ * NOT HANDLED: an account that deliberately DELETES a stock record.  It looks
+ * identical to one that never had it, so checkout puts it back.  Recording that
+ * needs a tombstone, and it is deliberately out of this first cut.
+ */
+typedef struct { char oid[41]; char id[256]; } stock_rec;
+static stock_rec *g_stock;
+static int g_stock_n, g_stock_cap, g_stock_loaded;
+static char g_stock_path[4096];
+
+void mv_git_set_stock(const char *path) {
+    free(g_stock);
+    g_stock = NULL;
+    g_stock_n = g_stock_cap = 0;
+    g_stock_loaded = 0;
+    snprintf(g_stock_path, sizeof g_stock_path, "%s", path ? path : "");
+}
+
+static void stock_load(void) {
+    if (g_stock_loaded) return;
+    g_stock_loaded = 1;
+    if (!g_stock_path[0]) return;
+    FILE *f = fopen(g_stock_path, "r");
+    if (!f) return;
+    char ln[512];
+    while (fgets(ln, sizeof ln, f)) {
+        if (ln[0] == '#' || ln[0] == '\n') continue;
+        size_t n = strlen(ln);
+        while (n && (ln[n-1] == '\n' || ln[n-1] == '\r')) ln[--n] = '\0';
+        if (n < 42 || ln[40] != ' ') continue;
+        if (g_stock_n >= g_stock_cap) {
+            g_stock_cap = g_stock_cap ? g_stock_cap * 2 : 1024;
+            stock_rec *ns = realloc(g_stock, (size_t)g_stock_cap * sizeof *ns);
+            if (!ns) { fclose(f); return; }
+            g_stock = ns;
+        }
+        memcpy(g_stock[g_stock_n].oid, ln, 40);
+        g_stock[g_stock_n].oid[40] = '\0';
+        snprintf(g_stock[g_stock_n].id, sizeof g_stock[g_stock_n].id, "%s", ln + 41);
+        g_stock_n++;
+    }
+    fclose(f);
+}
+
+/* True when an id belongs to the stock account, whatever its content.
+   Used where the question is "may this be deleted", not "should it be staged":
+   a stock record the user has EDITED differs in content, so it IS committed and
+   the caller finds it there — meaning an id-only test never protects anything
+   that should have been removed, and it costs no extra record read. */
+static int is_stock_id(const char *id) {
+    stock_load();
+    for (int i = 0; i < g_stock_n; i++)
+        if (strcmp(g_stock[i].id, id) == 0) return 1;
+    return 0;
+}
+
+/* True when this record is exactly what a fresh account of the same flavour
+   would hold — same id, same content — and so is not the account's own. */
+static int is_stock_record(const char *id, const char *content, int64_t len) {
+    stock_load();
+    if (!g_stock_n) return 0;
+    git_oid oid;
+    if (record_oid(content, len, &oid) != 0) return 0;
+    char hex[GIT_OID_HEXSZ + 1];
+    git_oid_fmt(hex, &oid);
+    hex[GIT_OID_HEXSZ] = '\0';
+    for (int i = 0; i < g_stock_n; i++)
+        if (strcmp(g_stock[i].id, id) == 0 &&
+            strcmp(g_stock[i].oid, hex) == 0)
+            return 1;
+    return 0;
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -371,6 +548,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], fn, sizeof fn);
     arg_str(argv[2], only, sizeof only);
+    /* `GIT ADD BP *` means the whole file, not a record called "*".  MV has no
+       shell to expand it, so it arrives literally and used to be looked up as an
+       id — which found nothing and staged nothing.  Folding it to "no record
+       named" here makes it the wholesale add it reads as, which also means the
+       object-file exclusion applies to it: `ADD BP *` skips objects exactly as
+       `ADD BP` and `ADD -A` do, and only naming an object stages one. */
+    if (strcmp(only, "*") == 0) only[0] = '\0';
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
@@ -439,19 +623,41 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    verb/keyword the target supplies), 2 = drop in the open
                    interchange only (platform file/pointer — %FILE% carries the
                    portable form), 0 = keep (the user's own procs). */
+                /* All of these exclusions are about what a WHOLESALE add
+                   should not sweep up.  Naming a record explicitly
+                   (`add VOC SORT`) is a deliberate act and overrides every one
+                   of them: the user has said they want this record versioned,
+                   and second-guessing that is how a tool becomes untrustworthy. */
                 int cls = mv_voc_class(vp, f1);
-                if (cls == 1 || (cls == 2 && voc_open)) {
+                if (!one && (cls == 1 || (cls == 2 && voc_open))) {
                     skipped++;
-                    if (one) break;
                     continue;
+                }
+                /* Identical to what a fresh account of this flavour holds, so
+                   it is the system's record and not this account's (mv_git#46).
+                   Skipped on a WHOLESALE add only: naming a record explicitly
+                   (`add VOC SOMEVERB`) is a deliberate act and stages it, the
+                   same rule provisioning pointers follow just below. */
+                if (!one) {
+                    char sid[256];
+                    arg_str(&id, sid, sizeof sid);
+                    if (is_stock_record(sid, vp, vl)) {
+                        skipped++;
+                        continue;
+                    }
                 }
             }
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
             {
-                char pcheck[600];
-                snprintf(pcheck, sizeof pcheck, "%s/%s", fn, idb);
-                if (ignored(fn, pcheck) || git_path_ignored(repo, pcheck)) {
+                /* Two ignore namespaces, and they are not the same path.  The
+                   account's own GIT IGNORE list is account-relative, so it sees
+                   `<file>/<id>`; .gitignore is repository-relative, so it sees
+                   the prefixed form. */
+                char acctp[600], repop[600];
+                snprintf(acctp, sizeof acctp, "%s/%s", fn, idb);
+                record_path(repop, sizeof repop, fn, idb);
+                if (ignored(fn, acctp) || git_path_ignored(repo, repop)) {
                     skipped++; if (one) break; else continue; }
             }
             if (!one && is_provision_pointer(fn, idb)) {
@@ -462,9 +668,10 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
-            if (skip_objects && clen > 0 && memchr(cp, 0, (size_t)clen)) {
-                skipped++;                  /* compiled object — not on add -A */
-                if (one) break;
+            /* Objects are skipped by `add -A`, staged by an EXPLICIT add —
+               the same rule as every other exclusion here. */
+            if (!one && record_is_object(ctx, &fvar, idb, cp, clen)) {
+                skipped++;
                 continue;
             }
             const char *sc = cp;
@@ -486,7 +693,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 git_index_entry e;
                 memset(&e, 0, sizeof e);
                 char path[600];
-                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                record_path(path, sizeof path, fn, idb);
                 e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
                 e.id = boid;
@@ -499,11 +706,51 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
 
+    /* RECONCILE DELETIONS.  Staging only ever ADDED, so a record deleted from
+       the account stayed in the index and went on being committed — and a clone
+       of that commit brought it back.  Deleted data returning is worse than
+       deleted data being missed, and `status` already reported the deletion
+       correctly, so the two disagreed about the same account.
+       The test is the one status uses — the record cannot be read — so they now
+       agree by construction.  Only on a wholesale add of a file: naming one
+       record is about that record, not about everything else in the file. */
+    int64_t removed = 0;
+    if (!only[0]) {
+        char rpfx[600];
+        int pn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, fn);
+        mv_value fv2, id2, rec2;
+        mv_init(&fv2); mv_init(&id2); mv_init(&rec2);
+        if (pn > 0 && open_named(ctx, fn, &fv2)) {
+            size_t pl = (size_t)pn;
+            for (size_t i = git_index_entrycount(index); i-- > 0; ) {
+                const git_index_entry *e = git_index_get_byindex(index, i);
+                if (!e || strncmp(e->path, rpfx, pl) != 0) continue;
+                char path[600], rid[300];
+                snprintf(path, sizeof path, "%s", e->path);
+                snprintf(rid, sizeof rid, "%s", e->path + pl);
+                /* synthesised, never a record — see stage_file_control */
+                if (strcmp(rid, "%FILE%") == 0) continue;
+                mv_set_str(&id2, rid, (int64_t)strlen(rid));
+                if (!mv_read(ctx, &rec2, &fv2, &id2, 0)) {
+                    git_index_remove_bypath(index, path);
+                    removed++;
+                }
+            }
+        }
+        mv_clear(&fv2); mv_clear(&id2); mv_clear(&rec2);
+    }
+
     int rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
     if (rc != 0) { fail(argv[3], "write index"); return; }
     char out[96];
+    if (removed) {
+        snprintf(out, sizeof out, "staged %lld record(s), %lld removed",
+                 (long long)n, (long long)removed);
+        mv_set_str(argv[3], out, (int64_t)strlen(out));
+        return;
+    }
     if (skipped)
         snprintf(out, sizeof out, "staged %lld record(s), %lld ignored",
                  (long long)n, (long long)skipped);
@@ -519,17 +766,72 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
    records of VOC files that are not plain on-disk files, e.g. LMDB hash files).
    Uses the repository-owned index so libgit2 can stat the working tree and
    apply the ignore rules.  GITADDDISK(repo, out) */
+/* Declared here, defined with the status helpers: whether the BACKEND calls this
+   name one of the account's files. */
+static int backend_has_file(mv_ctx *ctx, const char *name);
+static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top);
+static int is_mv_file(const char *n);
+static void backend_files_reset(void);
+static void split_top(const char *path, char *out, size_t cap);
+
 /* The record-git model tracks records as git blobs, never the binary LMDB
    store — so the account's mvxdata.lmdb must never be staged, even when no
-   .gitignore lists it.  Returns >0 to skip the path. */
+   .gitignore lists it.
+
+   Nor may this pass stage anything that belongs to an MV FILE.  Those are
+   records, and the record pass stages them with record semantics; letting the
+   plain-file pass also stage them means the same path is written twice by two
+   readers whose bytes need not agree, and the loser shows up as permanently
+   modified.  On MVX the question never arose, because an MV file's records are
+   not ordinary files on disk.  On UniVerse a directory file — BP, BP.O — is
+   exactly that, which is how `M BP.O/...` survived every commit.
+
+   Returns >0 to skip the path. */
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
-    (void)payload;
-    return strncmp(path, "mvxdata.lmdb", 12) == 0 ? 1 : 0;
+    if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
+    /* git hands us a REPOSITORY-relative path; file names are account-relative.
+       Below a repository root those differ by the account's prefix, and comparing
+       the wrong one means every test here silently fails to match — which is how
+       a second account's records got staged twice, once as records and once as
+       plain files. */
+    const char *rel = unprefix(path);
+    if (!rel) return 1;                     /* another account's territory */
+    char top[256];
+    split_top(rel, top, sizeof top);
+    /* At the repository root — no prefix — a top-level directory that is itself
+       an account belongs to that account's own pass.  Without this the root pass
+       would sweep every account's records up as ordinary blobs, which is exactly
+       what the per-account passes are for. */
+    if (!g_prefix[0] && strcmp(top, rel) != 0) {
+        char probe[600];
+        struct stat psb;
+        snprintf(probe, sizeof probe, "%s/VOC", top);
+        if (stat(probe, &psb) == 0) return 1;
+        snprintf(probe, sizeof probe, "%s/.mvx", top);
+        if (stat(probe, &psb) == 0) return 1;
+    }
+    /* A platform WORK file is never content.  &SAVEDLISTS&, &PH&, _HOLD_ … are
+       scratch areas the system writes to as a side effect of ordinary use — and
+       in our case as a side effect of US: every SELECT this tool issues rewrites
+       a &SAVEDLISTS& entry, so tracking it means the account is dirty the moment
+       anything looks at it.  The account scan has always skipped these names
+       (wrapped in & or _); the plain-file pass must skip them too, because on
+       UniVerse they are real directories on disk and git would otherwise sweep
+       them up. */
+    {
+        size_t tl = strlen(top);
+        if (tl >= 2 && ((top[0] == '&' && top[tl - 1] == '&') ||
+                        (top[0] == '_' && top[tl - 1] == '_')))
+            return 1;
+    }
+    /* only a path INSIDE a file is a record; the file's own entry is not */
+    if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
+        return 1;
+    return 0;
 }
 
 void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
-    (void)ctx;
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -545,8 +847,14 @@ void mvx_sub_GITADDDISK(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     git_strarray all = {NULL, 0};              /* empty pathspec ⇒ everything */
     int rc = git_index_add_all(index, &all, GIT_INDEX_ADD_DEFAULT,
-                               addall_skip, NULL);
-    if (rc == 0) rc = git_index_update_all(index, &all, NULL, NULL);
+                               addall_skip, ctx);
+    /* update_all needs the SAME filter.  It refreshes every already-tracked path
+       from the working tree, so without the callback it re-stages record paths
+       as plain blobs — quietly undoing the record staging that put them there.
+       In a multi-account repository that made each account's pass overwrite the
+       previous account's records, and the loser showed up as permanently
+       modified. */
+    if (rc == 0) rc = git_index_update_all(index, &all, addall_skip, ctx);
     if (rc == 0) rc = git_index_write(index);
     git_index_free(index);
     git_repository_free(repo);
@@ -614,6 +922,13 @@ typedef struct {
     char description[256];
     char hash[32];        /* default hash backend; empty -> "lmdb" on open form */
     int  openaccount;     /* open-form version; 0 if the source carried none */
+    char flavour[32];     /* VOC flavour, UniVerse only (mv_git#15).  A UniVerse
+                             account is created with a flavour — PICK, IN2,
+                             Ideal … — and it governs how the account's own VOC
+                             behaves.  Recreating an account without it produces
+                             something that looks right and behaves differently,
+                             so it has to travel with the descriptor.  Empty for
+                             platforms that have no such notion. */
     char permits[2048];   /* vendor permit/deny lines, verbatim (each \n-terminated) */
 } acct_desc;
 
@@ -671,6 +986,8 @@ static void desc_parse(const char *buf, size_t len, acct_desc *d) {
             snprintf(d->hash, sizeof d->hash, "%s", val);
         else if (strcasecmp(key, "openaccount") == 0)
             d->openaccount = atoi(val);
+        else if (strcasecmp(key, "flavour") == 0 || strcasecmp(key, "flavor") == 0)
+            snprintf(d->flavour, sizeof d->flavour, "%s", val);
     }
 }
 
@@ -687,6 +1004,10 @@ static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    /* Only emitted when the source had one, so an account from a platform with
+       no flavour does not acquire a meaningless field. */
+    if (n > 0 && (size_t)n < cap && d->flavour[0])
+        n += snprintf(out + n, cap - (size_t)n, "flavour = %s\n", d->flavour);
     /* vendor permit/deny lines travel with the account (the package's declared
        shell surface); the local admin layer stays in .mvx-private. */
     if (n > 0 && (size_t)n < cap && d->permits[0])
@@ -694,20 +1015,34 @@ static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     return n;
 }
 
-/* Render the native `.mvx` form of `d`: identity + the VENDOR permit/deny lines
+/* Render a NATIVE descriptor for `d` — identity + the VENDOR permit/deny lines
    (re-seeded on checkout so mvx enforces them at the restricted tier).  The
-   LOCAL admin policy is re-established from .mvx-private, never carried here. */
-static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
+   LOCAL admin policy is re-established from .mvx-private, never carried here.
+   `tag` names the platform in the header comment: the native form is per-platform
+   (`.mvx`, `.uv`, `.udt`) and the file should say which one it describes. */
+static int desc_render_native_as(const acct_desc *d, const char *tag,
+                                char *out, size_t cap) {
     const char *name = d->name[0]    ? d->name    : "account";
     const char *ver  = d->version[0] ? d->version : "1";
     int n = snprintf(out, cap,
-        "# MVX account descriptor\nname = %s\nversion = %s\n", name, ver);
+        "# %s account descriptor\nname = %s\nversion = %s\n", tag, name, ver);
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
+    /* Carried here too, even though MVX has no flavour of its own: an account
+       that passes through MVX — cloned, worked on, pushed back — must not lose
+       it, or returning to UniVerse would recreate the account with the wrong
+       VOC behaviour.  Preservation, not use. */
+    if (n > 0 && (size_t)n < cap && d->flavour[0])
+        n += snprintf(out + n, cap - (size_t)n, "flavour = %s\n", d->flavour);
     if (n > 0 && (size_t)n < cap && d->permits[0])
         n += snprintf(out + n, cap - (size_t)n, "%s", d->permits);
     return n;
+}
+
+/* The native MVX descriptor — the form checkout re-seeds onto disk as `.mvx`. */
+static int desc_render_native(const acct_desc *d, char *out, size_t cap) {
+    return desc_render_native_as(d, "MVX", out, cap);
 }
 
 /* Public: render the canonical portable descriptor for an account with the
@@ -725,6 +1060,59 @@ int mv_git_desc_open(const char *name, const char *version,
     if (hash)        snprintf(d.hash, sizeof d.hash, "%s", hash);
     d.openaccount = 1;
     return desc_render_open(&d, out, cap);
+}
+
+/* Public: adopt a descriptor onto this platform — see mvxgit.h for why this is a
+   conversion the user reviews rather than something a clone does silently. */
+int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
+                      const char *flavour, int open_form,
+                      char *name_out, size_t name_cap,
+                      char *out, size_t cap) {
+    acct_desc d;
+    desc_parse(src ? src : "", src ? srclen : 0, &d);
+    /* Supplied only when the source lacked it, so adopting an account that
+       already names its flavour never overwrites what it says. */
+    if (flavour && flavour[0])
+        snprintf(d.flavour, sizeof d.flavour, "%s", flavour);
+    if (open_form) {
+        d.openaccount = 1;
+        if (name_out) snprintf(name_out, name_cap, ".mv-account");
+        return desc_render_open(&d, out, cap);
+    }
+    /* Declining the open form keeps the account native — but native to HERE, not
+       to wherever it came from.  On UniVerse and UniData the native marker exists
+       only inside the repository (the live account IS its VOC), so the descriptor's
+       whole job is to say what to rebuild and how. */
+    d.openaccount = 0;
+    if (name_out)
+        snprintf(name_out, name_cap, ".%s",
+                 (platform && platform[0]) ? platform : "mvx");
+    {
+        char tag[32];
+        const char *p = (platform && platform[0]) ? platform : "mvx";
+        size_t i = 0;
+        for (; p[i] && i < sizeof tag - 1; i++)
+            tag[i] = (char)toupper((unsigned char)p[i]);
+        tag[i] = '\0';
+        return desc_render_native_as(&d, tag, out, cap);
+    }
+}
+
+/* Public: read one field from a descriptor without duplicating the parser. */
+int mv_git_desc_field(const char *src, size_t srclen, const char *key,
+                      char *out, size_t cap) {
+    acct_desc d;
+    const char *v = NULL;
+    desc_parse(src ? src : "", src ? srclen : 0, &d);
+    if      (!strcasecmp(key, "name"))        v = d.name;
+    else if (!strcasecmp(key, "version"))     v = d.version;
+    else if (!strcasecmp(key, "description")) v = d.description;
+    else if (!strcasecmp(key, "hash"))        v = d.hash;
+    else if (!strcasecmp(key, "flavour") ||
+             !strcasecmp(key, "flavor"))      v = d.flavour;
+    if (!v || !v[0]) { if (cap) out[0] = '\0'; return 0; }
+    snprintf(out, cap, "%s", v);
+    return 1;
 }
 
 /* Normalise the staged index to the open account format — the record-git
@@ -886,9 +1274,102 @@ static int addall_is_mv_file(const char *acct, const char *n) {
 /* GITADDALL(repo, out) — the whole-account `add -A`, IN THE ENGINE so it works
    where there is no CLI to fall back to (D3).  Same three passes as the former
    CLI-only add_all: git's own add of plain files (honouring .gitignore), then
-   every MV file's records — on-disk directory files AND lmdb-backed files (found
-   via mv_filelist, staged with their .DICT) — then the open-form normalisation.
-   A gitignored MV file is skipped (its records never enter the open form). */
+   every MV file's records — on-disk directory files AND whatever the BACKEND
+   reports (mv_filelist), staged with their .DICT — then the open-form
+   normalisation.  A gitignored MV file is skipped (its records never enter the
+   open form).
+
+   Both file sources are needed because the platforms disagree about where a file
+   even IS.  On MVX a file may be a directory on disk carrying <name>.DICT/%FILE%,
+   which pass 2 finds by looking; on UniVerse and UniData a file is a hash file
+   that pass 2 cannot see at all, and the only authority is the account's VOC —
+   which is exactly what mv_filelist answers.  Pass 3 used to run only when an
+   lmdb store was present, which quietly made it MVX-only: on UniVerse it left
+   every record unstaged while reporting success, because pass 1 had swept the
+   directory files as ordinary blobs and nothing had asked the backend.  So the
+   backend is now always consulted, and pass 3 skips what pass 2 already did. */
+void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
+
+/* Compiled BASIC objects, which differ per platform and must not be committed.
+ *
+ *   UniVerse  objects live in a SEPARATE FILE named after the source file:
+ *             BP -> BP.O.  So a file whose name is <X>.O, where <X> is also a
+ *             file, is an object file and none of its records are content.
+ *   UniData   objects live INSIDE the source file, as records named _<PROG>
+ *             alongside <PROG> — an underscore PREFIX (measured on 8.3:
+ *             compiling BP/GIT.AGENT writes BP/_GIT.AGENT).  So a record id
+ *             starting "_" whose base id exists in the same file is an object.
+ *   MVX       neither — objects go to CATALOG/, which is not a record file, so
+ *             these rules simply never fire.
+ *
+ * Naming the companion is what makes this exact.  The previous rule was "the
+ * record contains a NUL", which is a guess in both directions: it drops a
+ * legitimate record that happens to hold one, and keeps an object that happens
+ * not to.  Worse, it was gated on an environment variable that ONLY udt-git
+ * set, so UniVerse was committing its compiled objects outright.
+ *
+ * Wholesale adds only.  Naming a record explicitly stages it regardless, the
+ * same rule every other exclusion follows. */
+/* Stage `<file>.DICT/%FILE%` — the file's own CREATE.FILE parameters.
+ *
+ * This is the `.gitkeep` of a MultiValue file, and rather more: it makes a file
+ * with no records exist in the commit at all, and it carries the geometry a
+ * clone needs to recreate the file CORRECTLY rather than as some default.
+ *
+ * On MVX the control is a real record on disk, so `add` picks it up like any
+ * other and this is a no-op.  On UniVerse and UniData nothing produces one — the
+ * dictionary is a separate hash file with no such entry — so the geometry had no
+ * carrier and a clone could only guess.  GITOPENFORM converts a control that
+ * already exists; it never creates one, which is why turning the open form on
+ * did not help.
+ *
+ * Staged in EVERY form, not just the open one: a native commit needs it just as
+ * much, because it is the only thing that says what to create.
+ *
+ * Only where the backend can describe a file.  mv_fileclass is part of the
+ * UniVerse and UniData contracts and is deliberately absent from MVX's, because
+ * there the control IS a record and `add` already stages it — synthesising a
+ * second one would be inventing content over the account's own. */
+static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
+#if !defined(MVXGIT_GITD) && !defined(MVXGIT_UDT)
+    (void)ctx; (void)rp; (void)name;
+    return;                     /* MVX: the file's control is its own record */
+#else
+    char cls[128] = "";
+    if (mv_fileclass(ctx, name, cls, sizeof cls) <= 0 || !cls[0]) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s.DICT/%%FILE%%", name);
+    mv_value a0, a1, a2, out;
+    mv_init(&a0); mv_init(&a1); mv_init(&a2); mv_init(&out);
+    mv_set_str(&a0, rp, (int64_t)strlen(rp));
+    mv_set_str(&a1, path, (int64_t)strlen(path));
+    mv_set_str(&a2, cls, (int64_t)strlen(cls));
+    mv_value *av[4] = { &a0, &a1, &a2, &out };
+    mvx_sub_GITSTAGEBLOB(ctx, 4, av);
+    mv_clear(&a0); mv_clear(&a1); mv_clear(&a2); mv_clear(&out);
+#endif
+}
+
+/* The names pass 2 already staged, so pass 3 does not stage them twice.  Small
+   and linear on purpose: an account has tens of files, not thousands. */
+typedef struct { char (*n)[256]; int c, cap; } addall_set;
+
+static void addall_seen(addall_set *s, const char *name) {
+    if (s->c >= s->cap) {
+        int nc = s->cap ? s->cap * 2 : 32;
+        void *p = realloc(s->n, (size_t)nc * 256);
+        if (!p) return;
+        s->n = p; s->cap = nc;
+    }
+    snprintf(s->n[s->c++], 256, "%s", name);
+}
+
+static int addall_was_seen(const addall_set *s, const char *name) {
+    for (int i = 0; i < s->c; i++)
+        if (!strcmp(s->n[i], name)) return 1;
+    return 0;
+}
+
 void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
@@ -898,8 +1379,14 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     const char *acct = getenv("MVXACCOUNT");
     if (!acct || !acct[0]) acct = ".";
     int64_t nfiles = 0;
+    addall_set seen = {0};
 
-    /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules */
+    /* 1. git's own add — plain files, honouring .gitignore, deletions, submodules.
+          Restricted to this account: a prefixed run stages only what is under its
+          own directory, and the repository's own top-level files are staged once,
+          by the caller, at the root.  Otherwise each account in a multi-account
+          repository would re-stage every other account's records as plain
+          blobs — silently undoing their record staging. */
     { const char *a[] = {rp}; addall_call(mvx_sub_GITADDDISK, ctx, a, 1); }
 
     git_repository *repo = NULL;
@@ -919,15 +1406,16 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (git_path_ignored(repo, n)) continue;
         const char *a[] = {rp, n, ""};
         addall_call(mvx_sub_GITADD, ctx, a, 3);
+        stage_file_control(ctx, rp, n);
+        addall_seen(&seen, n);
         nfiles++;
     }
     if (d) closedir(d);
 
-    /* 3. lmdb-backed files (records not on disk), only if the store exists */
-    char lmdbp[4096];
-    struct stat lsb;
-    snprintf(lmdbp, sizeof lmdbp, "%s/mvxdata.lmdb", acct);
-    if (stat(lmdbp, &lsb) == 0) {
+    /* 3. every file the BACKEND knows about — lmdb-backed on MVX, the VOC scan
+          on UniVerse and UniData.  Always consulted: a platform whose files are
+          hash files has no other way to be seen, and pass 2 cannot find them. */
+    {
         mv_value fl;
         mv_init(&fl);
         mv_filelist(ctx, &fl);                   /* name<VM>type, @AM-separated */
@@ -943,10 +1431,17 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 char name[256];
                 memcpy(name, p + s, (size_t)nl);
                 name[nl] = '\0';
-                char fp[4096];
-                struct stat ns;
-                snprintf(fp, sizeof fp, "%s/%s", acct, name);
-                if ((stat(fp, &ns) != 0 || !S_ISDIR(ns.st_mode)) &&
+                /* UniVerse: <X>.O is the object file of <X>; skip it whole. */
+                int is_obj = 0;
+                {
+                    size_t nl2 = strlen(name);
+                    if (nl2 > 2 && strcmp(name + nl2 - 2, ".O") == 0) {
+                        char base[256];
+                        snprintf(base, sizeof base, "%.*s", (int)(nl2 - 2), name);
+                        is_obj = backend_has_file(ctx, base);
+                    }
+                }
+                if (!is_obj && !addall_was_seen(&seen, name) &&
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -954,6 +1449,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     snprintf(dn, sizeof dn, "%s.DICT", name);
                     const char *a2[] = {rp, dn, ""};
                     addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    stage_file_control(ctx, rp, name);
                     nfiles++;
                 }
             }
@@ -962,7 +1458,14 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         }
         mv_clear(&fl);
     }
-    if (repo) git_repository_free(repo);
+    free(seen.n);
+
+    if (repo) {
+        git_repository_free(repo);
+        repo = NULL;
+    }
+    /* 3b. Files that are GONE — see mv_git_prune_gone. */
+    { char *pr = mv_git_prune_gone(ctx, rp, ""); free(pr); }
 
     /* 4. open-account normalisation of the staged index */
     if (mv_openaccount()) {
@@ -973,6 +1476,115 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char out[128];
     snprintf(out, sizeof out, "staged %lld file(s)", (long long)nfiles);
     mv_set_str(argv[1], out, (int64_t)strlen(out));
+}
+
+/* Drop from the index every record of a file the account no longer has.
+ *
+ * Passes that stage walk what EXISTS, so a deleted file is never visited and its
+ * records sit in the index for ever — committed again on every commit, and
+ * brought back whole by a clone of that commit.  %FILE% is the file's existence
+ * in git, so when it goes the file goes: <file>/ and <file>.DICT/ both.
+ *
+ * ITS OWN ENTRY POINT because the wholesale add is not one implementation.  On
+ * MVX it is the C GITADDALL; on UniVerse and UniData it is BASIC (GITUDT.ADD)
+ * walking files and staging each record.  A reconcile living inside GITADDALL
+ * therefore never ran on the two platforms that need it most — `add -A` left the
+ * deleted file staged and status reported it deleted for ever.  One function,
+ * called by both, is the only arrangement that cannot drift.
+ */
+/* The account's live files, as told to us by the CALLER.
+ *
+ * mvgitd is built MVXGIT_NORECORDS: it has no record backend, so
+ * backend_has_file() there is always 0 and every file looks deleted.  Letting it
+ * decide emptied the whole index.  The records live in the SESSION, so the
+ * session is the only thing that knows what exists — on UniVerse and UniData the
+ * BASIC add hands its file list in.  Empty means "no list given, ask the
+ * backend", which is the in-process case (MVX, and the CLI drivers). */
+static const char *g_live = NULL;
+static int64_t     g_livelen = 0;
+
+static int live_listed(const char *name) {
+    if (!g_live || g_livelen <= 0) return -1;      /* no list — cannot say */
+    size_t nl = strlen(name);
+    int64_t i = 0;
+    while (i < g_livelen) {
+        int64_t st = i;
+        /* Entries may be name<VM>type — stop at the VM, as every other reader of
+           a file list here does.  Comparing the whole field matched nothing and
+           made every file look deleted. */
+        while (i < g_livelen && (unsigned char)g_live[i] != 0xFE &&
+               (unsigned char)g_live[i] != 0xFD) i++;
+        if ((size_t)(i - st) == nl && memcmp(g_live + st, name, nl) == 0) return 1;
+        while (i < g_livelen && (unsigned char)g_live[i] != 0xFE) i++;
+        if (i < g_livelen) i++;
+    }
+    return 0;
+}
+
+void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    ensure_init();
+    backend_files_reset();      /* judge liveness against the account as it IS */
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    char lnb[40];
+    g_live = NULL;
+    g_livelen = mv_val_chars(argv[1], lnb, sizeof lnb, &g_live);
+    openaccount_sync(rp);
+    git_repository *repo = NULL;
+    git_index *gidx = NULL;
+    if (repo_open(rp, &repo, &gidx) != 0) { fail(argv[2], "open"); return; }
+    /* DECIDE FIRST, THEN REMOVE.  The test is "is <base>.DICT/%FILE% still in
+       the index" — an entry this pass is itself deleting.  Removing as we went
+       dropped %FILE% and every later lookup then said "git never tracked this",
+       so the file's own records survived. */
+    char (*gonetop)[256] = NULL;
+    size_t ng = 0, gcap = 0;
+    for (size_t i = 0; i < git_index_entrycount(gidx); i++) {
+        const git_index_entry *e = git_index_get_byindex(gidx, i);
+        if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+        const char *rel = unprefix(e->path);
+        if (!rel || !strchr(rel, '/')) continue;
+        char top[256];
+        split_top(rel, top, sizeof top);
+        size_t k = 0;
+        for (; k < ng; k++) if (!strcmp(gonetop[k], top)) break;
+        if (k < ng) continue;                     /* already decided */
+        if (!tracked_file_gone(ctx, gidx, top)) continue;
+        if (ng == gcap) {
+            size_t nc = gcap ? gcap * 2 : 8;
+            char (*t)[256] = realloc(gonetop, nc * sizeof *gonetop);
+            if (!t) break;
+            gonetop = t;
+            gcap = nc;
+        }
+        snprintf(gonetop[ng++], 256, "%s", top);
+    }
+    long dropped = 0;
+    for (size_t i = git_index_entrycount(gidx); i-- > 0 && ng; ) {
+        const git_index_entry *e = git_index_get_byindex(gidx, i);
+        if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+        const char *rel = unprefix(e->path);
+        if (!rel || !strchr(rel, '/')) continue;
+        char top[256], path[700];
+        split_top(rel, top, sizeof top);
+        snprintf(path, sizeof path, "%s", e->path);
+        for (size_t k = 0; k < ng; k++) {
+            if (strcmp(gonetop[k], top)) continue;
+            git_index_remove_bypath(gidx, path);
+            dropped++;
+            break;
+        }
+    }
+    free(gonetop);
+    if (dropped) git_index_write(gidx);
+    git_index_free(gidx);
+    git_repository_free(repo);
+    char out[128];
+    snprintf(out, sizeof out, "%ld record(s) of deleted file(s) unstaged",
+             dropped);
+    g_live = NULL; g_livelen = 0;
+    mv_set_str(argv[2], out, (int64_t)strlen(out));
 }
 
 /* Stage a git submodule as a gitlink (mode 0160000, id = the submodule's
@@ -1034,7 +1646,7 @@ void mvx_sub_GITRM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
     char path[600];
-    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    record_path(path, sizeof path, fn, recid);
     int rc;
     if (recid[0]) rc = git_index_remove_bypath(index, path);
     else rc = git_index_remove_directory(index, fn, 0);
@@ -1043,6 +1655,43 @@ void mvx_sub_GITRM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
     if (rc != 0) { fail(argv[3], "rm"); return; }
     mv_set_str(argv[3], "removed from tracking", 21);
+}
+
+/* GITINDEXIDS(repo, file, out) — the record ids currently staged under <file>/,
+ * @AM-separated.
+ *
+ * NEITHER SIDE CAN RECONCILE ALONE, which is why this exists.  Staging a deleted
+ * record's removal needs two facts: what git has, and what the account still
+ * has.  The BASIC add can read the account but cannot see the index; mvgitd can
+ * see the index but has no record backend at all.  So the engine answers "what
+ * do I have for this file" and the caller — which can READ — decides.
+ */
+void mvx_sub_GITINDEXIDS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], fn[256];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], fn, sizeof fn);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+    char pfx[600];
+    int pn = snprintf(pfx, sizeof pfx, "%s%s/", g_prefix, fn);
+    sbuf b = {0};
+    if (pn > 0) {
+        for (size_t i = 0; i < git_index_entrycount(index); i++) {
+            const git_index_entry *e = git_index_get_byindex(index, i);
+            if (!e || e->mode == GIT_FILEMODE_COMMIT) continue;
+            if (strncmp(e->path, pfx, (size_t)pn) != 0) continue;
+            const char *id = e->path + pn;
+            if (!*id || strchr(id, '/')) continue;     /* not a plain record id */
+            sb_line(&b, id);
+        }
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&b, argv[2], "");
 }
 
 /* GITCOMMIT(repo, message, out) — commit the staged index. */
@@ -1065,7 +1714,20 @@ void mvx_sub_GITCOMMIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_object *headobj = NULL;
     git_commit *parent = NULL;
     int rc = git_index_write_tree_to(&tree_oid, index, repo);
-    if (rc == 0) rc = git_tree_lookup(&tree, repo, &tree_oid);
+    if (rc != 0) {
+        /* Say what actually failed.  The HEAD probe below is EXPECTED to fail on
+           a first commit, and libgit2 keeps that message in giterr_last(), so
+           reporting the last error here blames a missing HEAD for a problem that
+           is usually an unstorable path in the index. */
+        const git_error *e = git_error_last();
+        char m[512];
+        snprintf(m, sizeof m, "cannot build a tree from the staged index: %s",
+                 (e && e->message) ? e->message : "unknown");
+        fail(argv[2], m);
+        git_index_free(index); git_repository_free(repo);
+        return;
+    }
+    rc = git_tree_lookup(&tree, repo, &tree_oid);
 
     if (git_revparse_single(&headobj, repo, "HEAD") == 0 &&
         git_commit_lookup(&parent, repo, git_object_id(headobj)) == 0 &&
@@ -1134,6 +1796,148 @@ static void split_top(const char *path, char *top, size_t cap) {
    LMDB-backed hash file, so it is an MV file.  Pure stat(), run in the account
    (the engine has chdir'd there): it never opens the store, so status on a
    directory-only account cannot conjure an mvxdata.lmdb. */
+/* The account's own files as the BACKEND reports them, cached for the process.
+ *
+ * The disk test below cannot answer this on every platform.  It recognises an MV
+ * file by the MVX convention — a directory carrying <name>.DICT/%FILE% — and on
+ * UniVerse the dictionary is a separate file called D_<name>, so a directory
+ * file like BP or BP.O looks like an ordinary directory of ordinary files.  It
+ * is then read TWICE with different byte semantics: once by git's plain-file
+ * pass, once as records, and whichever staged last leaves the other permanently
+ * disagreeing.  That is what left `M BP.O/...` in status after every commit.
+ *
+ * The VOC is the authority on what is a file, and mv_filelist is how the backend
+ * says so.  Not available in the recordless build, which has no backend at all —
+ * hence the guard rather than a call that would abort. */
+static nameset g_bfiles;
+static int g_bfiles_done;
+
+static int backend_has_file(mv_ctx *ctx, const char *name) {
+#ifdef MVXGIT_NORECORDS
+    (void)ctx; (void)name;
+    return 0;
+#else
+    if (!g_bfiles_done) {
+        g_bfiles_done = 1;
+        mv_value fl;
+        mv_init(&fl);
+        mv_filelist(ctx, &fl);              /* name<VM>type, @AM-separated */
+        char nb[40];
+        const char *p;
+        int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p), i = 0;
+        while (i < len) {
+            int64_t st = i;
+            while (i < len && (unsigned char)p[i] != 0xFE &&
+                   (unsigned char)p[i] != 0xFD) i++;
+            int64_t nl = i - st;
+            if (nl > 0 && nl < 256) {
+                char nm[256];
+                memcpy(nm, p + st, (size_t)nl);
+                nm[nl] = '\0';
+                ns_add(&g_bfiles, nm);
+            }
+            while (i < len && (unsigned char)p[i] != 0xFE) i++;
+            if (i < len) i++;
+        }
+        mv_clear(&fl);
+    }
+    for (size_t k = 0; k < g_bfiles.c; k++)
+        if (!strcmp(g_bfiles.n[k], name)) return 1;
+    return 0;
+#endif
+}
+
+
+/* Is this file actually THERE?
+ *
+ * Not is_mv_file(), which answers "could this name be a record file" and
+ * returns 1 for anything without an on-disk directory — it can never report a
+ * file gone, which is exactly what a deletion needs to know.  A file is live if
+ * it is a directory carrying its own %FILE% control (MVX, directory-backed) or
+ * the backend still lists it (a hash file on UniVerse/UniData, an LMDB file on
+ * MVX). */
+static int file_is_live(mv_ctx *ctx, const char *name) {
+    struct stat sb;
+    if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        char ctl[600];
+        snprintf(ctl, sizeof ctl, "%s.DICT/%%FILE%%", name);
+        if (stat(ctl, &sb) == 0) return 1;
+    }
+    return backend_has_file(ctx, name);
+}
+
+/* Did git track `top` as an MV FILE that the account no longer has?
+ *
+ * `%FILE%` is a file's EXISTENCE in git — a checkout creates the file from it —
+ * so an index entry for <base>.DICT/%FILE% is git saying "this is a file", and
+ * the file no longer being live is the account saying "it is gone".
+ *
+ * Deleting a file therefore behaves like removing a directory: every record
+ * under <file>/ AND <file>.DICT/ is a deletion, the %FILE% control included.
+ * Without this a DELETE.FILE was invisible — every entry whose file could not
+ * be opened was skipped, so its records stayed in the index and in HEAD, and a
+ * clone of that commit brought the entire file back.
+ */
+static char g_gone_memo[256];
+static int  g_gone_ans = -1;
+static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
+    if (!top || !top[0] || !index) return 0;
+    char base[256];
+    snprintf(base, sizeof base, "%s", top);
+    size_t bl = strlen(base);
+    if (bl > 5 && strcmp(base + bl - 5, ".DICT") == 0) base[bl - 5] = '\0';
+    if (!base[0]) return 0;
+    /* Index entries are sorted by path, so a file's records arrive together and
+       a one-entry memo makes the scan below effectively linear. */
+    if (g_gone_ans >= 0 && strcmp(g_gone_memo, base) == 0) return g_gone_ans;
+    int listed = live_listed(base);
+    int alive = listed >= 0 ? listed : file_is_live(ctx, base);
+    int ans = 0;
+    if (!alive) {
+        /* GIT TRACKED IT AS A FILE if the index holds anything under its
+           DICTIONARY.  Not "<base>.DICT/%FILE% is present": that control is only
+           staged in OPEN-account mode, so keying on it made the whole rule a
+           no-op on a native commit — which is most of them.  Every MV file has a
+           dictionary and no plain directory does, so the .DICT subtree is the
+           mark that works in both modes.  (It also keeps an ordinary tracked
+           directory — docs/, say — from ever looking like a deleted file.) */
+        char pfx[600];
+        int pn = snprintf(pfx, sizeof pfx, "%s%s.DICT/", g_prefix, base);
+        if (pn > 0) {
+            for (size_t i = 0; i < git_index_entrycount(index); i++) {
+                const git_index_entry *e = git_index_get_byindex(index, i);
+                if (e && strncmp(e->path, pfx, (size_t)pn) == 0) { ans = 1; break; }
+            }
+        }
+    }
+    snprintf(g_gone_memo, sizeof g_gone_memo, "%s", base);
+    g_gone_ans = ans;
+    return ans;
+}
+
+/* Drop what was cached about the account we were in.  Called when the prefix
+   changes (a different account) and by the CLI between accounts. */
+/* Forget what the ACCOUNT looked like — its file list and the deletion memo.
+ * Both are answers about live state, and mvgitd serves many commands from one
+ * process, so a cache that outlives a command is a cache that reports a file
+ * created a moment ago as absent (and one just deleted as present).  Cheap: one
+ * FILELIST per command. */
+static void backend_files_reset(void) {
+    free(g_bfiles.n);
+    g_bfiles.n = NULL;
+    g_bfiles.c = g_bfiles.cap = 0;
+    g_bfiles_done = 0;
+    g_gone_ans = -1;
+}
+
+void mv_git_forget_account(void) {
+    g_gone_ans = -1;                 /* the memo belongs to the old account */
+    free(g_bfiles.n);
+    g_bfiles.n = NULL;
+    g_bfiles.c = g_bfiles.cap = 0;
+    g_bfiles_done = 0;
+}
+
 static int is_mv_file(const char *name) {
     struct stat sb;
     if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
@@ -1178,7 +1982,11 @@ static int is_file_control(const char *path) {
 }
 
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
+/* Defined with the staging helpers below; status needs the same judgement. */
+static int path_storable(const char *path);
+
 void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    backend_files_reset();      /* the account as it IS, not as it was cached */
     if (argc < 2) return;
     ensure_init();
     char rp[4096];
@@ -1210,26 +2018,81 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
+        /* Index paths are repository-relative and this account is only part of
+           the repository: strip our prefix, and ignore what belongs to another
+           account — its records are not ours to compare. */
+        const char *rel = unprefix(e->path);
+        if (!rel) continue;
         char top[256];
-        split_top(e->path, top, sizeof top);
+        split_top(rel, top, sizeof top);
         ns_add(&files, top);
     }
     for (size_t f = 0; f < files.c; f++) {
         const char *fn = files.n[f];
-        if (!is_mv_file(fn)) continue;    /* plain path — git diffs it, below */
+        if (!is_mv_file(fn) && !backend_has_file(ctx, fn))
+            continue;                     /* plain path — git diffs it, below */
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         if (open_named(ctx, fn, &fvar)) {
+            /* The same two exclusions `add` applies, because a record add
+               deliberately never stages must not then be reported as untracked —
+               it would be untracked forever, and no amount of committing would
+               clear it.  This is what made `status` dirty immediately after a
+               commit on UniVerse: a PICK-flavour VOC is full of type K and V
+               records (keywords and verbs the destination supplies its own copies
+               of), add dropped every one, and status listed every one. */
+            int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
+            int voc_open = is_voc && mv_openaccount();
             mv_select(ctx, &fvar);
             while (mv_readnext(ctx, &id)) {
                 if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
                 char idb[256], nb[40], path[600];
                 arg_str(&id, idb, sizeof idb);
-                snprintf(path, sizeof path, "%s/%s", fn, idb);
+                if (is_voc) {
+                    const char *vp;
+                    char vnb[40];
+                    int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
+                    int64_t f1 = 0;
+                    while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
+                    int cls = mv_voc_class(vp, f1);
+                    if (cls == 1 || (cls == 2 && voc_open)) continue;
+                    /* An object FILE is not committed, so neither is its VOC
+                       pointer — and reporting the pointer would leave it
+                       untracked forever, since no add will ever stage it. */
+                    {
+                        size_t il = strlen(idb);
+                        if (il > 2 && strcmp(idb + il - 2, ".O") == 0) {
+                            char b[256];
+                            snprintf(b, sizeof b, "%.*s", (int)(il - 2), idb);
+                            if (backend_has_file(ctx, b)) continue;
+                        }
+                    }
+                }
+                /* A compiled object is not staged by any wholesale add, so
+                   reporting it would leave it untracked forever — the same
+                   reason, and the same function, as on the add side. */
+                {
+                    const char *ocp;
+                    char onb[40];
+                    int64_t ocl = mv_val_chars(&rec, onb, sizeof onb, &ocp);
+                    if (record_is_object(ctx, &fvar, idb, ocp, ocl)) continue;
+                }
+                record_path(path, sizeof path, fn, idb);
+                /* An id that cannot be a git path was never staged either
+                   (mv_git#42) — reporting it as untracked would be reporting
+                   something no commit can ever fix. */
+                if (!path_storable(path)) continue;
                 const git_index_entry *entry =
                     git_index_get_bypath(index, path, 0);
                 const char *cp;
                 int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                /* A stock record that nobody staged is the system's furniture,
+                   and `add -A` skips it — so reporting it would leave it
+                   untracked forever, the trap type K and V fell into (#51).
+                   One that IS staged was staged deliberately, and from then on
+                   it is ordinary tracked content: changes to it must show. */
+                if (is_voc && !entry && is_stock_record(idb, cp, clen))
+                    continue;
                 git_oid woid;
                 char ofb[16];
                 int ofl;
@@ -1275,11 +2138,35 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     for (size_t i = 0; i < ic; i++) {
         const git_index_entry *e = git_index_get_byindex(index, i);
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
+        const char *rel = unprefix(e->path);
+        if (!rel) continue;               /* another account's record */
         char top[256];
-        split_top(e->path, top, sizeof top);
-        if (!is_mv_file(top)) continue;   /* plain path — git tracks deletions */
-        const char *recid = strchr(e->path, '/');
-        recid = recid ? recid + 1 : e->path;
+        split_top(rel, top, sizeof top);
+        /* The whole file may be gone — DELETE.FILE, or a checkout that dropped
+           its %FILE%.  Then everything under it is deleted, not skipped. */
+        int gone_file = tracked_file_gone(ctx, index, top);
+        if (!gone_file && !is_mv_file(top) && !backend_has_file(ctx, top))
+            continue;                     /* plain path — git tracks deletions */
+        /* A record path is `<file>/<id>`.  An entry with no slash is a plain
+           file at the account root, and git tracks its own deletions — but its
+           name may still BE an MV file's (VOCLIB, VOC …), in which case the
+           read below looks for a record of that name inside that file, fails,
+           and reports the file itself as a deleted record. */
+        const char *recid = strchr(rel, '/');
+        if (!recid) continue;
+        recid++;
+        /* `%FILE%` is SYNTHESISED from the live file's geometry, not read from
+           it (see stage_file_control) — on UniVerse and UniData no such record
+           exists to find.  Looking for one and not finding it is expected, so
+           reporting it deleted would make every account permanently dirty the
+           moment its files were described. */
+        if (!gone_file && strcmp(recid, "%FILE%") == 0) continue;
+        if (gone_file) {                  /* the file itself went: all of it */
+            char line[700];
+            snprintf(line, sizeof line, " D %s", e->path);
+            sb_line(&s, line);
+            continue;
+        }
         mv_value fvar, id, rec;
         mv_init(&fvar); mv_init(&id); mv_init(&rec);
         int isrec = 0, gone = 0;
@@ -1322,7 +2209,10 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 d->new_file.mode == GIT_FILEMODE_COMMIT)
                 continue;
             char top[256];
-            split_top(d->new_file.path, top, sizeof top);
+            {
+                const char *rel = unprefix(d->new_file.path);
+                split_top(rel ? rel : d->new_file.path, top, sizeof top);
+            }
             /* the descriptor is committed at `.mv-account` (portable form) but on
                disk is native `.mvx` — project the on-disk `.mvx` down to the open
                form and compare that against the committed blob, so a local
@@ -1349,7 +2239,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 sb_line(&s, " M .mv-account");
                 continue;
             }
-            if (is_mv_file(top)) continue;
+            if (is_mv_file(top) || backend_has_file(ctx, top)) continue;
             /* an open account's on-disk %FILE% is native (FILE<VM>type) while
                the committed blob is the open form (DIR/hash); compare in
                open-space and skip when they match. */
@@ -1615,7 +2505,7 @@ void mvx_sub_GITSHOW(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (git_repository_open(&repo, rp) != 0) { fail(argv[3], "open"); return; }
     git_tree *t = head_tree(repo);
     char path[600];
-    snprintf(path, sizeof path, "%s/%s", fn, recid);
+    record_path(path, sizeof path, fn, recid);
     git_tree_entry *te = NULL;
     git_blob *blob = NULL;
     if (t && git_tree_entry_bypath(&te, t, path) == 0 &&
@@ -1843,7 +2733,14 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
        switch.  On a fresh clone (keep_extra) the destination is a just-created
        account whose files carry system records the open-account commit
        deliberately omits (VOC verbs/keywords, catalog pointers such as CTLGTB);
-       deleting those would break the account.  Clone only adds. */
+       deleting those would break the account.  Clone only adds.
+
+       THE SAME REASONING NOW APPLIES TO A BRANCH SWITCH.  Since mv_git#46 a
+       native commit deliberately omits the flavour's stock VOC — 847 records for
+       PICK — so "absent from the commit" stopped meaning "deleted by the user".
+       Reconciling without that knowledge gutted the account: a pull reported
+       "847 removed" and left a VOC with no verbs in it.  A record the baseline
+       calls stock is not the commit's to remove. */
     if (!keep_extra) {
         mv_select(ctx, &fvar);
         mv_value dl;
@@ -1854,7 +2751,10 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             int found = 0;
             for (size_t i = 0; i < ns; i++)
                 if (strcmp(seen[i], idb) == 0) { found = 1; break; }
-            if (!found) { mv_delete_rec(ctx, &fvar, &dl); (*nd)++; }
+            if (!found && !is_stock_id(idb)) {
+                mv_delete_rec(ctx, &fvar, &dl);
+                (*nd)++;
+            }
         }
         mv_clear(&dl);
     }
@@ -1866,6 +2766,72 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
    rather than a plain directory git tracks verbatim: a data file `<name>` has a
    `<name>.DICT/%FILE%` control; a dictionary `<name>.DICT` has its own
    `%FILE%`. */
+/* What the COMMIT'S OWN VOC calls a file.
+ *
+ * The %FILE% test below only works on a commit in the OPEN interchange form,
+ * which is the only form that carries those controls.  A NATIVE commit — a
+ * UniVerse or UniData account committed as itself — has none, so nothing was
+ * recognised as an MV file and a clone materialised exactly nothing while
+ * cheerfully reporting success.
+ *
+ * A native commit does carry its VOC, though, and a VOC record of type F or DIR
+ * is the account's own statement that a file exists.  That is the same authority
+ * the live side consults (mv_filelist reads the VOC); here it is read out of the
+ * tree, because at clone time there is no account yet to ask. */
+static nameset g_treefiles;
+static int g_treefiles_done;
+
+static void tree_files_reset(void) {
+    free(g_treefiles.n);
+    g_treefiles.n = NULL;
+    g_treefiles.c = g_treefiles.cap = 0;
+    g_treefiles_done = 0;
+}
+
+static void tree_files_load(git_repository *repo, git_tree *head) {
+    if (g_treefiles_done) return;
+    g_treefiles_done = 1;
+    git_tree_entry *ve = NULL;
+    if (git_tree_entry_bypath(&ve, head, "VOC") != 0) return;
+    git_tree *voc = NULL;
+    if (git_tree_lookup(&voc, repo, git_tree_entry_id(ve)) == 0) {
+        size_t n = git_tree_entrycount(voc);
+        for (size_t i = 0; i < n; i++) {
+            const git_tree_entry *te = git_tree_entry_byindex(voc, i);
+            if (git_tree_entry_type(te) != GIT_OBJECT_BLOB) continue;
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) != 0) continue;
+            const char *c = git_blob_rawcontent(b);
+            size_t bl = (size_t)git_blob_rawsize(b);
+            /* A committed record is stored TRANSLATED — attribute marks are
+               newlines — so attribute 1 is the first line, and its first token
+               is the type (UniVerse may append a description). */
+            size_t e = 0;
+            while (e < bl && c[e] != '\n') e++;
+            size_t t = 0;
+            while (t < e && c[t] != ' ' && c[t] != '\t') t++;
+            if ((t == 1 && c[0] == 'F') || (t == 3 && strncmp(c, "DIR", 3) == 0))
+                ns_add(&g_treefiles, git_tree_entry_name(te));
+            git_blob_free(b);
+        }
+        git_tree_free(voc);
+    }
+    git_tree_entry_free(ve);
+}
+
+static int tree_voc_says_file(const char *name) {
+    /* A dictionary subtree belongs to its base file. */
+    char base[300];
+    size_t ln = strlen(name);
+    if (ln > 5 && strcmp(name + ln - 5, ".DICT") == 0)
+        snprintf(base, sizeof base, "%.*s", (int)(ln - 5), name);
+    else
+        snprintf(base, sizeof base, "%s", name);
+    for (size_t i = 0; i < g_treefiles.c; i++)
+        if (!strcmp(g_treefiles.n[i], base)) return 1;
+    return 0;
+}
+
 static int tree_is_mv_file(git_tree *head, const char *name) {
     char path[600];
     size_t ln = strlen(name);
@@ -1876,9 +2842,9 @@ static int tree_is_mv_file(git_tree *head, const char *name) {
     git_tree_entry *te = NULL;
     if (git_tree_entry_bypath(&te, head, path) == 0) {
         git_tree_entry_free(te);
-        return 1;
+        return 1;                       /* open form: the control says so */
     }
-    return 0;
+    return tree_voc_says_file(name);    /* native form: the VOC says so */
 }
 
 /* Materialize the tracked MV files in a commit tree into their backends.  With
@@ -1888,9 +2854,51 @@ static int tree_is_mv_file(git_tree *head, const char *name) {
    git.  Without it (a branch switch on an existing account) every top-level tree
    is materialised, as before — a file added without its dictionary still
    round-trips. */
+/* HEAD's tree AS THIS ACCOUNT SEES IT.
+ *
+ * A commit's top level is the repository's, not the account's: with several
+ * accounts it holds `acctA`, `acctB` and whatever ordinary files sit beside
+ * them.  The walk below treats every subtree as an MV FILE, so run against the
+ * repository root it would take `acctA` for a file and `acctA/CUST` for one of
+ * its record ids — restoring nonsense, or more likely nothing.
+ *
+ * Descending to the account's own subtree first puts us back in the world the
+ * rest of this code assumes, where a subtree IS a file and its entries ARE
+ * records.  It is the exact mirror of the prefix that staging applies, and it
+ * is what makes a multi-account repository restorable rather than merely
+ * committable (mv_git#44).
+ *
+ * Returns NULL when the account has nothing committed yet, which is not an
+ * error — a new account in an existing repository is exactly that. */
+static git_tree *account_subtree(git_repository *repo, git_tree *root) {
+    if (!g_prefix[0]) return NULL;              /* the root IS the account */
+    char p[256];
+    size_t n = strlen(g_prefix);
+    snprintf(p, sizeof p, "%.*s", (int)(n - 1), g_prefix);   /* drop the '/' */
+    git_tree_entry *te = NULL;
+    git_tree *sub = NULL;
+    if (git_tree_entry_bypath(&te, root, p) == 0) {
+        if (git_tree_entry_type(te) == GIT_OBJECT_TREE)
+            git_tree_lookup(&sub, repo, git_tree_entry_id(te));
+        git_tree_entry_free(te);
+    }
+    return sub;
+}
+
 static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
                                git_tree *tree, int strict,
                                int64_t *nw, int64_t *nd) {
+    /* Below a repository root, this account's files live in its own subtree. */
+    git_tree *owned = NULL;
+    if (g_prefix[0]) {
+        owned = account_subtree(repo, tree);
+        if (!owned) return;                 /* nothing committed for us yet */
+        tree = owned;
+    }
+    /* Learn what this commit calls a file before deciding which subtrees are
+       ones.  Reset first: a different tree may say something different. */
+    tree_files_reset();
+    tree_files_load(repo, tree);
     size_t n = git_tree_entrycount(tree);
     for (size_t i = 0; i < n; i++) {
         const git_tree_entry *te = git_tree_entry_byindex(tree, i);
@@ -1905,6 +2913,57 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
         materialize_file(ctx, repo, tree, sub, name, strict, nw, nd);
         git_tree_free(sub);
     }
+    /* FILES THIS COMMIT NO LONGER HAS.  The loop above walks what the TREE
+       holds, so a file dropped between commits is simply never visited and
+       survives the checkout — the account keeps a file the branch does not have.
+       %FILE% is the file's existence in git, so a commit without one is a commit
+       without the file: delete it, dictionary and all.
+       Not on a fresh clone (strict): there is nothing to reconcile against, and
+       the destination's own files are its own.  Only files GIT TRACKED are
+       touched — a file the account has that git never knew about is not ours to
+       remove — and never the VOC, which is the account itself. */
+    if (!strict) {
+        git_index *idx = NULL;
+        if (git_repository_index(&idx, repo) == 0) {
+            mv_value fl;
+            mv_init(&fl);
+            mv_filelist(ctx, &fl);
+            char nb[40];
+            const char *p;
+            int64_t len = mv_val_chars(&fl, nb, sizeof nb, &p), i = 0;
+            while (i < len) {
+                int64_t st = i;
+                while (i < len && (unsigned char)p[i] != 0xFE &&
+                       (unsigned char)p[i] != 0xFD) i++;
+                int64_t nl = i - st;
+                if (nl > 0 && nl < 256) {
+                    char nm[256];
+                    memcpy(nm, p + st, (size_t)nl);
+                    nm[nl] = '\0';
+                    size_t l = strlen(nm);
+                    int is_dict = l > 5 && strcmp(nm + l - 5, ".DICT") == 0;
+                    if (!is_dict && strcasecmp(nm, "VOC") != 0 &&
+                        strcasecmp(nm, "MD") != 0 && !tree_is_mv_file(tree, nm)) {
+                        char ctl[600], path[700];
+                        snprintf(ctl, sizeof ctl, "%s.DICT", nm);
+                        record_path(path, sizeof path, ctl, "%FILE%");
+                        if (git_index_get_bypath(idx, path, 0)) {
+                            mv_value spec;
+                            mv_init(&spec);
+                            mv_set_str(&spec, nm, (int64_t)strlen(nm));
+                            if (mv_deletefile(ctx, &spec) && nd) (*nd)++;
+                            mv_clear(&spec);
+                        }
+                    }
+                }
+                while (i < len && (unsigned char)p[i] != 0xFE) i++;
+                if (i < len) i++;
+            }
+            mv_clear(&fl);
+            git_index_free(idx);
+        }
+    }
+    if (owned) git_tree_free(owned);
 }
 
 static void materialize_tree(mv_ctx *ctx, git_repository *repo,
@@ -2225,7 +3284,8 @@ static void finish_merge(mv_ctx *ctx, git_repository *repo,
 /* Fast-forward HEAD to `target` and materialise its tree — no merge commit.
    Returns 0 ok. */
 static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
-                              git_commit *target, int64_t *nw, int64_t *nd) {
+                              git_commit *target, int64_t *nw, int64_t *nd,
+                              int materialise) {
     git_reference *head = NULL, *moved = NULL;
     git_tree *tree = NULL;
     int rc = git_repository_head(&head, repo);
@@ -2234,8 +3294,8 @@ static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
                                       "mvx-git: fast-forward");
     if (rc == 0) rc = git_commit_tree(&tree, target);
     if (rc == 0) {
-        materialize_tree(ctx, repo, tree, nw, nd);
-        sync_index(repo, rp, tree);
+        if (materialise) materialize_tree(ctx, repo, tree, nw, nd);
+        sync_index(repo, rp, tree);      /* the git index, not records — safe */
     }
     if (tree) git_tree_free(tree);
     if (moved) git_reference_free(moved);
@@ -2248,8 +3308,17 @@ static int merge_fast_forward(mv_ctx *ctx, git_repository *repo, const char *rp,
    (origin/main), FETCH_HEAD (so pull reuses this), or a SHA.  Fast-forwards when
    HEAD is an ancestor, reports up-to-date, else makes a real merge commit; record
    conflicts surfaced by finish_merge.  One path for both `merge` and `pull`. */
+/* `materialise` says whether THIS process writes the records back.
+ *
+ * It cannot always be the one to do it.  mvgitd is built MVXGIT_NORECORDS — the
+ * BASIC session owns the records (Model B) — so a record primitive there calls
+ * mv_fatal and the daemon DIES mid-request, leaving the caller waiting for a
+ * reply that can never come (mv_git#53: over an hour asleep in pipe_read).
+ * With the flag off, the git-object work still happens here and the caller
+ * re-materialises natively afterwards, which is exactly what GIT MERGE and GIT
+ * CHERRY-PICK have always done via GITUDT.CHECKOUT. */
 static void merge_into_head(mv_ctx *ctx, git_repository *repo, const char *rp,
-                            const char *name, mv_value *out) {
+                            const char *name, mv_value *out, int materialise) {
     git_object *ho = NULL, *to = NULL;
     git_commit *ours = NULL, *theirs = NULL;
     git_annotated_commit *ann = NULL;
@@ -2271,7 +3340,7 @@ static void merge_into_head(mv_ctx *ctx, git_repository *repo, const char *rp,
     if (an & GIT_MERGE_ANALYSIS_UP_TO_DATE) {
         mv_set_str(out, "already up to date", 18);
     } else if (an & GIT_MERGE_ANALYSIS_FASTFORWARD) {
-        if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd) != 0) {
+        if (merge_fast_forward(ctx, repo, rp, theirs, &nw, &nd, materialise) != 0) {
             fail(out, "fast-forward");
         } else {
             char msg[300];
@@ -2305,7 +3374,7 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[1], name, sizeof name);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
-    merge_into_head(ctx, repo, rp, name, argv[2]);
+    merge_into_head(ctx, repo, rp, name, argv[2], 1);
     git_repository_free(repo);
 }
 
@@ -2382,6 +3451,16 @@ void mvx_sub_GITPUSH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 /* GITPULL(repo, remote, branch, out) — fetch then merge into HEAD, re-materialising
    records (a plain `git pull` refuses: our working tree is the native form).
    Merges refs/remotes/<remote>/<branch>, or FETCH_HEAD when no branch is named. */
+/* GITPULLREF is GITPULL without the record write — see merge_into_head. */
+static int g_pull_materialise = 1;
+void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv);
+
+void mvx_sub_GITPULLREF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    g_pull_materialise = 0;
+    mvx_sub_GITPULL(ctx, argc, argv);
+    g_pull_materialise = 1;
+}
+
 void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 4) return;
     ensure_init();
@@ -2403,7 +3482,7 @@ void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char mref[320];
     if (br[0]) snprintf(mref, sizeof mref, "refs/remotes/%s/%s", rn, br);
     else       snprintf(mref, sizeof mref, "FETCH_HEAD");
-    merge_into_head(ctx, repo, rp, mref, argv[3]);
+    merge_into_head(ctx, repo, rp, mref, argv[3], g_pull_materialise);
     git_repository_free(repo);
 }
 
@@ -2678,7 +3757,11 @@ void mvx_sub_GITRESTORE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_tree *t = head_tree(repo);
     git_tree_entry *sub = NULL;
     git_tree *subtree = NULL;
-    if (!t || git_tree_entry_bypath(&sub, t, fn) != 0 ||
+    /* The file is named account-relative but lives in the commit under this
+       account's prefix, so look it up there (mv_git#44). */
+    char tpath[512];
+    snprintf(tpath, sizeof tpath, "%s%s", g_prefix, fn);
+    if (!t || git_tree_entry_bypath(&sub, t, tpath) != 0 ||
         git_tree_lookup(&subtree, repo, git_tree_entry_id(sub)) != 0) {
         if (sub) git_tree_entry_free(sub);
         if (t) git_tree_free(t);
@@ -2792,9 +3875,15 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 static git_repository *g_brepo;
 static git_index *g_bindex;
 
+/* How many records the current batch had to skip because their id cannot be a
+   git path.  Reported to the user rather than swallowed — a record that is not
+   versioned is something they need to know about. */
+static long g_batch_skipped = 0;
+
 int mv_git_batch_begin(const char *repo) {
     ensure_init();
     if (g_bindex) return 1;                     /* already open in this session */
+    g_batch_skipped = 0;
     if (repo_open(repo, &g_brepo, &g_bindex) != 0) return 0;
     return 1;
 }
@@ -2802,9 +3891,33 @@ int mv_git_batch_begin(const char *repo) {
 /* Stage one blob at git `path`.  translate != 0 turns attribute marks
    (@AM = 0xFE) into newlines (records); 0 stores `content` verbatim (the
    open-account controls, .mv-account). */
+/* Can `path` be stored by git?  Record ids are arbitrary MV strings and git
+   paths are not: a component may not be empty, "." or "..".  An id containing
+   "/" splits into components, and an id that IS "/" produces an empty one.
+   That matters far beyond the one record — git cannot build a tree containing
+   it, so a single bad id fails the ENTIRE commit ("index cache-tree records
+   empty sub-tree") and everything staged alongside it is lost. */
+static int path_storable(const char *path) {
+    if (!path || !*path) return 0;
+    const char *p = path;
+    while (*p) {
+        const char *slash = strchr(p, '/');
+        size_t n = slash ? (size_t)(slash - p) : strlen(p);
+        if (n == 0) return 0;                                   /* empty component */
+        if (n == 1 && p[0] == '.') return 0;                    /* "." */
+        if (n == 2 && p[0] == '.' && p[1] == '.') return 0;     /* ".." */
+        if (!slash) break;
+        p = slash + 1;
+    }
+    return 1;
+}
+
+long mv_git_batch_skipped(void) { return g_batch_skipped; }
+
 void mv_git_batch_add(const char *path, const char *content, int64_t len,
                       int translate) {
     if (!g_bindex) return;
+    if (!path_storable(path)) { g_batch_skipped++; return; }
     const char *buf = content;
     char *tmp = NULL;
     int64_t bl = len;
@@ -2831,7 +3944,13 @@ void mv_git_batch_end(void) {
     if (g_brepo) { git_repository_free(g_brepo); g_brepo = NULL; }
 }
 
-static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
+/* Run an engine subroutine and return its output.  When `outlen` is non-NULL the
+   true byte length comes back through it, which matters for anything that can
+   carry binary: a committed record may contain NULs, so a caller that measures
+   the result with strlen would truncate it and lose data silently.  Text-output
+   callers pass NULL and use the NUL terminator as before. */
+static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
+                         int64_t *outlen) {
     mv_value vals[8];
     mv_value *argv[8];
     for (int i = 0; i < n; i++) {
@@ -2849,13 +3968,28 @@ static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
     if (!r) mv_fatal("out of memory in git");
     memcpy(r, p, (size_t)len);
     r[len] = '\0';
+    if (outlen) *outlen = len;
     for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
     return r;
+}
+
+static char *run_sub(sub_fn fn, mv_ctx *ctx, const char **args, int n) {
+    return run_sub_len(fn, ctx, args, n, NULL);
 }
 
 char *mv_git_init(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITINIT, ctx, a, 1);
+}
+
+char *mv_git_index_ids(mv_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITINDEXIDS, ctx, a, 2);
+}
+
+char *mv_git_prune_gone(mv_ctx *ctx, const char *repo, const char *live) {
+    const char *a[] = {repo, live ? live : ""};
+    return run_sub(mvx_sub_GITPRUNE, ctx, a, 2);
 }
 
 /* textconv (mvx#25 tidy diffs) — a git textconv filter: read the record blob at
@@ -2916,6 +4050,16 @@ char *mv_git_headfiles(mv_ctx *ctx, const char *repo) {
 char *mv_git_catpath(mv_ctx *ctx, const char *repo, const char *path) {
     const char *a[] = {repo, path};
     return run_sub(mvx_sub_GITCAT, ctx, a, 2);
+}
+
+/* As mv_git_catpath, but reporting the content's true length.  A committed
+   record is arbitrary bytes and may contain NULs, so a caller that has a way to
+   carry an explicit length (the background process's framed pipe) must use this
+   rather than measure the result with strlen and silently truncate. */
+char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
+                         int64_t *outlen) {
+    const char *a[] = {repo, path};
+    return run_sub_len(mvx_sub_GITCAT, ctx, a, 2, outlen);
 }
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
@@ -2994,6 +4138,11 @@ char *mv_git_push(mv_ctx *ctx, const char *repo, const char *remote, const char 
 char *mv_git_pull(mv_ctx *ctx, const char *repo, const char *remote, const char *branch) {
     const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
     return run_sub(mvx_sub_GITPULL, ctx, a, 3);
+}
+char *mv_git_pullref(mv_ctx *ctx, const char *repo, const char *remote,
+                     const char *branch) {
+    const char *a[] = {repo, remote ? remote : "", branch ? branch : ""};
+    return run_sub(mvx_sub_GITPULLREF, ctx, a, 3);
 }
 char *mv_git_remote(mv_ctx *ctx, const char *repo, const char *action,
                     const char *name, const char *url) {

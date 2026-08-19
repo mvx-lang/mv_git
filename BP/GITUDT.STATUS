@@ -15,8 +15,7 @@ SUBROUTINE GITUDT.STATUS(REPO)
 $IFNDEF MVX
    AM = CHAR(254) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
-   R = CALLC GITFILES(REPO)
-   OSREAD PATHS FROM REPO : "/gitmsg" ELSE PATHS = ""
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)
@@ -30,8 +29,7 @@ $IFNDEF MVX
          SL = INDEX(P, "/", 1)
          IF SL > 0 THEN
             FN = P[1, SL-1] ; RID = P[SL+1, LP]
-            R = CALLC GITCAT(REPO, P)
-            OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+            CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
             GOSUB OPENREC
             IF ROK THEN
                READ LV FROM RV, RID THEN
@@ -50,8 +48,7 @@ $IFNDEF MVX
    RETURN
 CTLSTAT:
    CHG = 0
-   R = CALLC GITCAT(REPO, P)
-   OSREAD CB FROM REPO : "/gitcat" ELSE CB = ""
+   CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
    CCL = TRIM(FIELD(CB, " ", 1))
    IF CCL[1,3] = "DIR" THEN CCL = "DIR" ELSE CCL = "hash"
    FILE = BASE ; GOSUB FILECLASS

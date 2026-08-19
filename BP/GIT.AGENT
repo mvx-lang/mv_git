@@ -1,0 +1,571 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.AGENT
+*  * @version 1.0
+*  */
+* GIT.AGENT — an account I/O server (mv_git#47).
+*
+* This program does ONE thing: it reads and writes the account it is running in,
+* on behalf of a process outside it.  Records, select lists, files.  It knows
+* nothing about git, and deliberately so — the caller owns the git objects, and
+* the only thing it cannot do for itself is reach into a UniVerse account.
+*
+* WHY IT EXISTS.  On UniVerse a session is the only way to records: GCI is
+* licensed and dead in the Trial Edition, and InterCall is a client SDK we
+* cannot get for Linux.  But that is an argument for putting the RECORD LOOP in
+* a session, not the git work — and the earlier design put both there, driving
+* the GIT verb from outside and shipping git objects back out to mvgitd.  This
+* replaces that: uv-git already links libgit2, so it keeps the git work and asks
+* a session only for what a session is for.
+*
+* THE PROTOCOL is the one BASIC already used to talk to mvgitd (gitproto.h),
+* with the roles swapped — here the session is the SERVER.  Its constraints are
+* unchanged, and each was established by probe rather than assumed:
+*
+*   Reads are EXACT-COUNT.  READBLK does not short-return at EOF on a FIFO:
+*   OPENSEQ holds the pipe read/write, so the reader is also a writer, EOF never
+*   arrives, and a read for more bytes than are present hangs.  The length header
+*   is what makes every read an exact one.
+*
+*   Everything on the wire is HEX.  Record marks are 0xFE/0xFD/0xFC, and
+*   UniVerse may have NLS or codepage translation active on sequential I/O,
+*   which can alter any non-ASCII byte in transit.  OCONV "MX0C" is builtin, so
+*   the encoding runs at native speed on bulk data.
+*
+*   Arguments are individually length-prefixed, never separated, because no byte
+*   is safe as a separator inside record content.
+*
+* THE LICENCE is why QUIT is a real opcode rather than the caller closing a pipe.
+* A session that is killed can leave its licence held; one that reaches QUIT and
+* STOPs releases it.  The caller asks, the agent finishes what it is doing and
+* exits cleanly — and uv-git asks even when it is itself interrupted, since it
+* handles SIGINT/SIGTERM before dying.
+*
+* AND IT GIVES UP ON ITS OWN.  A caller that is killed outright cannot ask, and a
+* caller that simply wanders off should not cost a licence either.  So the wait
+* for the next request is bounded: TIMEOUT arms the read, and if nothing arrives
+* within the idle limit the agent says goodbye and exits.  Verified on 14.2.1 —
+* TIMEOUT does apply to READBLK on a FIFO, failing after exactly the armed
+* seconds with STATUS() = 2.  That is what makes any of this possible: without it
+* the agent would block forever with no EOF to wake on, since OPENSEQ holds the
+* pipe read/write — the same property that forces exact-count reads everywhere
+* else here.
+*
+* The default is 30 seconds and the caller may set it.  NOP exists for a caller
+* that wants to hold a session it is not using yet: it resets the timer and does
+* nothing else.  If a session does time out there is nothing to recover — the
+* caller simply starts another one.
+      $INCLUDE BP.INC PLATFORM.H
+*     The include is back, and it costs something worth stating: the agent no
+*     longer compiles in a BARE account, which is how uv-git seeds a throwaway
+*     account to learn a stock VOC (mv_git#46) and how it seeds a freshly cloned
+*     one (#52).  Those paths must now write a PLATFORM.H beside the agent
+*     before compiling it.  The alternative — keeping the transport
+*     platform-neutral — is not available: the two platforms genuinely have no
+*     statement in common for an exact-count timed read.
+$IFDEF MVX
+*     NOT USED ON MVX, and excluded rather than merely unreached.
+*
+*     There is no agent here: the runtime IS the engine and reads records
+*     itself, so nothing outside a session ever has to ask one for a record.
+*     The body still has to COMPILE though — mkpkg bundles every BP item and
+*     compiles them all — and it does not: `OPEN "DICT", NAME TO FV(NFV) ELSE`
+*     is rejected by the MVX compiler, which broke the whole package build and
+*     with it every MVX handler, not just this one.
+      CRT "GIT.AGENT: not used on MVX — the runtime reads records directly"
+      STOP
+$ENDIF
+$IFNDEF MVX
+      AM = CHAR(254) ; VM = CHAR(253)
+      MAGIC = "MVG1"
+*     Header widths, mirroring gitproto.h.  Fixed-width ASCII so both ends build
+*     and parse them with ordinary string operations.
+      W.MAGIC = 4 ; W.TOKEN = 32 ; W.OPCODE = 16 ; W.NARGS = 2 ; W.LEN = 10
+      W.STATUS = 4
+      REQ.HDR = W.MAGIC + W.TOKEN + W.OPCODE + W.NARGS + W.LEN   ;* 64
+*
+*     The pipes and the token are the last three words of the sentence, taken
+*     from the END so this works whether it is RUN or cataloged as a verb.
+      S = TRIM(@SENTENCE)
+      NT = DCOUNT(S, " ")
+      REQP = FIELD(S, " ", NT - 3)
+      RSPP = FIELD(S, " ", NT - 2)
+      TOK  = FIELD(S, " ", NT - 1)
+      IDLE = FIELD(S, " ", NT) + 0
+      IF IDLE <= 0 THEN IDLE = 30
+      IF REQP = "" OR RSPP = "" OR TOK = "" THEN
+         CRT "GIT.AGENT: usage: GIT.AGENT <reqpipe> <rsppipe> <token>"
+         STOP
+      END
+      CRT "AGENT-START req=":REQP:" rsp=":RSPP:" idle=":IDLE
+*     THE TRANSPORT IS THE ONLY PLATFORM-SPECIFIC PART OF THIS PROGRAM.
+*     Everything above and below is ordinary MV BASIC; these four operations —
+*     open, exact-count read, write, close — are not available in the same form
+*     on both platforms, so they are the seam.  See GIT.OSFILE for the same
+*     shape applied to OS files.
+$IFDEF UV
+      OPENSEQ REQP TO RQ ELSE
+         CRT "GIT.AGENT: cannot open ":REQP
+         STOP
+      END
+      OPENSEQ RSPP TO RS ELSE
+         CRT "GIT.AGENT: cannot open ":RSPP
+         STOP
+      END
+$ENDIF
+$IFDEF UDT
+*     UniData BASIC has neither READBLK nor TIMEOUT — verified on 8.3, in every
+*     compile mode — and the protocol needs both: exact-count reads because a
+*     FIFO never reports EOF, and a deadline so an idle agent can release its
+*     licence.  So the transport goes through CallC (src/agentcallc.c), which is
+*     possible only because everything on this wire is hex and fixed-width
+*     ASCII: CallC marshals with strlen and could not carry a byte of binary.
+      AGERR = CALLC AGOPEN(REQP, RSPP)
+      IF AGERR # "" THEN
+         CRT "GIT.AGENT: ":AGERR
+         STOP
+      END
+$ENDIF
+      CRT "AGENT-READY"
+*
+*     Open file variables live in a fixed pool; the caller refers to one by its
+*     slot number.  A pool rather than a name lookup because the caller may hold
+*     a file and its dictionary open at once, and they share a name.
+      DIM FV(64)
+      FVKEYS = ""
+      NFV = 0
+      DONE = 0
+      IDLED = 0
+*
+      LOOP UNTIL DONE DO
+         GOSUB READREQ
+         IF DONE THEN EXIT
+         GOSUB DISPATCH
+         GOSUB SENDRSP
+      REPEAT
+*     Say why we are going, before we go.  The caller may be mid-request when the
+*     idle timer fires — it wrote just as we stopped reading — and a frame it can
+*     recognise turns that race into "start another session" rather than a read
+*     that never returns.
+      IF IDLED THEN
+         STATUS = 6 ; RESULT = "idle timeout"
+         GOSUB SENDRSP
+      END
+$IFDEF UV
+      CLOSESEQ RQ
+      CLOSESEQ RS
+$ENDIF
+$IFDEF UDT
+      AGERR = CALLC AGCLOSE("")
+$ENDIF
+      STOP
+*
+* ---- read one request ------------------------------------------------------
+READREQ:
+      HDR = ""
+*     Bound the wait for the NEXT request — this is the idle timer.  An unbounded
+*     read here is what would hold a licence forever behind a caller that died or
+*     simply lost interest.
+$IFDEF UV
+      TIMEOUT RQ, IDLE
+      READBLK HDR FROM RQ, REQ.HDR THEN
+         NULL
+      END ELSE
+         IDLED = 1 ; DONE = 1 ; RETURN
+      END
+$ENDIF
+$IFDEF UDT
+*     CallC declares these parameters as `string` (udt-callc/funcs) and marshals
+*     them with strlen.  REQ.HDR and IDLE are NUMBERS, and a numeric passed to a
+*     string parameter does not arrive as its digits — the C side saw an empty
+*     count, read nothing, and the agent exited the instant it became ready.
+*     Concatenating with "" makes them strings before they cross.
+      RHC = REQ.HDR : ""
+      IDC = IDLE : ""
+      HDR = CALLC AGREAD(RHC, IDC)
+      IF HDR = "" THEN IDLED = 1 ; DONE = 1 ; RETURN
+$ENDIF
+      IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN
+      IF HDR[1, W.MAGIC] # MAGIC THEN DONE = 1 ; RETURN
+      P = W.MAGIC + 1
+      RTOK = HDR[P, W.TOKEN] ; P += W.TOKEN
+      OP = TRIM(HDR[P, W.OPCODE]) ; P += W.OPCODE
+      NARGS = HDR[P, W.NARGS] + 0 ; P += W.NARGS
+      BLEN = HDR[P, W.LEN] + 0
+      BODY = ""
+      IF BLEN > 0 THEN
+*        The body follows its header immediately, so a wait HERE is a stalled
+*        transfer, not an idle session.  Armed generously and separately, so a
+*        short idle limit can never truncate a large record in flight.
+$IFDEF UV
+         TIMEOUT RQ, 300
+         READBLK BODY FROM RQ, BLEN THEN
+            NULL
+         END ELSE
+            DONE = 1 ; RETURN
+         END
+$ENDIF
+$IFDEF UDT
+         BLC = BLEN : ""
+         BODY = CALLC AGREAD(BLC, "300")
+         IF BODY = "" THEN DONE = 1 ; RETURN
+$ENDIF
+      END
+*     The token is checked on EVERY request, not just at connect.  It tells
+*     apart sessions sharing one OS uid, and — the reason it is here rather than
+*     at connect alone — a length-framed protocol has no resynchronisation
+*     point, so once the ends disagree about where a frame starts every byte
+*     after is garbage.  A checked token turns silent corruption into a clean
+*     rejection.
+      STATUS = 0 ; RESULT = ""
+      IF RTOK # TOK THEN
+         STATUS = 2 ; RESULT = "token mismatch"
+         OP = ""
+         RETURN
+      END
+*     Split the body into arguments: each is [len(10)][len hex chars].
+      DIM ARGV(8)
+      FOR K = 1 TO 8 ; ARGV(K) = "" ; NEXT K
+*     BOFF, not OFF: OFF is a UniData keyword (its logout command) and using it
+*     as a variable is a syntax error there, while UniVerse accepts it happily.
+      BOFF = 1
+      FOR K = 1 TO NARGS
+         IF K > 8 THEN EXIT
+         AL = BODY[BOFF, W.LEN] + 0 ; BOFF += W.LEN
+         ENC = BODY[BOFF, AL] ; BOFF += AL
+         IF AL > 0 THEN ARGV(K) = ICONV(ENC, "MX0C") ELSE ARGV(K) = ""
+      NEXT K
+      RETURN
+*
+* ---- one operation ---------------------------------------------------------
+DISPATCH:
+      STATUS = 0 ; RESULT = ""
+      BEGIN CASE
+         CASE OP = "QUIT"
+            DONE = 1
+         CASE OP = "PING"
+            RESULT = "ok"
+         CASE OP = "NOP"
+*           Nothing to do, and that is exactly the point: answering resets the
+*           idle timer, so a caller can hold a session it is not yet using.
+            RESULT = ""
+         CASE OP = "OPEN"
+            GOSUB DO.OPEN
+         CASE OP = "READ"
+            GOSUB DO.READ
+         CASE OP = "WRITE"
+            GOSUB DO.WRITE
+         CASE OP = "DELETE"
+            GOSUB DO.DELETE
+         CASE OP = "SELECT"
+            GOSUB DO.SELECT
+         CASE OP = "READNEXT"
+            GOSUB DO.READNEXT
+         CASE OP = "FILELIST"
+            GOSUB DO.FILELIST
+         CASE OP = "FILECLASS"
+            GOSUB DO.FILECLASS
+         CASE OP = "INDICES"
+            GOSUB DO.INDICES
+         CASE OP = "CREATEFILE"
+            GOSUB DO.CREATEFILE
+         CASE OP = "DELETEFILE"
+            GOSUB DO.DELETEFILE
+         CASE OP = ""
+            STATUS = STATUS
+         CASE 1
+            STATUS = 3 ; RESULT = "unknown opcode: " : OP
+      END CASE
+      RETURN
+*
+*     OPEN(name [, part]) -> slot number.  `part` is "DICT" for the dictionary
+*     and may be omitted for the data file — the name first, so the optional
+*     argument is the one that can be left off.
+DO.OPEN:
+      NAME = ARGV(1) ; PART = ARGV(2)
+*     ALREADY OPEN?  Hand back the same slot.
+*
+*     A file variable for a given file is interchangeable with any other, so
+*     reopening is pure waste — and worse than waste here, because the pool is
+*     finite.  The engine opens a file per INDEX ENTRY when it looks for deleted
+*     records, and an account's index runs to hundreds of entries, so a pool of
+*     64 was exhausted long before the scan finished.  Every open after that
+*     failed, the caller read the failure as "not a record file", and deleted
+*     records were silently never reported (mv_git#51).
+*
+*     Caching by name makes the pool a function of how many DISTINCT files an
+*     account has — a handful — instead of how many records it holds.
+      KEY = NAME : VM : PART
+*     Format 1 (parenthesised) LOCATE only — the IN…SETTING form behaves
+*     differently between flavours and must not be used in a portable port.
+      LOCATE(KEY, FVKEYS; FVPOS) THEN
+         RESULT = FVPOS
+         RETURN
+      END
+      IF NFV >= 64 THEN
+         STATUS = 5 ; RESULT = "too many open files"
+         RETURN
+      END
+      NFV += 1
+      IF PART = "DICT" THEN
+         OPEN "DICT", NAME TO FV(NFV) ELSE
+            NFV -= 1
+            STATUS = 5 ; RESULT = "cannot open DICT " : NAME
+            RETURN
+         END
+      END ELSE
+         OPEN NAME TO FV(NFV) ELSE
+            NFV -= 1
+            STATUS = 5 ; RESULT = "cannot open " : NAME
+            RETURN
+         END
+      END
+      FVKEYS<NFV> = KEY
+      RESULT = NFV
+      RETURN
+*
+DO.READ:
+      H = ARGV(1) + 0 ; ID = ARGV(2)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      READ REC FROM FV(H), ID THEN
+         RESULT = REC
+      END ELSE
+         STATUS = 5 ; RESULT = "no record " : ID
+      END
+      RETURN
+*
+DO.WRITE:
+      H = ARGV(1) + 0 ; ID = ARGV(2) ; REC = ARGV(3)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+*     A bare WRITE, deliberately: UniVerse accepts `WRITE … ELSE` and UniData
+*     does not, and the ELSE bought little — a write that fails raises anyway.
+      WRITE REC ON FV(H), ID
+      RETURN
+*
+DO.DELETE:
+      H = ARGV(1) + 0 ; ID = ARGV(2)
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      DELETE FV(H), ID
+      RETURN
+*
+*     SELECT(handle).  The default select list is used, so exactly one scan is
+*     live at a time — which is all the caller's record loop needs, and it keeps
+*     the flavour-dependent "SELECT ... TO list" form out of the code.
+DO.SELECT:
+      H = ARGV(1) + 0
+      IF H < 1 OR H > NFV THEN
+         STATUS = 5 ; RESULT = "bad file handle"
+         RETURN
+      END
+      SELECT FV(H)
+      RETURN
+*
+*     READNEXT -> the next id, or an empty body at the end of the list.  An
+*     empty result is unambiguous: a record id is never empty.
+DO.READNEXT:
+      READNEXT ID THEN RESULT = ID ELSE RESULT = ""
+      RETURN
+*
+*     FILELIST -> the account's own files, "<name><VM><type>" per @AM field.
+*     The same locality rules the account scan has always used: a file counts
+*     when it is F or DIR and both its data and dictionary paths resolve inside
+*     this account, so a Q-pointer to another account is never followed.
+DO.FILELIST:
+      OPEN "VOC" TO VOCF ELSE
+         STATUS = 5 ; RESULT = "no VOC"
+         RETURN
+      END
+      FILES = ""
+      SELECT VOCF
+      LOOP WHILE READNEXT VID DO
+         READ VREC FROM VOCF, VID THEN
+*           Attribute 1 is the type, but not the type ALONE: UniVerse appends
+*           the description given at CREATE.FILE time, so a described file reads
+*           "F Customer master" and an exact match makes it invisible.
+            VT = TRIM(FIELD(VREC<1>, " ", 1))
+            IF VT = "F" OR VT = "DIR" THEN
+               DP = VREC<2> ; DD = VREC<3> ; LOC = 1
+               IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
+               IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
+               L = LEN(VID)
+               IF VID[1,1]="_" AND VID[L,1]="_" THEN LOC = 0
+               IF VID[1,1]="&" AND VID[L,1]="&" THEN LOC = 0
+               IF LOC THEN FILES<-1> = VID : VM : VT
+            END
+         END
+      REPEAT
+      RESULT = FILES
+      RETURN
+*
+*     FILECLASS(name) -> the file's own CREATE.FILE parameters, as the open
+*     interchange spells them: "DIR", or "hash <modulo> STATIC|DYNAMIC".
+*
+*     The keys are UniVerse's, and they are NOT UniData's — which is what made
+*     this wrong before.  Measured on 14.2.1:
+*
+*       FILEINFO(f,3)  category:  4 = directory file, 1 = hashed
+*       FILEINFO(f,4)  the hashed file's TYPE (17, 18, 30 …); empty for a
+*                      directory
+*       FILEINFO(f,5)  modulo:    1 for a directory file, the real modulo for a
+*                      hashed one
+*
+*     The old test was UniData's "modulo <= 0 means directory".  A UniVerse
+*     directory file reports modulo 1, so it never fired, every directory file
+*     was recorded as hashed, and a clone recreated it as the wrong kind of file
+*     entirely.
+DO.FILECLASS:
+      NAME = ARGV(1)
+      RESULT = "hash"
+      OPEN NAME TO FCV THEN
+         FCAT = FILEINFO(FCV, 3)
+         IF FCAT = 4 THEN
+            RESULT = "DIR"
+         END ELSE
+            MODL = FILEINFO(FCV, 5) ; HTY = FILEINFO(FCV, 4)
+            IF MODL <= 0 THEN MODL = 1
+            IF HTY = 30 THEN DS = "DYNAMIC" ELSE DS = "STATIC"
+            RESULT = "hash " : MODL : " " : DS
+         END
+      END ELSE
+         STATUS = 5 ; RESULT = "cannot open " : NAME
+      END
+      RETURN
+*
+*     CREATEFILE(name, class).  `class` is the open interchange form: "DIR", or
+*     "hash", or "hash <modulo> DYNAMIC|STATIC" carrying the source file's real
+*     geometry so a clone rebuilds the file at its true size.
+*
+*     CREATE.FILE is INTERACTIVE and there is no non-interactive form of it that
+*     can be trusted.  Probed on 14.2.1: `CREATE.FILE X 1,2 1,2 TYPE 19` reports
+*     success, creates a Type 18 file — not the directory asked for — and puts
+*     "TYPE 19" in the VOC record as the file's DESCRIPTION.  A trailing token it
+*     does not understand becomes a description rather than an error, which is
+*     the same trap that once hid whole files from the account scan (mv_git#43).
+*     So the prompts are answered properly, with DATA stacking the replies:
+*     dictionary modulo/separation/type, the same three for the data part, then
+*     the description — which must be EMPTY, or the VOC type reads "F <text>"
+*     and code matching attribute 1 against "F" cannot see the file.
+DO.CREATEFILE:
+      NAME = ARGV(1) ; CLS = TRIM(ARGV(2))
+      IF NAME = "" THEN
+         STATUS = 5 ; RESULT = "no file name"
+         RETURN
+      END
+*     Already there?  Say so and stop: a second CREATE.FILE asks whether to
+*     recreate, and an unanswered prompt would hang the session.
+      OPEN NAME TO XV THEN
+         RESULT = "exists"
+         RETURN
+      END
+      KIND = FIELD(CLS, " ", 1)
+      MODL = FIELD(CLS, " ", 2) + 0
+      DYN  = TRIM(FIELD(CLS, " ", 3))
+      IF MODL <= 0 THEN MODL = 1
+      IF KIND = "DIR" THEN
+         DTYPE = 19 ; MODL = 1
+      END ELSE
+*        18 is an ordinary static hashed file, and it is what this path can
+*        create.  Type 30 (dynamic) is REJECTED when answered into these
+*        prompts — verified on 14.2.1: CREATE.FILE re-asks and the stacked
+*        answers run out, leaving a half-built file with a dictionary and no
+*        data part.  So a file the commit calls dynamic is recreated static
+*        here rather than not at all; resizing it afterwards is a decision for
+*        whoever knows the data, and losing the file is not.
+         DTYPE = 18
+      END
+      DATA 1, 2, 3, MODL, 2, DTYPE, ""
+      EXECUTE "CREATE.FILE " : NAME CAPTURING CFOUT
+      OPEN NAME TO XV2 THEN
+         RESULT = "created"
+      END ELSE
+         STATUS = 5
+         RESULT = "CREATE.FILE " : NAME : " did not produce a usable file: " : CFOUT[1,200]
+      END
+      RETURN
+*
+*     DELETEFILE(name).  DELETE.FILE asks for confirmation, so the answer is
+*     stacked the same way — an unanswered prompt would hang the session, and a
+*     hung session holds a licence.
+DO.DELETEFILE:
+      NAME = ARGV(1)
+      IF NAME = "" THEN
+         STATUS = 5 ; RESULT = "no file name"
+         RETURN
+      END
+      OPEN NAME TO XV3 ELSE
+         RESULT = "absent"
+         RETURN
+      END
+      DATA "Y", "Y"
+      EXECUTE "DELETE.FILE " : NAME CAPTURING DFOUT
+      OPEN NAME TO XV4 THEN
+         STATUS = 5
+         RESULT = "DELETE.FILE " : NAME : " left the file in place: " : DFOUT[1,200]
+      END ELSE
+         RESULT = "deleted"
+      END
+      RETURN
+*
+DO.INDICES:
+      NAME = ARGV(1)
+      RESULT = ""
+      OPEN NAME TO IXV THEN
+         IXL = INDICES(IXV)
+         IF IXL # "" THEN RESULT = IXL
+      END ELSE
+         STATUS = 5 ; RESULT = "cannot open " : NAME
+      END
+      RETURN
+*
+* ---- send one reply --------------------------------------------------------
+SENDRSP:
+      ENC = ""
+      IF RESULT # "" THEN ENC = OCONV(RESULT, "MX0C")
+      EL = LEN(ENC)
+      PADV = STATUS ; PADW = W.STATUS ; GOSUB ZPAD ; SS = PADR
+      PADV = EL     ; PADW = W.LEN    ; GOSUB ZPAD ; SL = PADR
+      SH = MAGIC : SS : SL
+$IFDEF UV
+      WRITEBLK SH TO RS ELSE DONE = 1 ; RETURN
+      IF EL > 0 THEN
+         WRITEBLK ENC TO RS ELSE DONE = 1 ; RETURN
+      END
+$ENDIF
+$IFDEF UDT
+      AGERR = CALLC AGWRITE(SH)
+      IF AGERR # "" THEN DONE = 1 ; RETURN
+      IF EL > 0 THEN
+         AGERR = CALLC AGWRITE(ENC)
+         IF AGERR # "" THEN DONE = 1 ; RETURN
+      END
+$ENDIF
+      RETURN
+*
+* ---- a fixed-width, zero-filled number -------------------------------------
+* Every length and status on this wire is fixed width, and FMT is the obvious
+* way to write one.  It is also wrong: the "%" zero-fill code is honoured on
+* UniVerse and IGNORED on UniData, which returns the MASK ITSELF —
+*     FMT(5, "R%4")  ->  "0005"  on UniVerse
+*                    ->  "%4"    on UniData 8.3
+* so the reply header went out as "MVG1%4%10" — 9 characters where the reader
+* was waiting for 18.  Nothing reported an error: the far end simply blocked
+* until the session died, and a protocol that cannot resynchronise has no way
+* to say "that frame was malformed".  Pad by hand instead.  It is three lines,
+* and it is three lines that mean the same thing everywhere.
+ZPAD:
+      PADR = PADV : ""
+      IF LEN(PADR) < PADW THEN PADR = STR("0", PADW - LEN(PADR)) : PADR
+      RETURN
+$ENDIF

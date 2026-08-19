@@ -10,6 +10,14 @@
 * UniData reads @SENTENCE.  Handlers call this so the one platform difference in
 * fetching the sentence lives in a single place.
 SUBROUTINE GIT.SENT(S)
+* In machine mode the verb has already rewritten the sentence with its own flag
+* removed, and left it here — so handlers parse exactly what they would have
+* seen without the flag, and none of them has to know the mode exists.
+      COMMON /GITMACH/ GMACH, GSENT
+      IF GSENT # "" THEN
+         S = GSENT
+         RETURN
+      END
 $IFDEF MVX
    S = TRIM(SENTENCE())
 $ELSE

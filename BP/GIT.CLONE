@@ -12,7 +12,36 @@
 *  * @version 1.0
 *  */
 SUBROUTINE GIT.CLONE
+      $INCLUDE BP.INC PLATFORM.H
+* The include is REQUIRED now and was not before, which is exactly how this
+* handler broke.  It used to be `$IFDEF MVX / $ELSE / $ENDIF`, and with MVX
+* undefined the $ELSE arm ran whether or not any define had been seen — so the
+* file worked without ever including PLATFORM.H.  Splitting that into three
+* POSITIVE $IFDEFs removed the fallback: with no defines in scope, none matched,
+* and the whole body disappeared at compile time.  The symptom was a handler
+* that was entered, parsed its arguments, and then did nothing at all.
 CALL GIT.SENT(S)
+* --flavour=<name> is pulled OUT of the sentence before the positional fields are
+* read, so it may be typed anywhere and never lands in REF.
+*
+* A UniVerse account is created WITH a flavour and the choice is unrecoverable
+* afterwards — it is baked into the VOC's contents, not recorded anywhere a
+* program can read (mv_git#15).  So cloning a repository whose history holds a
+* VOC but no flavour is a question only the person can answer, and uv-git rightly
+* refuses to guess.  Before this the answer could only be given at the shell,
+* which is the one place the MV developer is not.
+FLAV = ""
+CLEAN = ""
+NW = DCOUNT(S, " ")
+FOR WI = 1 TO NW
+   W = FIELD(S, " ", WI)
+   IF W[1, 10] = "--flavour=" THEN
+      FLAV = W[11, LEN(W) - 10]
+   END ELSE
+      IF CLEAN = "" THEN CLEAN = W ELSE CLEAN := " " : W
+   END
+NEXT WI
+S = CLEAN
 URL = FIELD(S, " ", 3)
 DIR = FIELD(S, " ", 4)
 REF = FIELD(S, " ", 5)
@@ -20,13 +49,104 @@ IF URL = "" OR DIR = "" THEN
    PRINT "usage: GIT CLONE url dir {ref}"
    RETURN
 END
+* THE PLATFORM IS DECIDED AT COMPILE TIME BUT ACTED ON AT RUNTIME.
+*
+* This handler used to put each platform's whole body inside its own $IFDEF, and
+* on UniVerse the conditional body silently did not run — the subroutine was
+* entered, the sentence parsed, and then nothing happened at all (mv_git#52).
+* Every ingredient works in isolation: $IFDEF UV resolves, a cataloged
+* subroutine called via CALL @H runs its conditional body, and EXECUTE …
+* CAPTURING works inside one.  Only the assembly failed, at this nesting depth.
+*
+* So the conditionals now do one thing each — set a name — and the work happens
+* in ordinary runtime code.  That is a smaller thing to ask of the preprocessor,
+* and it turns the failure mode inside out: if the defines do not reach here the
+* handler SAYS so instead of returning in silence, which is what made this cost
+* an afternoon.
+PLAT = ""
 $IFDEF MVX
-OUT = ""
-CALL GITCLONE(URL, DIR, REF, OUT)
-PRINT OUT
-$ELSE
-REPO = @PATH : "/.git"
-R = CALLC GITCLONE(REPO, URL, DIR, REF)
-CALL GITUDT.SHOW(REPO)
+PLAT = "MVX"
 $ENDIF
+$IFDEF UDT
+PLAT = "UDT"
+$ENDIF
+$IFDEF UV
+PLAT = "UV"
+$ENDIF
+IF PLAT = "" THEN
+   PRINT "GIT CLONE: this build defines no platform - check BP.INC PLATFORM.H"
+   RETURN
+END
+BEGIN CASE
+   CASE PLAT = "MVX"
+$IFDEF MVX
+*     The engine's own clone: MVX materialises straight from the git objects.
+      OUT = ""
+      CALL GITCLONE(URL, DIR, REF, OUT)
+      PRINT OUT
+$ENDIF
+   CASE PLAT = "UV"
+*     CLONE IS THE ONE OPERATION A SESSION CANNOT DO FOR ITSELF.  Every other
+*     verb works on the account it is running in; clone creates an account that
+*     does not exist yet — a UniVerse account is born by running `uv` in an empty
+*     directory and answering for a flavour — and this session is inside a
+*     different account entirely.
+*
+*     The engine's plain clone is worse than useless here: a native account's
+*     records live at VOC/<id>, so checking them out writes a DIRECTORY called
+*     VOC, and UniVerse can then never create its own VOC hash file because the
+*     name is taken.  The checkout blocks the account it was meant to become.
+*
+*     uv-git already does this correctly, so the verb hands over rather than
+*     keeping a second, broken implementation.  The developer still types
+*     GIT CLONE at the TCL prompt and never sees a shell.
+      CMD = "uv-git clone " : URL : " " : DIR
+      IF REF # "" THEN CMD := " " : REF
+      IF FLAV # "" THEN CMD := " --flavour=" : FLAV
+*     2>&1 because uv-git reports progress and failures on stderr and only the
+*     final line on stdout — CAPTURING takes stdout alone, so without this a
+*     clone that FAILED came back as silence.
+      CMD := " 2>&1"
+      EXECUTE "SH -c '" : CMD : "'" CAPTURING COUT
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
+      NEXT CI
+   CASE 1
+*     UniData, for the same reason and by the same route as UniVerse above.  It
+*     used to call the engine's plain clone over CallC, and that is the very
+*     implementation the UniVerse comment calls worse than useless: a native
+*     account's records live at VOC/<id>, so checking them out writes a DIRECTORY
+*     named VOC, and UniData can then never create its own VOC file — the
+*     checkout blocks the account it was meant to become.  The destination came
+*     out as a git checkout that was not an account at all: no VOC, so the very
+*     next verb in it failed with "msgno 427, args = VOC".
+*
+*     udt-git already clones correctly (it creates the account, then materialises
+*     into it), so the verb hands over rather than keeping a second, broken
+*     implementation.  The developer still types GIT CLONE and never sees a shell.
+*     THE ONE PLACE THE SESSION CANNOT SERVE ITSELF.
+*
+*     Every other verb works on the account it is running in, so the session it
+*     already holds can answer for its own records — that is how PULL avoids a
+*     second licence (mv_git#54).  Clone cannot use that: it creates an account
+*     that does not exist yet, and an agent running in THIS account cannot
+*     materialise records into THAT one.  Tried, and it stops right after
+*     "Cloning into ..." for exactly that reason.
+*
+*     So clone is the exception, and it costs the second licence honestly: the
+*     caller's session, plus one in the account being built.  Anything cheaper
+*     would mean this session leaving the user's account to become the new one.
+      CMD = "udt-git clone " : URL : " " : DIR
+      IF REF # "" THEN CMD := " " : REF
+*     2>&1 because udt-git reports progress and failures on stderr and only the
+*     final line on stdout — CAPTURING takes stdout alone, so without this a
+*     clone that FAILED came back as silence.
+      CMD := " 2>&1"
+*     "!cmd", not "SH -c": UniData answers `SH` with "Not a verb" (measured on
+*     8.3), while UniVerse wants the SH form.  One line, two spellings.
+      EXECUTE "!" : CMD CAPTURING COUT
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
+      NEXT CI
+END CASE
 RETURN

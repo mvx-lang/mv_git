@@ -13,15 +13,21 @@
 *  */
 SUBROUTINE GIT.PUSH
 CALL GIT.SENT(S)
-REM = FIELD(S, " ", 3)
+* RNAME, not REM: REM is UniData's REMAINDER FUNCTION, so `REM = FIELD(...)`
+* does not assign a variable there — the name reads back as 0, and push reported
+* "remote '0' does not exist" with an uninitialised-variable warning as its only
+* clue.  UniVerse and MVX accept REM as a variable, so this compiled and ran
+* everywhere except the one platform that has the function.  Same trap as OFF in
+* GIT.AGENT (BOFF).
+RNAME = FIELD(S, " ", 3)
 SPEC = FIELD(S, " ", 4)
 $IFDEF MVX
 OUT = ""
-CALL GITPUSH(".git", REM, SPEC, OUT)
+CALL GITPUSH(".git", RNAME, SPEC, OUT)
 PRINT OUT
 $ELSE
-REPO = @PATH : "/.git"
-R = CALLC GITPUSH(REPO, REM, SPEC)
-CALL GITUDT.SHOW(REPO)
+CALL GIT.REPO(REPO)
+CALL GIT.OBJ("PUSH", 3, REPO, RNAME, SPEC, "", "", OBJOUT)
+CALL GIT.ECHO(OBJOUT)
 $ENDIF
 RETURN

@@ -24,6 +24,7 @@
 #define _POSIX_C_SOURCE 200809L   /* setenv, chdir under -std=c11 */
 
 #include "mvxgit.h"
+#include "mvsession.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -108,7 +109,12 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     int64_t i = 0;
     while (i <= len) {
         int64_t s = i;
-        while (i < len && (unsigned char)p[i] != 0xFE) i++;
+        /* FILELIST answers name<VM>class, @AM-separated — so stop at the VM too.
+           Splitting on @AM alone asked for a file literally called "BP<VM>DIR",
+           which opened nothing: every file staged 0 records while every single
+           call succeeded.  The engine's own walk has always stopped at both. */
+        while (i < len && (unsigned char)p[i] != 0xFE &&
+               (unsigned char)p[i] != 0xFD) i++;
         int64_t nl = i - s;
         if (nl > 0 && nl < 240) {
             char name[256], dict[300], ctrl[320];
@@ -150,6 +156,7 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                 }
             }
         }
+        while (i < len && (unsigned char)p[i] != 0xFE) i++;   /* past the class */
         i++;
     }
     mv_clear(&fl);
@@ -421,7 +428,16 @@ static int do_clone(const char *repo, const char *dir) {
         }
     }
 
-    /* 3. materialise the user's files and records on top, over InterCall. */
+    /* 3. put an agent in it BEFORE materialising.  Records are reached through
+       the account I/O agent, and a just-created account has none — so the
+       materialise below failed with "the account I/O agent did not answer" and
+       the clone produced an empty account.  uv-git seeds here for the same
+       reason; this is that, for UniData. */
+    if (mv_agent_seed() != 0)
+        fprintf(stderr, "udt-git clone: could not put an agent into the new "
+                        "account; it exists but will hold no records\n");
+
+    /* 4. materialise the user's files and records on top, over InterCall. */
     char acctpath[4096];
     if (getcwd(acctpath, sizeof acctpath))
         setenv("MVXACCOUNT", acctpath, 1);
@@ -461,6 +477,11 @@ static int do_clone(const char *repo, const char *dir) {
         free(report);
     }
     deploy_git_verb();   /* the cloned account can run the in-session GIT verb too */
+    /* The same closing line uv-git prints.  Without it the caller had no single
+       statement that the clone had succeeded — only a record count — and the
+       suite, which looks for exactly this, reported every good clone as a
+       failure. */
+    printf("cloned into %s as a UniData account\n", dir);
     return 0;
 }
 
@@ -598,14 +619,30 @@ static void deploy_git_verb(void) {
     if (!u) { fprintf(stderr, "udt-git: could not run udt to catalog the GIT verb\n"); return; }
     fputs("BASIC BP GIT\n", u);
     fputs("CATALOG BP GIT LOCAL FORCE\n", u);
-    if (pclose(u) == 0)
+    fputs("QUIT\n", u);            /* leave properly; EOF alone exits non-zero */
+    pclose(u);
+    /* JUDGE BY THE ARTIFACT, NOT THE EXIT CODE.  A piped `udt` reports whatever
+       it likes — install.sh already records that it exits 0 when an internal
+       command failed, and this found the reverse: the compile and the catalog
+       both SUCCEEDED and the account ran GIT afterwards, while pclose said
+       non-zero and clone announced "could not catalog the GIT verb (is the
+       package's CallC library built?)".  A false failure on a good clone sends
+       the reader hunting a library that was never the problem. */
+    if (access("CTLG/GIT", F_OK) == 0)
         printf("udt-git: in-session GIT verb set up in this account (try: GIT STATUS)\n");
     else
-        fprintf(stderr, "udt-git: could not catalog the GIT verb"
-                        " (is the package's CallC library built?)\n");
+        fprintf(stderr, "udt-git: the GIT verb did not catalog into this account"
+                        " (no CTLG/GIT); run `BASIC BP GIT` there to see why\n");
 }
 
 int main(int argc, char **argv) {
+    /* This driver's shell.  Records now come from a SESSION running
+       BP/GIT.AGENT (mv_git#45) rather than over InterCall, so there is no stored
+       password and history attributes to the person running the command.  The
+       session layer is shared with UniVerse and has no default shell, so naming
+       it here is what makes these UniData sessions. */
+    mvs_set_shell("udt");
+
     /* optional "-a <account>" before the subcommand */
     int i = 1;
     const char *account = ".";
@@ -617,6 +654,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: udt-git [-a account] <command> [args]\n");
         return 2;
     }
+    /* The session-layer diagnostic, before any account handling: it is what
+       tells you whether the session, the protocol or the caller is at fault. */
+    if (strcmp(argv[i], "agent") == 0) {
+        if (chdir(account) != 0) {
+            fprintf(stderr, "udt-git: cannot enter %s: %s\n",
+                    account, strerror(errno));
+            return 1;
+        }
+        return mv_agent_cmd(argc, argv, i);
+    }
+
     const char *sub = argv[i++];
 
     /* textconv is a git diff filter (render a record blob legibly for the diff
@@ -657,6 +705,14 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "init")) {
         emit(mv_git_init(ctx, repo));
         deploy_git_verb();   /* also set up the in-session GIT verb here */
+        /* The CLI reaches records through an account I/O agent, so an account
+           with no agent in it cannot be read at all — `init` succeeded and the
+           very next `add` failed with "the agent did not answer".  Seed it here,
+           where the account is first set up, exactly as uv-git does. */
+        if (mv_agent_seed() != 0)
+            fprintf(stderr, "udt-git: could not compile BP/GIT.AGENT in this "
+                            "account — the CLI will not be able to reach its "
+                            "records (the in-session GIT verb still works)\n");
         self_register(0);    /* adopt into MVPKG if it is already set up */
     } else if (!strcmp(sub, "register")) {
         self_register(1);    /* explicit: record this install with MVPKG */

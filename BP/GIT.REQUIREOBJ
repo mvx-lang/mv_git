@@ -1,0 +1,56 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.REQUIREOBJ
+*  * @version 1.0
+*  */
+* GIT.REQUIREOBJ(ok, why) — can this session reach libgit2 at all?
+*
+* Replaces GITUDT.REQUIRECALLC.  The question is the same on every platform —
+* is the git-object side of Model B actually there? — but the way it can fail,
+* and the way to fix it, are not, so `why` carries the platform's own remedy.
+*
+* Both transports fail SILENTLY when absent, which is why an explicit probe
+* exists rather than letting the first real operation fall over:
+*
+*   UniData   a disabled CALLC is a no-op — no error, no side effect.  So the
+*             probe is GITPING writing a known marker, and no marker means no
+*             CallC.  The file is cleared first, because a stale marker from an
+*             earlier run would otherwise pass.
+*   UniVerse  PING returns "gitd-ok" from the background process.  Anything
+*             else means it would not start (see its log) or the pipe is out of
+*             frame.
+      SUBROUTINE GIT.REQUIREOBJ(OK, WHY)
+      $INCLUDE BP.INC PLATFORM.H
+      OK = 1 ; WHY = ""
+*
+      $IFDEF UDT
+      OK = 0
+      PROBE = @PATH : "/gitmsg"
+      OSWRITE "" ON PROBE          ;* clear first — a stale marker would false-positive
+      CALL GIT.OBJ("PING", 1, @PATH, "", "", "", "", M)
+      IF M[1, 8] = "callc-ok" THEN OK = 1
+      IF NOT(OK) THEN
+         WHY = "GIT: UniData CallC is not available (its git functions return nothing)."
+         WHY<2> = "     Run the git install so libu2callc.so is built with the GIT* CallC"
+         WHY<3> = "     functions and registered under $UDTHOME/bin.  (UniData 8.3.2 needs"
+         WHY<4> = "     no UDT.OPTIONS to use CallC.)"
+      END
+      $ENDIF
+*
+      $IFDEF UV
+      OK = 0
+      CALL GIT.OBJ("PING", 0, "", "", "", "", "", M)
+      IF M[1, 7] = "gitd-ok" THEN OK = 1
+      IF NOT(OK) THEN
+         WHY = "GIT: the git background process is not answering."
+         WHY<2> = "     It is started on demand, so this usually means mvgitd is not on"
+         WHY<3> = "     PATH or would not start; see the log in $MVGIT_DIR (else"
+         WHY<4> = "     $HOME/.mvgit).  Reported: " : M
+      END
+      $ENDIF
+*
+      RETURN
+      END

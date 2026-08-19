@@ -25,9 +25,9 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
-REPO = @PATH : "/.git"
-R = CALLC GITMERGE(REPO, NM)
-CALL GITUDT.SHOW(REPO)                ;* the merge result (fast-forward / conflict)
+CALL GIT.REPO(REPO)
+CALL GIT.OBJ("MERGE", 2, REPO, NM, "", "", "", OBJOUT)
+CALL GIT.ECHO(OBJOUT)                ;* the merge result (fast-forward / conflict)
 CALL GITUDT.CHECKOUT(REPO)           ;* re-materialise the merged HEAD natively
 $ENDIF
 RETURN

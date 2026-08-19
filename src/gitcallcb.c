@@ -53,6 +53,54 @@ char *GITINIT(char *repo) {
     return emit(repo, r);
 }
 
+/* GITFLUSH(repo) — write the accumulated index to disk.
+ *
+ * NOT a no-op, though it was one here until UniData was actually measured.
+ * Staging batches into an IN-MEMORY index and only mv_git_batch_end() writes it.
+ * Each `GIT` sentence at TCL may be its own process, so a batch left open when
+ * ADD returns is simply lost: `GIT ADD -A` reported 1543 records staged, `GIT
+ * COMMIT` in the next session committed nothing, and every later command saw an
+ * empty repository — status clean, show empty, restore with nothing to restore.
+ * That is mv_git#41, answered for UniVerse and deferred here; the answer is the
+ * same.  Cheap when there is no open batch, so ADD can always call it.
+ */
+char *GITFLUSH(char *repo) {
+    (void)repo;
+    mv_git_batch_end();
+    return "";
+}
+
+/* GITPRUNE(repo) — unstage every record of a file the account no longer has.
+   The wholesale add is BASIC here, so it calls this when its walk is done; the
+   C add calls the same function directly. */
+char *GITPRUNE(char *repo, char *live) {
+    mv_git_batch_end();                 /* the index must be on disk first */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_prune_gone(ctx, rp(repo), live ? live : "");
+    mv_ctx_destroy(ctx);
+    free(r);
+    return "";
+}
+
+/* GITINDEXIDS(repo, file) — the ids staged under <file>/, @AM-separated. */
+char *GITINDEXIDS(char *repo, char *file) {
+    mv_git_batch_end();                 /* the index must be on disk first */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_index_ids(ctx, rp(repo), file ? file : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
+/* GITPULLREF(repo, remote, branch) — fetch + move the ref, records left to the
+   caller.  Same reason as the daemon's: the records belong to the session. */
+char *GITPULLREF(char *repo, char *remote, char *branch) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_pullref(ctx, rp(repo), remote ? remote : "",
+                             branch ? branch : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {
