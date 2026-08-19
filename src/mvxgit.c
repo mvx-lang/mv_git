@@ -627,8 +627,24 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             const char *cp;
             int64_t clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+            /* UniData: <PROG>.O beside <PROG> in the same file is its object.
+               Checked by NAME, and only when the source really is there, so a
+               record legitimately called SOMETHING.O is not lost. */
+            if (!one) {
+                size_t il = strlen(idb);
+                if (il > 2 && strcmp(idb + il - 2, ".O") == 0) {
+                    mv_value bid, brec;
+                    mv_init(&bid); mv_init(&brec);
+                    mv_set_str(&bid, idb, (int64_t)(il - 2));
+                    int have_src = mv_read(ctx, &brec, &fvar, &bid, 0);
+                    mv_clear(&bid); mv_clear(&brec);
+                    if (have_src) { skipped++; continue; }
+                }
+            }
+            /* Backstop for anything the naming rules miss: a compiled object is
+               binary, and no record this tool should version contains a NUL. */
             if (skip_objects && clen > 0 && memchr(cp, 0, (size_t)clen)) {
-                skipped++;                  /* compiled object — not on add -A */
+                skipped++;
                 if (one) break;
                 continue;
             }
@@ -1245,6 +1261,25 @@ static int addall_is_mv_file(const char *acct, const char *n) {
    backend is now always consulted, and pass 3 skips what pass 2 already did. */
 void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
 
+/* Compiled BASIC objects, which differ per platform and must not be committed.
+ *
+ *   UniVerse  objects live in a SEPARATE FILE named after the source file:
+ *             BP -> BP.O.  So a file whose name is <X>.O, where <X> is also a
+ *             file, is an object file and none of its records are content.
+ *   UniData   objects live INSIDE the source file, as records named <PROG>.O
+ *             alongside <PROG>.  So a record id ending .O whose base id exists
+ *             in the same file is an object.
+ *   MVX       neither — objects go to CATALOG/, which is not a record file, so
+ *             these rules simply never fire.
+ *
+ * Naming the companion is what makes this exact.  The previous rule was "the
+ * record contains a NUL", which is a guess in both directions: it drops a
+ * legitimate record that happens to hold one, and keeps an object that happens
+ * not to.  Worse, it was gated on an environment variable that ONLY udt-git
+ * set, so UniVerse was committing its compiled objects outright.
+ *
+ * Wholesale adds only.  Naming a record explicitly stages it regardless, the
+ * same rule every other exclusion follows. */
 /* Stage `<file>.DICT/%FILE%` — the file's own CREATE.FILE parameters.
  *
  * This is the `.gitkeep` of a MultiValue file, and rather more: it makes a file
@@ -1366,7 +1401,17 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 char name[256];
                 memcpy(name, p + s, (size_t)nl);
                 name[nl] = '\0';
-                if (!addall_was_seen(&seen, name) &&
+                /* UniVerse: <X>.O is the object file of <X>; skip it whole. */
+                int is_obj = 0;
+                {
+                    size_t nl2 = strlen(name);
+                    if (nl2 > 2 && strcmp(name + nl2 - 2, ".O") == 0) {
+                        char base[256];
+                        snprintf(base, sizeof base, "%.*s", (int)(nl2 - 2), name);
+                        is_obj = backend_has_file(ctx, base);
+                    }
+                }
+                if (!is_obj && !addall_was_seen(&seen, name) &&
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -1746,6 +1791,17 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
                     int cls = mv_voc_class(vp, f1);
                     if (cls == 1 || (cls == 2 && voc_open)) continue;
+                    /* An object FILE is not committed, so neither is its VOC
+                       pointer — and reporting the pointer would leave it
+                       untracked forever, since no add will ever stage it. */
+                    {
+                        size_t il = strlen(idb);
+                        if (il > 2 && strcmp(idb + il - 2, ".O") == 0) {
+                            char b[256];
+                            snprintf(b, sizeof b, "%.*s", (int)(il - 2), idb);
+                            if (backend_has_file(ctx, b)) continue;
+                        }
+                    }
                 }
                 record_path(path, sizeof path, fn, idb);
                 /* An id that cannot be a git path was never staged either
