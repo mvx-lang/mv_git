@@ -43,8 +43,15 @@ $IFNDEF MVX
    NQR = 0
    FOR I = 1 TO NP
       IF PATHS<I> = "%QPOINTERS%" THEN
-         R = CALLC GITCAT(REPO, "%QPOINTERS%")
-         OSREAD QPG FROM REPO : "/gitcat" ELSE QPG = ""
+*        GIT.OBJ("CAT"), not a raw CALLC.  This file is guarded $IFNDEF MVX,
+*        which is true on UniVerse as well as UniData — and CALLC is a UniData
+*        statement UniVerse parses as an ARRAY REFERENCE, so it failed to
+*        compile there with "Array 'GITCAT' never dimensioned", the verb never
+*        cataloged, and 25 of 29 tests failed at once.  DECISIONS.md records the
+*        rule this broke: guard on the POSITIVE platform, and reach the engine
+*        through GIT.OBJ, which dispatches CallC on UniData and the background
+*        process on UniVerse.  The rest of this file already does exactly that.
+         CALL GIT.OBJ("CAT", 2, REPO, "%QPOINTERS%", "", "", "", QPG)
          OPEN "VOC" TO QVF THEN
             NQL = DCOUNT(QPG, LF)
             FOR QI = 1 TO NQL
