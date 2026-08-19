@@ -22,18 +22,29 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "gitproto.h"
 #include "mvsession.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 
 /* One call, rendered for a person: the reply as lines, or the status. */
 static int agent_one(mv_session *ses, const char *op, int na,
                      const char *const *a) {
+    /* Opcodes are uppercase on the wire; a person typing `agent ping` means
+       PING.  Fold here rather than at the agent, so the protocol stays exact
+       and only this diagnostic is forgiving. */
+    char upop[MVG_OPCODE_LEN + 1];
+    size_t oi = 0;
+    for (; op[oi] && oi < sizeof upop - 1; oi++)
+        upop[oi] = (char)toupper((unsigned char)op[oi]);
+    upop[oi] = '\0';
+
     char *body = NULL;
     long blen = 0;
-    int st = mvs_calls(ses, op, na, a, &body, &blen);
+    int st = mvs_calls(ses, upop, na, a, &body, &blen);
     if (st != 0) {
         fprintf(stderr, "status %d%s%.*s\n", st, blen ? ": " : "",
                 (int)blen, body ? body : "");

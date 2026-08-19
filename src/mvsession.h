@@ -86,4 +86,15 @@ void mvs_close_all(void);
 /* The account a session belongs to (for diagnostics). */
 const char *mvs_account(const mv_session *s);
 
+/* `<driver>-git agent [OPCODE [arg...]]` — the session-layer diagnostic, shared
+   by both drivers because it is about the SESSION, not either platform.  `i`
+   indexes the `agent` word itself.  Returns a process exit status. */
+int mv_agent_cmd(int argc, char **argv, int i);
+
+/* Put an account I/O agent into the CURRENT DIRECTORY's account and compile it:
+   the file to hold it, a PLATFORM.H to $INCLUDE, the source, the compile.  For
+   an account where nothing is installed yet — a fresh `clone`, or a stock
+   account stood up to learn a baseline from.  0 if the agent compiled. */
+int mv_agent_seed(void);
+
 #endif /* UVSESSION_H */

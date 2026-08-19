@@ -310,31 +310,6 @@ static int make_account(const char *code) {
     return is_live_account(".") ? 0 : -1;
 }
 
-/* One agent call, rendered for a person: the reply as lines, or the status. */
-static int agent_one(mv_session *ses, const char *op, int na, const char *const *a) {
-    char *body = NULL;
-    long blen = 0;
-    int st = mvs_calls(ses, op, na, a, &body, &blen);
-    if (st != 0) {
-        fprintf(stderr, "status %d%s%.*s\n", st, blen ? ": " : "",
-                (int)blen, body ? body : "");
-        free(body);
-        return 1;
-    }
-    if (body) {
-        /* record and list text is @AM/@VM separated; show the structure */
-        for (long k = 0; k < blen; k++) {
-            unsigned char c = (unsigned char)body[k];
-            if (c == 0xFE) body[k] = '\n';
-            else if (c == 0xFD) body[k] = '|';
-        }
-        fwrite(body, 1, (size_t)blen, stdout);
-        free(body);
-    }
-    fputc('\n', stdout);
-    return 0;
-}
-
 /* Where we are in the repository: `gitdir` receives the real git directory
    (which is where info/exclude lives) and `prefix` the account's path beneath
    the working tree, "" at the root and "acctA/" below it.  Exclusion patterns
@@ -906,51 +881,6 @@ static int run_account(int argc, char **argv, int i) {
    account is stock precisely because nothing has been installed into it, so it
    cannot answer until this is done — and seeding it is cheaper and far more
    honest than trying to read a VOC without a session. */
-static int seed_agent(void) {
-    char cmd[512];
-    /* CREATE.FILE is interactive; answer its prompts, with an EMPTY description
-       (a described file reads "F <text>" and the account scan cannot see it). */
-    snprintf(cmd, sizeof cmd,
-             "printf 'CREATE.FILE BP\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
-             ">/dev/null 2>&1", mvs_shell());
-    if (system(cmd) != 0) { /* prompts are noisy; the check below is the test */ }
-    /* The agent $INCLUDEs PLATFORM.H now that its transport differs per platform
-       (mv_git#45), so a bare account needs one before it will compile.  Written
-       here rather than assumed present: the whole point of seeding is that this
-       account has NOTHING installed in it. */
-    snprintf(cmd, sizeof cmd,
-             "printf 'CREATE.FILE BP.INC\n1\n2\n3\n1\n2\n19\n\nQUIT\n' | %s "
-             ">/dev/null 2>&1", mvs_shell());
-    if (system(cmd) != 0) { /* ditto */ }
-    {
-        mkdir("BP.INC", 0755);
-        FILE *ph = fopen("BP.INC/PLATFORM.H", "wb");
-        if (!ph) return -1;
-        /* Named from the shell this driver runs, so uv-git seeds UV and udt-git
-           seeds UDT without either knowing about the other. */
-        char up[16];
-        const char *sh = mvs_shell();
-        size_t k = 0;
-        for (; sh[k] && k < sizeof up - 1; k++)
-            up[k] = (char)toupper((unsigned char)sh[k]);
-        up[k] = '\0';
-        fprintf(ph, "* PLATFORM.H - written by seed_agent for a bare account.\n"
-                    "$DEFINE MV\n$DEFINE %s\n", up);
-        fclose(ph);
-    }
-    /* From the copy compiled into this binary, not from disk: the account we are
-       seeding may be anywhere, and the package may be nowhere near it. */
-    FILE *o = fopen("BP/GIT.AGENT", "wb");
-    if (!o) return -1;
-    fputs(GIT_AGENT_SRC, o);
-    fclose(o);
-    snprintf(cmd, sizeof cmd,
-             "printf 'BASIC BP GIT.AGENT\nQUIT\n' | %s >/dev/null 2>&1",
-             mvs_shell());
-    if (system(cmd) != 0) { /* likewise */ }
-    return access("BP.O/GIT.AGENT", F_OK) == 0 ? 0 : -1;
-}
-
 static int build_stock(const char *flavour, const char *code, const char *out) {
     char tmpl[] = "/tmp/uvstockXXXXXX";
     if (!mkdtemp(tmpl)) return -1;
@@ -960,7 +890,7 @@ static int build_stock(const char *flavour, const char *code, const char *out) {
     fprintf(stderr, "uv-git: learning what a stock %s account holds "
                     "(once per clone)\n", flavour);
     int seeded = chdir(tmpl) == 0 && make_account(code) == 0 &&
-                 seed_agent() == 0;
+                 mv_agent_seed() == 0;
     if (!seeded)
         fprintf(stderr, "uv-git: could not stand up a stock %s account to learn "
                         "from; commits will carry the system's own VOC records "
@@ -1438,7 +1368,7 @@ static int clone_cmd(int argc, char **argv, int i) {
     free(desc);
 
     /* Nothing is installed yet, so nothing can answer — seed an agent first. */
-    if (seed_agent() != 0) {
+    if (mv_agent_seed() != 0) {
         fprintf(stderr, "uv-git clone: could not put an agent into the new "
                         "account; the account exists but holds no records yet\n");
         return 1;
@@ -1515,45 +1445,8 @@ int main(int argc, char **argv) {
        layer — when a record operation misbehaves, this says whether the session,
        the protocol or the caller is at fault, without a repository in the way.
          uv-git [-a acct] agent <OPCODE> [arg...] */
-    if (strcmp(argv[i], "agent") == 0) {
-        char err[512] = "";
-        mv_session *ses = mvs_open(account, err, sizeof err);
-        if (!ses) {
-            fprintf(stderr, "uv-git agent: %s\n", err);
-            return 1;
-        }
-        int rc = 0;
-        if (i + 1 < argc) {
-            const char *a[8];
-            int na = 0;
-            for (int k = i + 2; k < argc && na < 8; k++) a[na++] = argv[k];
-            rc = agent_one(ses, argv[i + 1], na, a);
-        } else {
-            /* No opcode: read a sequence from stdin, one "OP arg arg…" per line,
-               all on ONE session.  State lives in the session — a file handle
-               from OPEN is only meaningful to later calls on the same one — so a
-               probe that could not hold a session could never exercise the part
-               that matters. */
-            char line[8192];
-            while (fgets(line, sizeof line, stdin)) {
-                size_t n = strlen(line);
-                while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
-                if (!line[0] || line[0] == '#') continue;
-                const char *a[8];
-                int na = 0;
-                char *save = NULL;
-                char *op = strtok_r(line, " \t", &save);
-                if (!op) continue;
-                for (char *t; na < 8 && (t = strtok_r(NULL, " \t", &save)); )
-                    a[na++] = t;
-                printf("%s: ", op);
-                fflush(stdout);
-                if (agent_one(ses, op, na, a) != 0) rc = 1;
-            }
-        }
-        mvs_close(ses);
-        return rc;
-    }
+    if (strcmp(argv[i], "agent") == 0)
+        return mv_agent_cmd(argc, argv, i);
 
     /* adopt runs BEFORE the account test below, because the whole point is that
        this is not an account yet — a cloned tree has records on disk and no VOC. */

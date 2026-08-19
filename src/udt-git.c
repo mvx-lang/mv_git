@@ -109,7 +109,12 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     int64_t i = 0;
     while (i <= len) {
         int64_t s = i;
-        while (i < len && (unsigned char)p[i] != 0xFE) i++;
+        /* FILELIST answers name<VM>class, @AM-separated — so stop at the VM too.
+           Splitting on @AM alone asked for a file literally called "BP<VM>DIR",
+           which opened nothing: every file staged 0 records while every single
+           call succeeded.  The engine's own walk has always stopped at both. */
+        while (i < len && (unsigned char)p[i] != 0xFE &&
+               (unsigned char)p[i] != 0xFD) i++;
         int64_t nl = i - s;
         if (nl > 0 && nl < 240) {
             char name[256], dict[300], ctrl[320];
@@ -151,6 +156,7 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                 }
             }
         }
+        while (i < len && (unsigned char)p[i] != 0xFE) i++;   /* past the class */
         i++;
     }
     mv_clear(&fl);
@@ -676,6 +682,14 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "init")) {
         emit(mv_git_init(ctx, repo));
         deploy_git_verb();   /* also set up the in-session GIT verb here */
+        /* The CLI reaches records through an account I/O agent, so an account
+           with no agent in it cannot be read at all — `init` succeeded and the
+           very next `add` failed with "the agent did not answer".  Seed it here,
+           where the account is first set up, exactly as uv-git does. */
+        if (mv_agent_seed() != 0)
+            fprintf(stderr, "udt-git: could not compile BP/GIT.AGENT in this "
+                            "account — the CLI will not be able to reach its "
+                            "records (the in-session GIT verb still works)\n");
         self_register(0);    /* adopt into MVPKG if it is already set up */
     } else if (!strcmp(sub, "register")) {
         self_register(1);    /* explicit: record this install with MVPKG */

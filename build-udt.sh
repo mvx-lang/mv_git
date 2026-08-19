@@ -25,7 +25,8 @@
 set -e
 STAGE="${1:?usage: build-udt.sh <stagedir>}"
 : "${UDTHOME:?set UDTHOME to your UniData installation}"
-SRC="$(cd "$(dirname "$0")" && pwd)/src"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="$HERE/src"
 CC="${CC:-cc}"
 UGVER="${UDTGIT_VERSION:-${GITHUB_REF_NAME:-0}}"   # stamped for MVPKG self-registration
 
@@ -56,10 +57,17 @@ fi
 #
 # No -luvic: InterCall is gone from this driver (mv_git#45).  It authenticated
 # with a stored password rather than as the person running the command, and the
+# The agent's source is compiled into udt-git so it can seed an account where
+# nothing is installed.  GENERATED HERE, not assumed present: it used to be
+# produced only by build-gitd.sh (the UniVerse build), so this build embedded
+# whatever stale copy was in the tree — one with the $IFDEFs already flattened
+# to UniVerse, which then would not compile on UniData.
+sh "$HERE/embed-agent.sh"
+
 # session inherits the caller's own identity instead.
 "$CC" -std=c11 -O2 -DMVXGIT_GITD -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
-    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/agentcmd.c" \
+    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/agentcmd.c" "$SRC/agentseed.c" \
     "$SRC/udt-git.c" \
     $LG2LIBS \
     -o udt-git
