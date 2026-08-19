@@ -133,6 +133,19 @@ static const char *udt_setting(const char *env, const char *cfgkey,
 /* Open the InterCall session lazily, on the first record operation, so
    session-free commands (init, log) work in a directory that is not yet a live
    UniData account. */
+static mv_ctx *udt_open_ctx = NULL;
+static int     udt_atexit_armed = 0;
+
+/* Give the licence back if we are leaving without having closed the session. */
+static void udt_release_session(void) {
+    if (udt_open_ctx && udt_open_ctx->open) {
+        long code = 0;
+        ic_quit(&code);
+        udt_open_ctx->open = 0;
+    }
+    udt_open_ctx = NULL;
+}
+
 static void udt_ensure_session(mv_ctx *ctx) {
     if (ctx->open) return;
     char ub[256], pb[256], hb[256], sb[64];
@@ -147,9 +160,27 @@ static void udt_ensure_session(mv_ctx *ctx) {
     ctx->session = ic_unidata_session((char *)host, (char *)user, (char *)pass,
                                       (char *)acct, &code, NULL, (char *)svc);
     if (code != 0)
-        mv_fatal("cannot open UniData session on %s account %s (code %ld)",
+        mv_fatal("cannot open UniData session on %s account %s (code %ld).\n"
+                 "If this is a small licence, check `listuser`: a session that\n"
+                 "died leaves a PHANTOM entry holding a slot until deleteuser\n"
+                 "clears it, and the next open then fails for a reason that has\n"
+                 "nothing to do with the host or the account (mv_git#54).",
                   host, acct, code);
     ctx->open = 1;
+    /* HAND THE LICENCE BACK ON EVERY EXIT PATH, not just the tidy one.
+     *
+     * A session that ends without ic_quit leaves a PHANTOM in UniData's user
+     * table — `listuser` shows a udt user with no process — and it holds a
+     * licence slot until deleteuser clears it.  Measured: a full suite run left
+     * TWO behind, which on a two-user TE licence is the entire budget, so the
+     * next run failed at whatever it happened to be doing and blamed the agent.
+     * mv_ctx_destroy covers the ordinary path; this covers the error returns
+     * that do not reach it. */
+    udt_open_ctx = ctx;
+    if (!udt_atexit_armed) {
+        udt_atexit_armed = 1;
+        atexit(udt_release_session);
+    }
 }
 
 /* --- value ops --------------------------------------------------------- */
@@ -207,7 +238,9 @@ void mv_ctx_destroy(mv_ctx *ctx) {
     if (ctx->open) {
         long code;
         ic_quit(&code);
+        ctx->open = 0;
     }
+    if (udt_open_ctx == ctx) udt_open_ctx = NULL;
     free(ctx);
 }
 

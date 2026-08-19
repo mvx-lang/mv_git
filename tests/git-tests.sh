@@ -112,6 +112,29 @@ elif [ "$PLATFORM" = uv ]; then
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
+  #
+  # PREFLIGHT: THE LICENCE MUST BE FREE BEFORE ANY OF THIS MEANS ANYTHING.
+  # UniData TE licenses two concurrent sessions, and a session that dies leaves a
+  # PHANTOM entry — `listuser` showing a udt user with no process — which holds a
+  # slot until deleteuser clears it.  Once the slots are gone every failure is
+  # misleading: what the reader sees is "the account I/O agent did not answer",
+  # and three separate wrong diagnoses of mv_git#54 came from measuring against
+  # an exhausted licence without knowing it.  So: say what the table holds, and
+  # clear entries no live process owns.
+  UDTBIN="${UDTHOME:-/usr/ud83}/bin"
+  udt_users() { "$UDTBIN/listuser" 2>/dev/null | awk '/\) *\/ *[0-9]/{print $NF; exit}'; }
+  if [ -x "$UDTBIN/listuser" ]; then
+    n=$(udt_users); n=${n:-0}
+    if [ "$n" -gt 0 ] && ! pgrep -x udt >/dev/null 2>&1; then
+      say "-- licence: $n phantom session(s) with no process; clearing --"
+      "$UDTBIN/listuser" 2>/dev/null | awk 'NR>3 && NF {print $1}' | while read -r u; do
+        [ -n "$u" ] && yes 2>/dev/null | "$UDTBIN/deleteuser" "$u" >/dev/null 2>&1
+      done
+      n=$(udt_users); n=${n:-0}
+    fi
+    say "-- licence: $n session(s) in use before the run --"
+    [ "$n" -gt 0 ] && say "   (a busy licence makes every failure below suspect — see mv_git#54)"
+  fi
   # Self-contained, like the uv shims: `newacct` makes an account out of a bare
   # directory, so nothing outside has to supply one.  It prompts for confirmation
   # then owner and group; the answers are piped in.
