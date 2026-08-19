@@ -241,6 +241,13 @@ if [ "$SKIP_NET" = 1 ]; then
 else
   say "-- remotes: bare remote + push + clone + pull (fast-forward) --"
   REM="$WORK/rem.git"; git init --bare -q "$REM"
+  # Point the bare repo's HEAD at the branch the ENGINE creates.  `git init
+  # --bare` sets HEAD from the host's init.defaultBranch (still `master` on a
+  # stock git), while mv_git_init makes `main` — so a clone of this remote
+  # resolved an UNBORN branch, materialise found no HEAD tree and reported
+  # "empty", and the clone produced an account with no records.  A harness
+  # detail, but one that reads exactly like a product bug.
+  git --git-dir="$REM" symbolic-ref HEAD refs/heads/main
   GITV "$A" GIT REMOTE ADD origin "$REM" >/dev/null
   t  "remote list"   "origin"        "$(GITV "$A" GIT REMOTE)"
   t  "push"          "pushed"        "$(GITV "$A" GIT PUSH origin main || GITV "$A" GIT PUSH origin master)"

@@ -428,7 +428,16 @@ static int do_clone(const char *repo, const char *dir) {
         }
     }
 
-    /* 3. materialise the user's files and records on top, over InterCall. */
+    /* 3. put an agent in it BEFORE materialising.  Records are reached through
+       the account I/O agent, and a just-created account has none — so the
+       materialise below failed with "the account I/O agent did not answer" and
+       the clone produced an empty account.  uv-git seeds here for the same
+       reason; this is that, for UniData. */
+    if (mv_agent_seed() != 0)
+        fprintf(stderr, "udt-git clone: could not put an agent into the new "
+                        "account; it exists but will hold no records\n");
+
+    /* 4. materialise the user's files and records on top, over InterCall. */
     char acctpath[4096];
     if (getcwd(acctpath, sizeof acctpath))
         setenv("MVXACCOUNT", acctpath, 1);
