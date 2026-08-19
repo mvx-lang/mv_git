@@ -90,9 +90,29 @@ $ENDIF
          IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
       NEXT CI
    CASE 1
-*     UniData: the engine's clone over CallC.
-      CALL GIT.REPO(REPO)
-      CALL GIT.OBJ("CLONE", 4, REPO, URL, DIR, REF, "", OBJOUT)
-      CALL GIT.ECHO(OBJOUT)
+*     UniData, for the same reason and by the same route as UniVerse above.  It
+*     used to call the engine's plain clone over CallC, and that is the very
+*     implementation the UniVerse comment calls worse than useless: a native
+*     account's records live at VOC/<id>, so checking them out writes a DIRECTORY
+*     named VOC, and UniData can then never create its own VOC file — the
+*     checkout blocks the account it was meant to become.  The destination came
+*     out as a git checkout that was not an account at all: no VOC, so the very
+*     next verb in it failed with "msgno 427, args = VOC".
+*
+*     udt-git already clones correctly (it creates the account, then materialises
+*     into it), so the verb hands over rather than keeping a second, broken
+*     implementation.  The developer still types GIT CLONE and never sees a shell.
+      CMD = "udt-git clone " : URL : " " : DIR
+      IF REF # "" THEN CMD := " " : REF
+*     2>&1 because udt-git reports progress and failures on stderr and only the
+*     final line on stdout — CAPTURING takes stdout alone, so without this a
+*     clone that FAILED came back as silence.
+      CMD := " 2>&1"
+*     "!cmd", not "SH -c": UniData answers `SH` with "Not a verb" (measured on
+*     8.3), while UniVerse wants the SH form.  One line, two spellings.
+      EXECUTE "!" : CMD CAPTURING COUT
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
+      NEXT CI
 END CASE
 RETURN
