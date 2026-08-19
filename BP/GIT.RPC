@@ -56,7 +56,7 @@
 * prefixes, not separators, because no byte is safe as a separator in record
 * content.
 *     Payloads travel hex-encoded, so no non-ASCII byte ever crosses the pipe —
-*     see the note above.  OCONV "MX" is the platform's builtin conversion, so
+*     see the note above.  OCONV "MX0C" is the platform's builtin conversion, so
 *     this runs at native speed rather than as a per-byte BASIC loop, and it
 *     round-trips every byte including NUL and the marks.  The length written is
 *     the ENCODED length, which is what the far end must read off the pipe.
@@ -69,15 +69,16 @@
          CASE AI = 4 ; RAW = A4
          CASE 1      ; RAW = A5
          END CASE
-         AV = OCONV(RAW, "MX")
-         BODY = BODY : FMT(LEN(AV), "R%10") : AV
+         AV = OCONV(RAW, "MX0C")
+         PADV = LEN(AV) ; PADW = 10 ; GOSUB ZPAD
+         BODY = BODY : PADR : AV
       NEXT AI
 *
       HDR = MAGIC
       HDR = HDR : RPC.TOKEN
       HDR = HDR : OP : SPACE(16 - LEN(OP))
-      HDR = HDR : FMT(NARGS, "R%2")
-      HDR = HDR : FMT(LEN(BODY), "R%10")
+      PADV = NARGS ; PADW = 2 ; GOSUB ZPAD ; HDR = HDR : PADR
+      PADV = LEN(BODY) ; PADW = 10 ; GOSUB ZPAD ; HDR = HDR : PADR
 *
       WRITEBLK HDR TO RPC.REQ ELSE
          STATUS = 1 ; RESULT = "cannot write to the git background process"
@@ -115,8 +116,16 @@
             STATUS = 1 ; RESULT = "reply body truncated"
             RETURN
          END
-         RESULT = ICONV(ENC, "MX")
+         RESULT = ICONV(ENC, "MX0C")
       END
+      RETURN
+*
+* ---- a fixed-width, zero-filled number -------------------------------------
+* NOT FMT: its "%" zero-fill is honoured on UniVerse and ignored on UniData,
+* which returns the mask itself.  See the same routine in GIT.AGENT.
+ZPAD:
+      PADR = PADV : ""
+      IF LEN(PADR) < PADW THEN PADR = STR("0", PADW - LEN(PADR)) : PADR
       RETURN
 *
 * ---- connect ----------------------------------------------------------------

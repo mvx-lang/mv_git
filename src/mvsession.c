@@ -493,6 +493,15 @@ static int call_raw(mv_session *s, const char *op, int nargs,
              MVG_OPCODE_LEN, op,
              MVG_NARGS_LEN,  nargs,
              MVG_LEN_LEN,    blen);
+    /* The driver's half of the wire trace — see agentcallc.c for why. */
+    {
+        const char *lp = getenv("MVGIT_CALLC_LOG");
+        if (lp && *lp) {
+            FILE *f = fopen(lp, "a");
+            if (f) { fprintf(f, "[drv pid=%ld fd=%d] SEND op=%s blen=%ld\n",
+                             (long)getpid(), s->req, op, blen); fclose(f); }
+        }
+    }
     if (write_all(s->req, hdr, MVG_REQ_HDR) != 0 ||
         (blen && write_all(s->req, body, blen) != 0)) {
         free(body);

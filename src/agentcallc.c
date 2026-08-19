@@ -36,6 +36,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <stdio.h>
+#include <time.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdlib.h>
@@ -51,14 +53,40 @@ static size_t g_cap;
    other value is either data or a diagnostic the caller prints. */
 static char *ok(void)  { return ""; }
 
+/* $MVGIT_CALLC_LOG — a trace of the wire itself, both ends.
+ *
+ * Worth its keep: this transport cannot report its own faults.  A malformed
+ * frame is not an error anywhere — the reader simply waits for bytes that never
+ * come, and a length-framed protocol has no resynchronisation point to complain
+ * from.  When the agent's reply header went out as "MVG1%4%10" (nine characters
+ * where eighteen were expected) every layer stayed silent and the only visible
+ * symptom was a session that "did not answer".  Printing what actually crossed
+ * found it immediately.  The driver writes its SEND lines to the same file
+ * (mvsession.c), so one setting shows both directions in order.
+ *
+ * Costs nothing when the variable is unset, which is always, in production. */
+static void tlog(const char *fmt, const char *a, const char *b) {
+    const char *lp = getenv("MVGIT_CALLC_LOG");
+    if (!lp || !*lp) return;
+    FILE *f = fopen(lp, "a");
+    if (!f) return;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    fprintf(f, "[%ld.%03ld pid=%ld req=%d rsp=%d] ", (long)ts.tv_sec,
+            ts.tv_nsec / 1000000L, (long)getpid(), g_req, g_rsp);
+    fprintf(f, fmt, a ? a : "(null)", b ? b : "(null)");
+    fclose(f);
+}
+
 /* AGOPEN(reqpath, rsppath) — open both pipes.  Read/write on purpose: it is
    what stops a FIFO reporting EOF between frames, which is the same property
    UniVerse's OPENSEQ has and which the framing is built around. */
 char *AGOPEN(char *reqp, char *rspp) {
     if (g_req >= 0) close(g_req);
     if (g_rsp >= 0) close(g_rsp);
+    tlog("AGOPEN req=[%s] rsp=[%s]\n", reqp, rspp);
     g_req = open(reqp ? reqp : "", O_RDWR);
     g_rsp = open(rspp ? rspp : "", O_RDWR);
+    tlog("AGOPEN done%s%s\n", "", "");
     if (g_req < 0 || g_rsp < 0) {
         if (g_req >= 0) { close(g_req); g_req = -1; }
         if (g_rsp >= 0) { close(g_rsp); g_rsp = -1; }
@@ -72,9 +100,10 @@ char *AGOPEN(char *reqp, char *rspp) {
    how long every frame is and a FIFO will not tell us; timed because an agent
    nobody is talking to must be able to stop waiting and release its licence. */
 char *AGREAD(char *count, char *timeout) {
+    tlog("AGREAD count=[%s] timeout=[%s]\n", count, timeout);
     long n = count ? atol(count) : 0;
     int secs = timeout ? atoi(timeout) : 0;
-    if (n <= 0 || g_req < 0) return "";
+    if (n <= 0 || g_req < 0) { tlog("AGREAD bail%s%s\n", "", ""); return ""; }
     if ((size_t)n + 1 > g_cap) {
         size_t nc = (size_t)n + 1;
         char *nb = realloc(g_buf, nc);
@@ -91,7 +120,7 @@ char *AGREAD(char *count, char *timeout) {
         if (pr < 0) { if (errno == EINTR) continue; return ""; }
         if (pr == 0) {
             waited++;
-            if (secs > 0 && waited >= secs) return "";   /* idle deadline */
+            if (secs > 0 && waited >= secs) { tlog("AGREAD timeout%s%s\n","",""); return ""; }
             continue;
         }
         ssize_t r = read(g_req, g_buf + got, (size_t)(n - got));
@@ -100,11 +129,13 @@ char *AGREAD(char *count, char *timeout) {
         got += r;
     }
     g_buf[n] = '\0';
+    tlog("AGREAD got [%s]%s\n", g_buf, "");
     return g_buf;
 }
 
 /* AGWRITE(data) — the whole string, short writes retried. */
 char *AGWRITE(char *data) {
+    tlog("AGWRITE data=[%s]%s\n", data, "");
     if (g_rsp < 0) return "AGWRITE: not open";
     const char *p = data ? data : "";
     size_t n = strlen(p);
@@ -117,6 +148,7 @@ char *AGWRITE(char *data) {
         p += w;
         n -= (size_t)w;
     }
+    tlog("AGWRITE done%s%s\n", "", "");
     return ok();
 }
 

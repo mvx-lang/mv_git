@@ -32,7 +32,7 @@
 *
 *   Everything on the wire is HEX.  Record marks are 0xFE/0xFD/0xFC, and
 *   UniVerse may have NLS or codepage translation active on sequential I/O,
-*   which can alter any non-ASCII byte in transit.  OCONV "MX" is builtin, so
+*   which can alter any non-ASCII byte in transit.  OCONV "MX0C" is builtin, so
 *   the encoding runs at native speed on bulk data.
 *
 *   Arguments are individually length-prefixed, never separated, because no byte
@@ -223,7 +223,7 @@ $ENDIF
          IF K > 8 THEN EXIT
          AL = BODY[BOFF, W.LEN] + 0 ; BOFF += W.LEN
          ENC = BODY[BOFF, AL] ; BOFF += AL
-         IF AL > 0 THEN ARGV(K) = ICONV(ENC, "MX") ELSE ARGV(K) = ""
+         IF AL > 0 THEN ARGV(K) = ICONV(ENC, "MX0C") ELSE ARGV(K) = ""
       NEXT K
       RETURN
 *
@@ -519,9 +519,11 @@ DO.INDICES:
 * ---- send one reply --------------------------------------------------------
 SENDRSP:
       ENC = ""
-      IF RESULT # "" THEN ENC = OCONV(RESULT, "MX")
+      IF RESULT # "" THEN ENC = OCONV(RESULT, "MX0C")
       EL = LEN(ENC)
-      SH = MAGIC : FMT(STATUS, "R%":W.STATUS) : FMT(EL, "R%":W.LEN)
+      PADV = STATUS ; PADW = W.STATUS ; GOSUB ZPAD ; SS = PADR
+      PADV = EL     ; PADW = W.LEN    ; GOSUB ZPAD ; SL = PADR
+      SH = MAGIC : SS : SL
 $IFDEF UV
       WRITEBLK SH TO RS ELSE DONE = 1 ; RETURN
       IF EL > 0 THEN
@@ -536,5 +538,21 @@ $IFDEF UDT
          IF AGERR # "" THEN DONE = 1 ; RETURN
       END
 $ENDIF
+      RETURN
+*
+* ---- a fixed-width, zero-filled number -------------------------------------
+* Every length and status on this wire is fixed width, and FMT is the obvious
+* way to write one.  It is also wrong: the "%" zero-fill code is honoured on
+* UniVerse and IGNORED on UniData, which returns the MASK ITSELF —
+*     FMT(5, "R%4")  ->  "0005"  on UniVerse
+*                    ->  "%4"    on UniData 8.3
+* so the reply header went out as "MVG1%4%10" — 9 characters where the reader
+* was waiting for 18.  Nothing reported an error: the far end simply blocked
+* until the session died, and a protocol that cannot resynchronise has no way
+* to say "that frame was malformed".  Pad by hand instead.  It is three lines,
+* and it is three lines that mean the same thing everywhere.
+ZPAD:
+      PADR = PADV : ""
+      IF LEN(PADR) < PADW THEN PADR = STR("0", PADW - LEN(PADR)) : PADR
       RETURN
 
