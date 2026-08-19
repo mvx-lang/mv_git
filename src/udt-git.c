@@ -625,6 +625,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: udt-git [-a account] <command> [args]\n");
         return 2;
     }
+    /* The session-layer diagnostic, before any account handling: it is what
+       tells you whether the session, the protocol or the caller is at fault. */
+    if (strcmp(argv[i], "agent") == 0) {
+        if (chdir(account) != 0) {
+            fprintf(stderr, "udt-git: cannot enter %s: %s\n",
+                    account, strerror(errno));
+            return 1;
+        }
+        return mv_agent_cmd(argc, argv, i);
+    }
+
     const char *sub = argv[i++];
 
     /* textconv is a git diff filter (render a record blob legibly for the diff

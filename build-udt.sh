@@ -59,7 +59,8 @@ fi
 # session inherits the caller's own identity instead.
 "$CC" -std=c11 -O2 -DMVXGIT_GITD -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
-    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/udt-git.c" \
+    "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/agentcmd.c" \
+    "$SRC/udt-git.c" \
     $LG2LIBS \
     -o udt-git
 echo "built udt-git"

@@ -165,7 +165,14 @@ $IFDEF UV
       END
 $ENDIF
 $IFDEF UDT
-      HDR = CALLC AGREAD(REQ.HDR, IDLE)
+*     CallC declares these parameters as `string` (udt-callc/funcs) and marshals
+*     them with strlen.  REQ.HDR and IDLE are NUMBERS, and a numeric passed to a
+*     string parameter does not arrive as its digits — the C side saw an empty
+*     count, read nothing, and the agent exited the instant it became ready.
+*     Concatenating with "" makes them strings before they cross.
+      RHC = REQ.HDR : ""
+      IDC = IDLE : ""
+      HDR = CALLC AGREAD(RHC, IDC)
       IF HDR = "" THEN IDLED = 1 ; DONE = 1 ; RETURN
 $ENDIF
       IF LEN(HDR) < REQ.HDR THEN DONE = 1 ; RETURN
@@ -189,7 +196,8 @@ $IFDEF UV
          END
 $ENDIF
 $IFDEF UDT
-         BODY = CALLC AGREAD(BLEN, 300)
+         BLC = BLEN : ""
+         BODY = CALLC AGREAD(BLC, "300")
          IF BODY = "" THEN DONE = 1 ; RETURN
 $ENDIF
       END
