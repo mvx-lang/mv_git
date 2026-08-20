@@ -147,6 +147,28 @@ int mv_git_desc_field(const char *src, size_t srclen, const char *key,
 int mv_git_committed_control(const char *repo, const char *base,
                              char *out, size_t cap);
 
+/* %FILE% IS CREATE-TIME METADATA, NOT LIVE STATE.  Given a blob about to be
+   staged at `path`, return the content that should actually go in: for a hash
+   file's <base>.DICT/%FILE% that HEAD already carries, the committed control,
+   otherwise `content` unchanged.  `keep` is scratch of at least 128 bytes; the
+   returned pointer is either `content` or `keep`, and *len is updated to match.
+
+   A file's geometry is recorded when git first learns the file exists, and then
+   it stops moving.  Resizing the live file is local operational tuning — it is
+   not a change to the thing being versioned, so it must not show as a diff, and
+   it must not ride out to every other clone as a new default.  The geometry is
+   consulted in exactly one place: creating the file on an MV system that does
+   not have it yet.  (Deliberately changing a shipped default is the attribute
+   editor's job — mv_git#15 — not a side effect of a resize.)
+
+   Shared by all three staging entry points (engine subroutine, CallC bridge,
+   daemon op) because a copy that missed one of them is precisely the bug this
+   fixes: the udt/uv add path went through the one wrapper that lacked the rule,
+   so every re-add rewrote the control from the live file. */
+const char *mv_git_sticky_control(const char *repo, const char *path,
+                                  const char *content, int64_t *len,
+                                  char *keep, size_t cap);
+
 /* Batched staging (bulk in-session use): open once, accumulate blobs across many
    mv_git_batch_add calls, write the index once at mv_git_batch_end.  O(n) — for
    staging a whole account without re-opening the repo per record. */

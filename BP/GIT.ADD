@@ -166,9 +166,23 @@ ADDALL:
       ISVOC = (FILE = "VOC")
       GOSUB STAGEDATA
       GOSUB STAGEDICT
+*     %FILE% ON EVERY ADD, native as well as open.
+*
+*     It carries the file's GEOMETRY — its type, and for a hash file its modulo
+*     and whether it is static or dynamic — which is what lets a clone recreate
+*     the file as it was rather than at whatever the platform defaults to.  That
+*     is the point of committing it, and it is just as true of a native commit
+*     as an open one (mv_git#15).
+*
+*     It used to be staged only in open format.  A native repo therefore carried
+*     no geometry at all, and got away with it only because a native commit also
+*     keeps the platform's own VOC pointers — which are enough to recreate the
+*     file on the SAME platform and no use anywhere else.
+      GOSUB FILECLASS
+      CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
+*     Alternate-key indexes stay open-format: they are a portability feature,
+*     not part of the file's shape.
       IF OPENFMT THEN
-         GOSUB FILECLASS
-         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
          GOSUB IXSTAGE
       END
       NFILES += 1

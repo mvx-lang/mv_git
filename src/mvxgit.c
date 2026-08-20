@@ -3845,6 +3845,8 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     const char *content;
     char nb[40];
     int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
+    char keep[128];
+    content = mv_git_sticky_control(rp, path, content, &clen, keep, sizeof keep);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
@@ -4029,6 +4031,25 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content) {
     const char *a[] = {repo, path, content};
     return run_sub(mvx_sub_GITSTAGEBLOB, ctx, a, 3);
+}
+
+/* See mvxgit.h: keep an already-committed %FILE% control instead of the live
+   file's current geometry. */
+const char *mv_git_sticky_control(const char *repo, const char *path,
+                                  const char *content, int64_t *len,
+                                  char *keep, size_t cap) {
+    if (!path || !content) return content;
+    size_t plen = strlen(path);
+    const char *suf = ".DICT/%FILE%";
+    size_t sl = strlen(suf);
+    if (plen <= sl || strcmp(path + plen - sl, suf) != 0) return content;
+    if (strncmp(content, "hash", 4) != 0) return content;   /* DIR has no size */
+    char base[512];
+    snprintf(base, sizeof base, "%.*s", (int)(plen - sl), path);
+    if (mv_git_committed_control(repo, base, keep, cap) < 0) return content;
+    if (strncmp(keep, "hash", 4) != 0) return content;
+    if (len) *len = (int64_t)strlen(keep);
+    return keep;
 }
 
 int mv_git_committed_control(const char *repo, const char *base,

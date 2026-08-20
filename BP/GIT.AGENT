@@ -485,8 +485,30 @@ DO.CREATEFILE:
 *        whoever knows the data, and losing the file is not.
          DTYPE = 18
       END
+*     TWO PLATFORMS, TWO CREATE.FILE SYNTAXES — this served only one.
+*
+*     The stacked answers below are UniVerse's seven prompts.  UniData does not
+*     prompt at all: it takes the geometry on the sentence, as
+*     `CREATE.FILE <name> <dict-modulo> <data-modulo> [DYNAMIC]`.  Feeding it
+*     UniVerse's answers left the file at whatever the default happened to be —
+*     a clone of a 997-modulo dynamic file came back modulo 1 and STATIC, which
+*     is the whole geometry silently lost (mv_git#15).
+$IFDEF UDT
+*     A SINGLE number is the DATA modulo, which is the one being reproduced —
+*     measured on 8.3: "CREATE.FILE X 101 1 DYNAMIC" puts 101 on the DICTIONARY
+*     and builds the data part at modulo 1.
+      IF KIND = "DIR" THEN
+         EXECUTE "CREATE.FILE DIR " : NAME CAPTURING CFOUT
+      END ELSE
+         CFCMD = "CREATE.FILE " : NAME : " " : MODL
+         IF DYN = "DYNAMIC" THEN CFCMD := " DYNAMIC"
+         EXECUTE CFCMD CAPTURING CFOUT
+      END
+$ENDIF
+$IFNDEF UDT
       DATA 1, 2, 3, MODL, 2, DTYPE, ""
       EXECUTE "CREATE.FILE " : NAME CAPTURING CFOUT
+$ENDIF
       OPEN NAME TO XV2 THEN
          RESULT = "created"
       END ELSE

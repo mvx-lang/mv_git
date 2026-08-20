@@ -450,10 +450,23 @@ int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
         /* A single modulo names the DATA file's modulus (a second number would
            be the dictionary's); a static file is fixed at it, a dynamic file
            starts there and auto-resizes. */
+        /* CREATE.FILE takes <name> <dict-modulo> <data-modulo>, so a SINGLE
+         * number is the DATA modulo — which is the one we are trying to
+         * reproduce.  Measured on 8.3:
+         *
+         *     CREATE.FILE X 101 1 DYNAMIC  ->  dict 101, data 1   (modulo LOST)
+         *     CREATE.FILE X 101 DYNAMIC    ->  dict 1,   data 101
+         *     CREATE.FILE X 2 101 DYNAMIC  ->  dict 2,   data 101
+         *
+         * The dynamic form here was the first of those: it put the file's
+         * modulo on the DICTIONARY and created the data file at modulo 1, so
+         * every dynamic file was recreated at the smallest possible size no
+         * matter what %FILE% recorded.  Silent — a correct-looking clone whose
+         * files are all the wrong shape, visible only as it grows back. */
         if (is_static)
             snprintf(cmd, sizeof cmd, "CREATE.FILE %s %ld", name, mod);
         else
-            snprintf(cmd, sizeof cmd, "CREATE.FILE %s %ld 1 DYNAMIC", name, mod);
+            snprintf(cmd, sizeof cmd, "CREATE.FILE %s %ld DYNAMIC", name, mod);
     }
     return udt_run_ecl(cmd) == 0 ? 1 : 0;
 }

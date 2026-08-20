@@ -302,30 +302,14 @@ static opres op_stage(const args *g) {
     return ok(NULL);
 }
 
-/* STAGEBLOB(repo, path, content) — a raw blob (the open-account controls).  For
-   a hash file's %FILE% control a modulo is only a suggested default, so keep an
-   already-committed one STICKY: this account's resize must not overwrite the
-   shipped default and ripple out to every other clone. */
+/* STAGEBLOB(repo, path, content) — a raw blob (the open-account controls).
+   %FILE% goes through mv_git_sticky_control, so a resize is not a commit. */
 static opres op_stageblob(const args *g) {
     const char *p = A(g, 1);
     const char *use = A(g, 2);
-    char committed[128];
-    size_t plen = strlen(p);
-    const char *suf = ".DICT/%FILE%";
-    size_t sl = strlen(suf);
-    long ulen = g->l[2];
-
-    if (plen > sl && strcmp(p + plen - sl, suf) == 0 &&
-        strncmp(use, "hash", 4) == 0) {
-        char base[512];
-        snprintf(base, sizeof base, "%.*s", (int)(plen - sl), p);
-        if (mv_git_committed_control(rp(A(g, 0)), base, committed,
-                                     sizeof committed) >= 0 &&
-            strncmp(committed, "hash", 4) == 0) {
-            use = committed;
-            ulen = (long)strlen(committed);
-        }
-    }
+    char keep[128];
+    int64_t ulen = (int64_t)g->l[2];
+    use = mv_git_sticky_control(rp(A(g, 0)), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(A(g, 0)));
     mv_git_batch_add(p, use, ulen, 0);
     return ok(NULL);
