@@ -1427,6 +1427,38 @@ static int clone_cmd(int argc, char **argv, int i) {
     /* An account that cannot run GIT is not finished being cloned. */
     deploy_git_verb();
 
+    /* RECORD THE FLAVOUR WE WERE TOLD, so the next clone need not be told again.
+     *
+     * A UniVerse account is created WITH a flavour and cannot be asked for it
+     * afterwards (mv_git#15), so clone reads it from the committed descriptor
+     * and, finding none, refuses to guess.  We were just told it — but the
+     * descriptor materialised out of the commit still says nothing, so an
+     * account cloned with --flavour committed a descriptor that would make the
+     * NEXT clone ask all over again.  The knowledge died with the command that
+     * had it.
+     *
+     * Writing it here means the next `add` stages a descriptor that carries the
+     * flavour forward, and --flavour becomes a thing you supply once for a
+     * lineage rather than every time.  adopt already does this; clone did not. */
+    if (fi >= 0) {
+        char have[64];
+        char cur[4096];
+        size_t curlen = 0;
+        FILE *r = fopen(".uv", "rb");
+        if (r) { curlen = fread(cur, 1, sizeof cur - 1, r); fclose(r); }
+        cur[curlen] = '\0';
+        if (!mv_git_desc_field(cur, curlen, "flavour", have, sizeof have)) {
+            FILE *f = fopen(".uv", "ab");
+            if (f) {
+                if (curlen && cur[curlen - 1] != '\n') fputc('\n', f);
+                fprintf(f, "flavour = %s\n", uv_flavours[fi].name);
+                fclose(f);
+                printf("uv-git: recorded flavour %s in .uv — commit it and no "
+                       "later clone need be told\n", uv_flavours[fi].name);
+            }
+        }
+    }
+
     printf("cloned into %s as a UniVerse account (%s flavour)\n",
            dir, uv_flavours[fi].name);
     return 0;
