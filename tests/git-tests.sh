@@ -207,6 +207,18 @@ t  "tag list"        "v1.0"          "$(GITV "$A" GIT TAG)"
 t  "tag delete"      "deleted"       "$(GITV "$A" GIT TAG -d v1.0)"
 te "tag gone"        "v2.0"          "$(GITV "$A" GIT TAG | tr -d '\r' | paste -sd, -)"
 
+# A record the account HAS that git does not know about.  This had no test at
+# all until mv_git#59, which is exactly why status could go on never reporting
+# one: modified, deleted and clean were all asserted, and the fourth state was
+# not.  It must come BEFORE the ignore test, which reuses CUST/C9.
+say "-- untracked: a new record shows as ?? --"
+SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+WRITE "new" ON F, "C8"'
+t  "untracked shown"  "?? CUST/C8"  "$(GITV "$A" GIT STATUS)"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m untracked-gone >/dev/null 2>&1
+case "$(GITV "$A" GIT STATUS)" in *CUST/C8*) bad "untracked gone" "no CUST/C8" "shown";; *) ok "untracked gone";; esac
+
 say "-- ignore: a gitignored record stays out --"
 printf 'CUST/C9\n' > "$A/.gitignore"
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
