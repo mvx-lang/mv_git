@@ -177,13 +177,22 @@ UNTRACKED:
    NEXT U
    IF USTK THEN DELETE UVOC, "%GITSTOCK%"
    RETURN
+*  A %FILE% control's CLASS is its FIRST LINE — the lines after it are the
+*  registry's `key = value` parameters (mv_git#15), and CAT hands the blob back
+*  with newlines already turned into attribute marks, so line 1 is <1>.  Reading
+*  the whole blob made every extended control look like neither DIR nor hash.
+*
+*  Only the class is compared, deliberately: a modulo that moved is a RESIZE,
+*  which is local operational tuning and must not read as a change to the thing
+*  being versioned (540c066).  Geometry becomes a change only when GIT ATTR says
+*  so, and that shows up as a staged edit rather than through here.
 CTLSTAT:
    CHG = 0
    CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
-   CCL = TRIM(FIELD(CB, " ", 1))
+   CCL = TRIM(FIELD(CB<1>, " ", 1))
    IF CCL[1,3] = "DIR" THEN CCL = "DIR" ELSE CCL = "hash"
    FILE = BASE ; GOSUB FILECLASS
-   LCL = TRIM(FIELD(CTL, " ", 1))
+   LCL = TRIM(FIELD(CTL<1>, " ", 1))
    IF LCL[1,3] = "DIR" THEN LCL = "DIR" ELSE LCL = "hash"
    IF CCL # LCL THEN CHG = 1
    RETURN

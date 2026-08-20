@@ -135,7 +135,7 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record) {
 char *GITSTAGEBLOB(char *repo, char *path, char *content) {
     const char *p = path ? path : "";
     const char *use = content ? content : "";
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     int64_t ulen = (int64_t)strlen(use);
     use = mv_git_sticky_control(rp(repo), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(repo));

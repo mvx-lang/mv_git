@@ -1344,12 +1344,12 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            track this working copy's current size, or one customer's growth/resize
            would become everyone's — so preserve HEAD's control and only guess for
            a file with none committed yet. */
-        char spec[128];
+        char spec[MV_GIT_CTL_MAX];
         const char *cont = cls;
         if (strcmp(cls, "hash") == 0) {
             char base[600];
             snprintf(base, sizeof base, "%.*s", (int)(pl - sl), e->path);
-            char committed[128];
+            char committed[MV_GIT_CTL_MAX];
             if (head_control(repo, ht, base, committed, sizeof committed) >= 0 &&
                 strncmp(committed, "hash", 4) == 0) {
                 snprintf(spec, sizeof spec, "%s", committed);   /* sticky default */
@@ -2763,6 +2763,15 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
     out[0] = '\0';
     if (!c) return;
+    /* THE CLASS IS LINE ONE.  Everything after the first newline is a
+       `key = value` registry parameter (MV_GIT_CTL_MAX), not part of the class,
+       so stop there before trimming — reading the whole blob turned an extended
+       control into an unrecognised class and the file came back as the wrong
+       kind entirely. */
+    {
+        const char *nl = memchr(c, '\n', (size_t)cl);
+        if (nl) cl = nl - c;
+    }
     while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
@@ -4022,7 +4031,7 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     const char *content;
     char nb[40];
     int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     content = mv_git_sticky_control(rp, path, content, &clen, keep, sizeof keep);
     git_repository *repo = NULL;
     git_index *index = NULL;

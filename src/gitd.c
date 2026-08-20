@@ -307,7 +307,7 @@ static opres op_stage(const args *g) {
 static opres op_stageblob(const args *g) {
     const char *p = A(g, 1);
     const char *use = A(g, 2);
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     int64_t ulen = (int64_t)g->l[2];
     use = mv_git_sticky_control(rp(A(g, 0)), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(A(g, 0)));

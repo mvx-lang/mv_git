@@ -144,6 +144,20 @@ int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
 int mv_git_desc_field(const char *src, size_t srclen, const char *key,
                       char *out, size_t cap);
 
+/* A %FILE% CONTROL IS EXTENSIBLE, AND ITS FIRST LINE IS THE WHOLE OF THE OLD
+   FORMAT.  Line 1 is the file's class — "DIR", or "hash <modulo> STATIC|DYNAMIC"
+   — and every line after it is one `key = value` parameter from the attribute
+   registry (BP/GIT.ATTR.DEFS, mv_git#15): the UniData dynamic set (minmod,
+   split, merge, largerec, blocksize, hashtype) and whatever later backends
+   bring.  Growing the control this way rather than widening line 1 is what lets
+   a reader that predates a parameter still get the class right, and it is the
+   same `key = value` grammar the account descriptor already uses.
+
+   So a reader that wants the class takes LINE ONE, not the trimmed blob.  A
+   control now runs to a few hundred bytes rather than the couple of dozen the
+   single line needed, which is what MV_GIT_CTL_MAX sizes. */
+#define MV_GIT_CTL_MAX 512
+
 /* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
    in `out`; returns its length, or -1 if `base` has no committed control yet.
    Generators use it to keep a shipped hash modulo sticky: a re-add preserves the
@@ -155,7 +169,7 @@ int mv_git_committed_control(const char *repo, const char *base,
 /* %FILE% IS CREATE-TIME METADATA, NOT LIVE STATE.  Given a blob about to be
    staged at `path`, return the content that should actually go in: for a hash
    file's <base>.DICT/%FILE% that HEAD already carries, the committed control,
-   otherwise `content` unchanged.  `keep` is scratch of at least 128 bytes; the
+   otherwise `content` unchanged.  `keep` is scratch of at least MV_GIT_CTL_MAX bytes; the
    returned pointer is either `content` or `keep`, and *len is updated to match.
 
    A file's geometry is recorded when git first learns the file exists, and then

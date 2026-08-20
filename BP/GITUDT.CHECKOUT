@@ -49,7 +49,12 @@ $IFNDEF MVX
       IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN
          BASE = P[1, LP-LC]
          CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", TY)
-         TY = TRIM(TY)
+*        The class is LINE ONE of the control; the lines after it are the
+*        registry's `key = value` parameters (mv_git#15).  CAT returns the blob
+*        with newlines already marks, so line 1 is <1> — taking the whole blob
+*        left an extended control matching neither arm below, and the file was
+*        recreated as a default hash whatever it actually was.
+         TY = TRIM(TY<1>)
          IF TY = "DIR" THEN
             EXECUTE "CREATE.FILE DIR ":BASE CAPTURING JUNK
          END ELSE
