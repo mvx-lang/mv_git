@@ -14,7 +14,7 @@
 SUBROUTINE GIT.STATUS
       $INCLUDE BP.INC PLATFORM.H
 * The include is REQUIRED now, and was not before.  This handler used to be a
-* two-way $IFDEF MVX / $ELSE / $ENDIF, and that form runs its $ELSE arm whether
+* two-way IFDEF MVX / ELSE / ENDIF, and that form runs its ELSE arm whether
 * or not any define is in scope — so it worked without ever including
 * PLATFORM.H.  Inlining the helper below keeps the two-way shape, but the file
 * now DEPENDS on the define being right rather than merely preferring it, and a

@@ -99,7 +99,7 @@
 *     and it is removed again immediately.
       CASE OP = "STOCKPREP"
          R = ""
-*        Already inside the UDT branch — a nested $IFDEF would close it early.
+*        Already inside the UDT branch — a nested IFDEF would close it early.
          UH = GETENV("UDTHOME")
          IF UH # "" THEN
             OPEN "VOC" TO SVOC THEN

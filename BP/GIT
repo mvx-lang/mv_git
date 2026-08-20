@@ -16,8 +16,8 @@
 * account record) keeps bulk data out of history; DICT addresses a dictionary.
 *
 * One source, both platforms: a CMD-framework dispatch to the GIT.* handlers.
-* Each handler is $IFDEF MVX (a one-line CALL into the engine, which reads records
-* AND does the git objects) / $ELSE (UniData: BASIC drives the record loop natively
+* Each handler is IFDEF MVX (a one-line CALL into the engine, which reads records
+* AND does the git objects) / ELSE (UniData: BASIC drives the record loop natively
 * — OPEN/SELECT/READNEXT/READ/WRITE — and calls C only for git objects via CallC,
 * no InterCall / second session).  The heavier record-I/O ops delegate their udt
 * branch to GITUDT.ADD/STATUS/DIFF/CHECKOUT; the rest inline it.

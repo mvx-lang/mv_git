@@ -13,8 +13,8 @@
 *  */
 SUBROUTINE GIT.DIFF
       $INCLUDE BP.INC PLATFORM.H
-* The include is REQUIRED now, and was not before: the two-way $IFDEF MVX /
-* $ELSE / $ENDIF runs its $ELSE arm whether or not any define is in scope, so
+* The include is REQUIRED now, and was not before: the two-way IFDEF MVX /
+* ELSE / ENDIF runs its ELSE arm whether or not any define is in scope, so
 * this file worked without ever including PLATFORM.H.  Inlining keeps that shape
 * but makes the define load-bearing, and a handler that silently compiles to
 * nothing is what cost an afternoon on GIT CLONE (mv_git#52).

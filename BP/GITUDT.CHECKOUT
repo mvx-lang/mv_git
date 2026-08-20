@@ -21,17 +21,19 @@ $IFNDEF MVX
 *     And open it for THIS program too: the delete pass below is BASIC, so it
 *     asks the master directly rather than through the engine.
       STKOK = 0
-*     No nested $IFDEF: this file is already inside $IFNDEF MVX, and an inner
-*     $ENDIF closes the OUTER guard — which silently drops the whole rest of the
-*     program out of the build.  On UniVerse GETENV("UDTHOME") is empty, so the
-*     probe simply leaves STKOK = 0 and the type list below still applies.
-      SUH = GETENV("UDTHOME")
-      IF SUH # "" THEN
+*     No guard here: this file is already inside IFNDEF MVX, and an inner
+*     ENDIF would close it and drop the rest of the program from the build.
+*     GIT.STOCK holds the platform half — GETENV is UniData-only and does not
+*     even PARSE on UniVerse — and answers "" there, so STKOK stays 0 and the
+*     type list below still applies, exactly as it did before.
+      SPATH = ""
+      CALL GIT.STOCK(REPO, SPATH)
+      IF SPATH # "" THEN
          OPEN "VOC" TO SVOCF THEN
             SPP = ""
             SPP<1> = "F"
-            SPP<2> = SUH : "/sys/VOC"
-            SPP<3> = SUH : "/sys/D_VOC"
+            SPP<2> = FIELD(SPATH, CHAR(254), 1)
+            SPP<3> = FIELD(SPATH, CHAR(254), 2)
             WRITE SPP ON SVOCF, "%GITSTOCK%"
             OPEN "%GITSTOCK%" TO STKF THEN STKOK = 1
          END
@@ -66,7 +68,7 @@ $IFNDEF MVX
    NQR = 0
    FOR I = 1 TO NP
       IF PATHS<I> = "%QPOINTERS%" THEN
-*        GIT.OBJ("CAT"), not a raw CALLC.  This file is guarded $IFNDEF MVX,
+*        GIT.OBJ("CAT"), not a raw CALLC.  This file is guarded IFNDEF MVX,
 *        which is true on UniVerse as well as UniData — and CALLC is a UniData
 *        statement UniVerse parses as an ARRAY REFERENCE, so it failed to
 *        compile there with "Array 'GITCAT' never dimensioned", the verb never

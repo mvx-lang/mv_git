@@ -17,8 +17,8 @@ SUBROUTINE GIT.ADD
 *     pointer STOCKOPEN lays down and STOCKCLOSE takes away again.
       STKOK = 0
       STOCKID = "%GITSTOCK%"
-* The include is REQUIRED now, and was not before: the two-way $IFDEF MVX /
-* $ELSE / $ENDIF runs its $ELSE arm whether or not any define is in scope, so
+* The include is REQUIRED now, and was not before: the two-way IFDEF MVX /
+* ELSE / ENDIF runs its ELSE arm whether or not any define is in scope, so
 * this file worked without ever including PLATFORM.H.  Inlining keeps that shape
 * but makes the define load-bearing, and a handler that silently compiles to
 * nothing is what cost an afternoon on GIT CLONE (mv_git#52).
@@ -258,9 +258,12 @@ STAGEDATA:
 *  leftover ids appear as output and the command after this one — typically the
 *  COMMIT — is swallowed by them and never runs (mv_git#58).  A loop that ends
 *  early leaves a list, so clearing is the only reliable point, not the loop.
-$IFNDEF MVX
+*  Not guarded: this is already inside the ELSE arm.  A guard nested in an
+*  ELSE arm is the case the preprocessor gets wrong — its ENDIF closes the
+*  ELSE, leaving the file's own ENDIF unmatched, and UniVerse then reports
+*  "End of File unexpected".  (Nesting inside a plain IFNDEF is fine, as
+*  GIT.AGENT does throughout; it is the ELSE arm that breaks.)
    CLEARSELECT
-$ENDIF
    RETURN
 *  What a fresh account of this release holds, so it can be subtracted (#46).
 *
@@ -275,17 +278,19 @@ $ENDIF
 *  readable file, so uv-git supplies the baseline to the engine instead.
 STOCKOPEN:
    STKOK = 0
-$IFDEF UDT
-      UH = GETENV("UDTHOME")
-      IF UH # "" THEN
-         SP = ""
-         SP<1> = "F"
-         SP<2> = UH : "/sys/VOC"
-         SP<3> = UH : "/sys/D_VOC"
-         WRITE SP ON VOCF, STOCKID
-         OPEN STOCKID TO STKF THEN STKOK = 1
-      END
-$ENDIF
+*  No guard here, deliberately: this is inside the ELSE arm already, and a
+*  nested IFDEF would close it and drop the rest of the program.  GIT.STOCK
+*  carries the platform half instead, and answers "" where there is none.
+   SPATH = ""
+   CALL GIT.STOCK(REPO, SPATH)
+   IF SPATH # "" THEN
+      SP = ""
+      SP<1> = "F"
+      SP<2> = FIELD(SPATH, CHAR(254), 1)
+      SP<3> = FIELD(SPATH, CHAR(254), 2)
+      WRITE SP ON VOCF, STOCKID
+      OPEN STOCKID TO STKF THEN STKOK = 1
+   END
    RETURN
 STOCKCLOSE:
    IF STKOK THEN
