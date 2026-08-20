@@ -1737,7 +1737,14 @@ void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_index_free(gidx);
     git_repository_free(repo);
     char out[128];
-    snprintf(out, sizeof out, "%ld record(s) of deleted file(s) unstaged",
+    /* Silent when there was nothing to unstage.  A caller that echoes this
+       prints it on EVERY blanket add otherwise — and an always-non-empty
+       result is also what let a stale side channel be mistaken for a real
+       one (mv_git#58). */
+    if (dropped == 0)
+        out[0] = '\0';
+    else
+        snprintf(out, sizeof out, "%ld record(s) of deleted file(s) unstaged",
              dropped);
     g_live = NULL; g_livelen = 0;
     mv_set_str(argv[2], out, (int64_t)strlen(out));
