@@ -65,9 +65,12 @@ char *GITINIT(char *repo) {
  * same.  Cheap when there is no open batch, so ADD can always call it.
  */
 char *GITFLUSH(char *repo) {
-    (void)repo;
     mv_git_batch_end();
-    return "";
+    /* Write the channel even with nothing to say (mv_git#58): an op that
+       leaves it alone is read back as this op's result, so `add` echoed the
+       ids a previous INDEXIDS had left there.  Every op owns the channel for
+       the length of its call. */
+    return emit(repo, NULL);
 }
 
 /* GITPRUNE(repo) — unstage every record of a file the account no longer has.
@@ -78,8 +81,11 @@ char *GITPRUNE(char *repo, char *live) {
     mv_ctx *ctx = mv_ctx_create();
     char *r = mv_git_prune_gone(ctx, rp(repo), live ? live : "");
     mv_ctx_destroy(ctx);
-    free(r);
-    return "";
+    /* Write the channel even with nothing to say (mv_git#58): an op that
+       leaves it alone is read back as this op's result, so `add` echoed the
+       ids a previous INDEXIDS had left there.  Every op owns the channel for
+       the length of its call. */
+    return emit(repo, r);          /* r is "" when nothing was unstaged */
 }
 
 /* GITSTOCKIDS(repo, ids) — the stock account's VOC ids, so a checkout does not
@@ -116,7 +122,11 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record) {
     mv_git_batch_begin(rp(repo));       /* idempotent */
     mv_git_batch_add(path, record ? record : "",
                      record ? (int64_t)strlen(record) : 0, 1);
-    return "";
+    /* Write the channel even with nothing to say (mv_git#58): an op that
+       leaves it alone is read back as this op's result, so `add` echoed the
+       ids a previous INDEXIDS had left there.  Every op owns the channel for
+       the length of its call. */
+    return emit(repo, NULL);
 }
 
 /* GITSTAGEBLOB(repo, path, content) — stage a raw blob (the open-account
@@ -130,7 +140,11 @@ char *GITSTAGEBLOB(char *repo, char *path, char *content) {
     use = mv_git_sticky_control(rp(repo), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(repo));
     mv_git_batch_add(p, use, ulen, 0);
-    return "";
+    /* Write the channel even with nothing to say (mv_git#58): an op that
+       leaves it alone is read back as this op's result, so `add` echoed the
+       ids a previous INDEXIDS had left there.  Every op owns the channel for
+       the length of its call. */
+    return emit(repo, NULL);
 }
 
 /* GITCOMMIT(repo, msg) — flush the batched index, then commit. */
