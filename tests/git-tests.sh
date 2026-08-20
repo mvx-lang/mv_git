@@ -325,6 +325,23 @@ t  "attr declares an absent file" "1009" "$(GITV "$A" GIT ATTR ORDERS --set modu
 GITV "$A" GIT ADD -A >/dev/null
 t  "declaration survives add -A"  "1009" "$(GITV "$A" GIT ATTR ORDERS)"
 
+# DRIFT.  A resize is local operational tuning: it must NOT show as a diff and
+# must not ride out to other clones as a new default (540c066).  So the editor
+# is the one place the divergence becomes intent — it says the live file no
+# longer matches, and --sync is the explicit answer.
+#
+# The drift is made on `type` rather than `modulo` because every platform can
+# probe which KIND of file something is, while MVX has no modulo to differ
+# about — so the same two assertions run everywhere.
+GITV "$A" GIT ATTR CUST --set type=DIR >/dev/null
+t  "drift reported"      "no longer matches" "$(GITV "$A" GIT ATTR CUST)"
+t  "sync adopts live"    "DIR -> hash"       "$(GITV "$A" GIT ATTR CUST --sync)"
+t  "nothing left to sync" "nothing to sync"  "$(GITV "$A" GIT ATTR CUST --sync)"
+case "$(GITV "$A" GIT ATTR CUST)" in
+  *"no longer matches"*) bad "drift gone after sync" "no drift" "still reported";;
+  *)                     ok "drift gone after sync";;
+esac
+
 # The account scope is the same editor with no file argument.
 GITV "$A" GIT ATTR --set version=2 >/dev/null
 t  "attr sets account version" "2"   "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"

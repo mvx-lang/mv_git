@@ -57,10 +57,11 @@
 *     Every output this program hands to a subroutine starts assigned, so the
 *     runtime has nothing to warn about before the call fills it in.
       FILE = "" ; SETS = "" ; UNSETS = "" ; DEFS = "" ; REPO = "" ; PFX = ""
-      GSRC = "" ; OBJOUT = "" ; HASSET = 0 ; HASUNSET = 0
+      GSRC = "" ; OBJOUT = "" ; HASSET = 0 ; HASUNSET = 0 ; HASSYNC = 0
       CALL GIT.CMD.ARG(1, FILE)
       CALL GIT.CMD.HAS("set", HASSET)     ; CALL GIT.CMD.VAL("set", SETS)
       CALL GIT.CMD.HAS("unset", HASUNSET) ; CALL GIT.CMD.VAL("unset", UNSETS)
+      CALL GIT.CMD.HAS("sync", HASSYNC)
       IF NOT(HASSET) THEN SETS = ""
       IF NOT(HASUNSET) THEN UNSETS = ""
       IF FILE = "" THEN SCOPE = "ACCOUNT" ELSE SCOPE = "FILE"
@@ -112,6 +113,30 @@
             GOSUB REPORT
             NCHG += 1
          NEXT UI
+      END
+*     ---- adopt the live geometry -------------------------------------------
+*
+*     A RESIZE IS NOT A CHANGE TO WHAT IS VERSIONED.  Resizing a live file is
+*     local operational tuning, so it deliberately does not show as a diff and
+*     does not ride out to other clones as a new default (540c066).  But the
+*     divergence is worth KNOWING about, and this is the one place it can become
+*     intent: --sync takes the live values as an edit, which then shows in
+*     status and is committed like any other.
+      IF HASSYNC THEN
+         GOSUB DRIFT
+         IF DN = 0 THEN
+            PRINT "nothing to sync - the live file matches what is recorded"
+            RETURN
+         END
+         FOR SYI = 1 TO DN
+            SK = DKEYS<SYI> ; SV = DLIVE<SYI>
+            GOSUB EDITABLE
+            IF NOT(OKED) THEN RETURN
+            OLDV = DREC<SYI>
+            AK = SK ; AV = SV ; GOSUB PUTATTR
+            GOSUB REPORT
+            NCHG += 1
+         NEXT SYI
       END
 *     ---- nothing asked for: just say what is recorded ----------------------
       IF NCHG = 0 THEN
@@ -381,7 +406,11 @@ CLASSGET:
          END
          RETURN
       END
-      CL = TRIM(SRC<1>)
+      CLIN = SRC<1>
+*     One parser for the recorded class and for the live one, so the drift check
+*     cannot decide a file has diverged because two readers disagreed.
+CLASSPARSE:
+      CL = TRIM(CLIN)
       CTOK = OCONV(TRIM(FIELD(CL, " ", 1)), "MCU")
       IF CTOK = "DIR" THEN
 *        A directory file has neither a modulo nor a dynamic/static form.
@@ -429,6 +458,46 @@ CLASSPUT:
       RETURN
 *
 *     ---- output -----------------------------------------------------------
+*     ---- drift: the live file against what is recorded ---------------------
+*
+*     Only where something IS recorded.  An unrecorded parameter is not a
+*     divergence, it is simply unrecorded — comparing against it would report
+*     every untouched file as drifted and the signal would be worthless.
+*
+*     And only what this platform can actually probe: on MVX that is the KIND of
+*     file and nothing else, because an LMDB-backed file has no modulo to differ
+*     about.
+DRIFT:
+      DN = 0 ; DKEYS = "" ; DLIVE = "" ; DREC = ""
+      IF SCOPE # "FILE" THEN RETURN
+      IF NATIVECTL THEN RETURN
+      LCTL = ""
+      CALL GIT.FILECLASS(FILE, LCTL)
+      IF LCTL = "" THEN RETURN
+      DPROBE = "type" : AM : "modulo" : AM : "dynamic"
+      FOR DRI = 1 TO 3
+         AK = DPROBE<DRI> ; GOSUB GETATTR ; RECV = AV
+         IF RECV # "" THEN
+            CLIN = LCTL ; AK = DPROBE<DRI> ; AV = "" ; GOSUB CLASSPARSE
+            IF AV # "" AND AV # RECV THEN
+               DN += 1
+               DKEYS<DN> = DPROBE<DRI> ; DLIVE<DN> = AV ; DREC<DN> = RECV
+            END
+         END
+      NEXT DRI
+      RETURN
+*
+DRIFTSAY:
+      IF DN = 0 THEN RETURN
+      PRINT "the live file no longer matches what is recorded:"
+      FOR DSI = 1 TO DN
+         PADS = DKEYS<DSI> ; PADW = 12 ; GOSUB PAD
+         PRINT "  " : PADS : DREC<DSI> : " recorded, " : DLIVE<DSI> : " live"
+      NEXT DSI
+      PRINT "a resize is local tuning, not a change to what is versioned;"
+      PRINT "GIT ATTR " : FILE : " --sync makes it one"
+      RETURN
+*
 LIST:
       GOSUB HEADING
       FOR DI = 1 TO NDEFS
@@ -442,6 +511,8 @@ LIST:
          PADS = AK ; PADW = 12 ; GOSUB PAD
          PRINT "  " : PADS : SHOW : NOTE
       NEXT DI
+      GOSUB DRIFT
+      GOSUB DRIFTSAY
       RETURN
 *
 HEADING:
