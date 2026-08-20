@@ -78,6 +78,22 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
    controls (.mv-account, <file>.DICT/%FILE%) that have no backing record. */
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content);
+/* Stage a control blob VERBATIM, with no stickiness — the attribute editor's
+   way in (mv_git#15).  Everything else stages through mv_git_stageblob and
+   keeps the recorded geometry; this is the one path meant to change it, which
+   is why deliberately changing a shipped default is a command and not a side
+   effect of resizing a file. */
+char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
+                      const char *content);
+/* The STAGED content of `path` (the index, not HEAD), marks restored.  An
+   editor must build on the edit before it, not on the last commit. */
+char *mv_git_ixcat(mv_ctx *ctx, const char *repo, const char *path);
+/* …with the true byte length, for the same reason CAT has one: a staged blob is
+   arbitrary bytes and strlen would truncate it at the first NUL. */
+char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
+                       int64_t *outlen);
+/* What the index holds that HEAD does not: "<status>  <path>" per delta. */
+char *mv_git_staged(mv_ctx *ctx, const char *repo);
 
 /* Render the canonical portable `.mv-account` descriptor for an account with the
    given identity and default hash backend into `out`; returns its length.  One

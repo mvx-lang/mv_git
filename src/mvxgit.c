@@ -2750,6 +2750,79 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* GITIXCAT(repo, path, out) — the STAGED content of blob `path`: the index, not
+   HEAD, with attribute marks restored the way GITCAT does.  "" when the index
+   has no such path.
+
+   The attribute editor has to read what it is about to edit, and for an
+   attribute set that is the INDEX.  HEAD is only what was last committed, so a
+   second `GIT ATTR --set` before a commit read from HEAD would build on the
+   commit rather than on the first edit — and every edit but the last would
+   disappear with no sign that it had. */
+void mvx_sub_GITIXCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], path[700];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+    const git_index_entry *e = git_index_get_bypath(index, path, 0);
+    git_blob *blob = NULL;
+    if (e && git_blob_lookup(&blob, repo, &e->id) == 0) {
+        const char *cp = git_blob_rawcontent(blob);
+        int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        mv_set_str(argv[2], r, rl);
+        free(r);
+        git_blob_free(blob);
+    } else {
+        mv_set_str(argv[2], "", 0);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+}
+
+/* GITSTAGED(repo, out) — what the index holds that HEAD does not, one
+   "<status>  <path>" line per delta: the same first-column form the C status
+   already prints for its staged section.
+
+   The session platforms' status walks HEAD's paths and compares each with the
+   live record, which can see a record change or a record vanish but can never
+   see the INDEX.  Anything staged with no backing record to compare against — a
+   %FILE% control, the account descriptor — was therefore invisible there and
+   visible on MVX, for the same repository.  This is the arm that closes that. */
+void mvx_sub_GITSTAGED(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
+    git_tree *ht = head_tree(repo);
+    sbuf s = {0, 0, 0};
+    git_diff *sd = NULL;
+    if (git_diff_tree_to_index(&sd, repo, ht, index, NULL) == 0) {
+        size_t n = git_diff_num_deltas(sd);
+        for (size_t i = 0; i < n; i++) {
+            const git_diff_delta *d = git_diff_get_delta(sd, i);
+            char line[700];
+            snprintf(line, sizeof line, "%c  %s",
+                     git_diff_status_char(d->status), d->new_file.path);
+            sb_line(&s, line);
+        }
+        git_diff_free(sd);
+    }
+    if (ht) git_tree_free(ht);
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&s, argv[1], "");
+}
+
 /* Write one tracked subtree's records back into its MVX file, deleting
    records absent from the tree. */
 /* Map a %FILE% control's content — the open form DIR/hash, or a native
@@ -4053,6 +4126,50 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     mv_set_str(argv[3], out, (int64_t)strlen(out));
 }
 
+/* GITSTAGECTL(repo, path, content, out) — stage a control blob VERBATIM, with
+   no stickiness.
+
+   Staging a %FILE% normally goes through mv_git_sticky_control, which puts the
+   recorded geometry back: a resize is local operational tuning and must not
+   become a commit, and must not ride out to other clones as a new default.  The
+   attribute editor is the one place that rule is meant to yield — it exists
+   precisely so that changing a shipped default is a deliberate act rather than
+   a side effect — so it needs a way in that sticky does not undo.  That is this
+   op, and it is the ONLY caller: everything else still stages through
+   GITSTAGEBLOB and stays sticky.
+
+   Straight to the index rather than into the batch, so the edit is on disk when
+   the command returns and the next GITIXCAT reads it back. */
+void mvx_sub_GITSTAGECTL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], path[700];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    const char *content;
+    char nb[40];
+    int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
+    git_oid boid;
+    if (git_blob_create_from_buffer(&boid, repo, content, (size_t)clen) == 0) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = path;
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = boid;
+        git_index_add(index, &e);
+        git_index_write(index);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    char out[700];
+    snprintf(out, sizeof out, "staged %s", path);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
+}
+
 /* Batched staging for bulk in-session use (the UniData GIT verb via CallC):
    open the repository and index once, accumulate blobs in memory across many
    mv_git_batch_add calls, and write the index once at mv_git_batch_end — O(n),
@@ -4213,6 +4330,24 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
 }
+char *mv_git_ixcat(mv_ctx *ctx, const char *repo, const char *path) {
+    const char *a[] = {repo, path};
+    return run_sub(mvx_sub_GITIXCAT, ctx, a, 2);
+}
+char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
+                       int64_t *outlen) {
+    const char *a[] = {repo, path};
+    return run_sub_len(mvx_sub_GITIXCAT, ctx, a, 2, outlen);
+}
+char *mv_git_staged(mv_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITSTAGED, ctx, a, 1);
+}
+char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
+                      const char *content) {
+    const char *a[] = {repo, path, content};
+    return run_sub(mvx_sub_GITSTAGECTL, ctx, a, 3);
+}
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content) {
     const char *a[] = {repo, path, content};
@@ -4221,6 +4356,37 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
 
 /* See mvxgit.h: keep an already-committed %FILE% control instead of the live
    file's current geometry. */
+/* The control STAGED for `base` (the index's <base>.DICT/%FILE%) into out[cap];
+   its length, or -1 when the index has no entry for it. */
+static int staged_control(const char *repo, const char *base,
+                          char *out, size_t cap) {
+    if (cap) out[0] = '\0';
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, repo) != 0) return -1;   /* never create here */
+    git_index *ix = NULL;
+    int n = -1;
+    if (git_repository_index(&ix, r) == 0) {
+        char path[600];
+        snprintf(path, sizeof path, "%s.DICT/%%FILE%%", base);
+        const git_index_entry *e = git_index_get_bypath(ix, path, 0);
+        git_blob *b = NULL;
+        if (e && git_blob_lookup(&b, r, &e->id) == 0) {
+            const char *c = git_blob_rawcontent(b);
+            int64_t cl = (int64_t)git_blob_rawsize(b);
+            if (cl >= 0 && (size_t)cl < cap) {
+                memcpy(out, c, (size_t)cl);
+                out[cl] = '\0';
+                n = (int)cl;
+            }
+            git_blob_free(b);
+        }
+        git_index_free(ix);
+    }
+    git_repository_free(r);
+    return n;
+}
+
 const char *mv_git_sticky_control(const char *repo, const char *path,
                                   const char *content, int64_t *len,
                                   char *keep, size_t cap) {
@@ -4232,7 +4398,15 @@ const char *mv_git_sticky_control(const char *repo, const char *path,
     if (strncmp(content, "hash", 4) != 0) return content;   /* DIR has no size */
     char base[512];
     snprintf(base, sizeof base, "%.*s", (int)(plen - sl), path);
-    if (mv_git_committed_control(repo, base, keep, cap) < 0) return content;
+    /* THE INDEX FIRST, THEN HEAD.  What git knows about this file's geometry is
+       what is staged; HEAD is only the last thing committed.  Consulting HEAD
+       alone let a plain `add -A` between an attribute edit and its commit put
+       the committed geometry back over the edit — the edit would vanish before
+       it was ever committed, and status would go clean as if it had landed.
+       It also settles a file whose geometry is staged but not yet committed:
+       once git has learned it, it stops moving. */
+    if (staged_control(repo, base, keep, cap) < 0 &&
+        mv_git_committed_control(repo, base, keep, cap) < 0) return content;
     if (strncmp(keep, "hash", 4) != 0) return content;
     if (len) *len = (int64_t)strlen(keep);
     return keep;

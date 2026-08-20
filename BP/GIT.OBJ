@@ -31,8 +31,11 @@
 *             in-process bridge to use.  The frame carries an explicit length, so
 *             the result comes back inline and needs no side-channel file.
 *
-* MVX never gets here: its handlers call the engine directly, since the engine
-* IS its runtime and reads the records itself.
+* MVX mostly does not get here: its heavy handlers call the engine directly,
+* since the engine IS its runtime and reads the records itself.  It has an arm
+* below all the same, carrying the few opcodes a verb written ONCE for all three
+* platforms needs — GIT ATTR is the first of them, and one BASIC body doing the
+* same work everywhere is only possible if this seam exists everywhere.
 *
 * `out` is the operation's output — @AM-separated engine text, or raw record
 * content for CAT.  Staging ops produce none.
@@ -43,6 +46,26 @@
       SUBROUTINE GIT.OBJ(OP, NARGS, A1, A2, A3, A4, A5, OUT)
       $INCLUDE BP.INC PLATFORM.H
       OUT = ""
+*
+      $IFDEF MVX
+*     ---- MVX: the engine is in this process --------------------------------
+*     Only the ops a shared BASIC body needs; anything else is refused BY NAME
+*     rather than quietly answering "", because an op that silently produced
+*     nothing here would read as an empty attribute set rather than as a bug.
+      BEGIN CASE
+      CASE OP = "CAT"      ; CALL GITCAT(A1, A2, OUT)
+      CASE OP = "IXCAT"    ; CALL GITIXCAT(A1, A2, OUT)
+      CASE OP = "STAGED"   ; CALL GITSTAGED(A1, OUT)
+      CASE OP = "FILES"    ; CALL GITFILES(A1, OUT)
+*     Staging ops produce no output, here as everywhere else.
+      CASE OP = "STAGECTL"
+         CALL GITSTAGECTL(A1, A2, A3, SOUT)
+         OUT = ""
+      CASE 1
+         OUT = "GIT: unknown git-object operation '" : OP : "'"
+      END CASE
+      RETURN
+      $ENDIF
 *
       $IFDEF UV
 *     ---- UniVerse: the background process ---------------------------------
@@ -132,11 +155,16 @@
       CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
       CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)
       CASE OP = "STAGEBLOB"  ; R = CALLC GITSTAGEBLOB(REPO, A2, A3)
+      CASE OP = "STAGECTL"   ; R = CALLC GITSTAGECTL(REPO, A2, A3)
+      CASE OP = "STAGED"     ; R = CALLC GITSTAGED(REPO)
       CASE OP = "COMMIT"     ; R = CALLC GITCOMMIT(REPO, A2)
       CASE OP = "LOG"        ; R = CALLC GITLOG(REPO, A2)
       CASE OP = "BRANCH"     ; R = CALLC GITBRANCH(REPO, A2)
       CASE OP = "FILES"      ; R = CALLC GITFILES(REPO)
       CASE OP = "CAT"        ; R = CALLC GITCAT(REPO, A2) ; ISCAT = 1
+*     IXCAT answers through the same side channel as CAT, and for the same
+*     reason: what comes back is blob content, not a message.
+      CASE OP = "IXCAT"      ; R = CALLC GITIXCAT(REPO, A2) ; ISCAT = 1
       CASE OP = "SHOW"       ; R = CALLC GITSHOW(REPO, A2, A3)
       CASE OP = "RM"         ; R = CALLC GITRM(REPO, A2, A3)
       CASE OP = "MERGE"      ; R = CALLC GITMERGE(REPO, A2)

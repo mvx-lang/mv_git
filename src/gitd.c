@@ -315,6 +315,29 @@ static opres op_stageblob(const args *g) {
     return ok(NULL);
 }
 
+/* STAGECTL(repo, path, content) — a control blob staged VERBATIM: the attribute
+   editor's way past mv_git_sticky_control, which is what keeps a resize from
+   becoming a commit everywhere else (mv_git#15).  The batch is flushed first so
+   a pending add cannot land on top of the edit afterwards. */
+static opres op_stagectl(const args *g) {
+    mv_ctx *ctx = mv_ctx_create();
+    mv_git_batch_end();
+    char *r = mv_git_stagectl(ctx, rp(A(g, 0)), A(g, 1), A(g, 2));
+    mv_ctx_destroy(ctx);
+    return ok(r);
+}
+
+/* IXCAT(repo, path) — the STAGED blob, which like CAT is arbitrary bytes and
+   carries its own length rather than being measured with strlen. */
+static opres op_ixcat(const args *g) {
+    mv_ctx *ctx = mv_ctx_create();
+    mv_git_batch_end();               /* read what this session has staged */
+    int64_t n = 0;
+    char *r = mv_git_ixcat_len(ctx, rp(A(g, 0)), A(g, 1), &n);
+    mv_ctx_destroy(ctx);
+    return ok_n(r, (long)n);
+}
+
 static opres op_commit(const args *g) {
     mv_git_batch_end();                   /* flush the accumulated index */
     mv_ctx *ctx = mv_ctx_create();
@@ -336,6 +359,7 @@ BRIDGE1(op_indexids,   mv_git_index_ids(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_log,        mv_git_log(ctx, rp(A(g,0)), A(g,1)[0] ? A(g,1) : "20"))
 BRIDGE1(op_branch,     mv_git_branch(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
+BRIDGE1(op_staged,     mv_git_staged(ctx, rp(A(g,0))))
 /* CAT returns committed record content, which is arbitrary bytes and may
    contain NULs — so it must carry an explicit length rather than be measured
    with strlen, or a binary record comes back truncated. */
@@ -374,6 +398,9 @@ static const struct {
     { "INIT",        1, op_init       },
     { "STAGE",       4, op_stage      },
     { "STAGEBLOB",   3, op_stageblob  },
+    { "STAGECTL",    3, op_stagectl   },
+    { "IXCAT",       2, op_ixcat      },
+    { "STAGED",      1, op_staged     },
     { "COMMIT",      2, op_commit     },
     { "STATUS",      1, op_status     },
     { "PRUNE",       2, op_prune      },

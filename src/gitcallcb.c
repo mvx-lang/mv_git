@@ -147,6 +147,47 @@ char *GITSTAGEBLOB(char *repo, char *path, char *content) {
     return emit(repo, NULL);
 }
 
+/* GITSTAGECTL(repo, path, content) — stage a control blob VERBATIM.
+   GITSTAGEBLOB puts the recorded geometry back through mv_git_sticky_control,
+   which is what stops a resize becoming a commit; the attribute editor is the
+   one place that is meant to yield, so it has its own way in (mv_git#15).  The
+   batch is ended first, so a pending add cannot be written over the edit. */
+char *GITSTAGECTL(char *repo, char *path, char *content) {
+    mv_git_batch_end();
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_stagectl(ctx, rp(repo), path ? path : "",
+                              content ? content : "");
+    mv_ctx_destroy(ctx);
+    free(r);
+    return emit(repo, NULL);
+}
+
+/* GITIXCAT(repo, path) — the STAGED blob at `path` (the index, not HEAD),
+   written to <repo>/gitcat like GITCAT: an editor has to build on the edit
+   before it rather than on the last commit. */
+char *GITIXCAT(char *repo, char *path) {
+    mv_git_batch_end();               /* read what this session has staged */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_ixcat(ctx, rp(repo), path ? path : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}
+
+/* GITSTAGED(repo) — what the index holds that HEAD does not, so the in-session
+   status can report a staged edit the way the C status already does. */
+char *GITSTAGED(char *repo) {
+    mv_git_batch_end();
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_staged(ctx, rp(repo));
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITCOMMIT(repo, msg) — flush the batched index, then commit. */
 char *GITCOMMIT(char *repo, char *msg) {
     mv_git_batch_end();                 /* write the accumulated index to disk */
