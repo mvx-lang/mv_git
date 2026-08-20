@@ -84,6 +84,41 @@
       OSWRITE EMPTY ON REPO : "/gitmsg" ELSE NULL
       OSWRITE EMPTY ON REPO : "/gitcat" ELSE NULL
       BEGIN CASE
+*     STOCKPREP — tell the engine which VOC records belong to the SYSTEM, so a
+*     checkout does not delete them (mv_git#46).
+*
+*     It is done here, in BASIC, because in a session the engine cannot read
+*     records at all: the licence guard stops it opening a second session into
+*     the account it is already inside (mv_git#54).  BASIC has the session, so
+*     BASIC fetches the list.  The CLI, which does have record access, builds a
+*     fuller <oid> <id> baseline for itself; both feed the same table.
+*
+*     UniData needs nothing stood up — newacct copies $UDTHOME/sys/VOC into a
+*     new account verbatim, so the master IS the stock account.  It cannot be
+*     opened by path, so a temporary VOC F-pointer makes it an ordinary file,
+*     and it is removed again immediately.
+      CASE OP = "STOCKPREP"
+         R = ""
+*        Already inside the UDT branch — a nested $IFDEF would close it early.
+         UH = GETENV("UDTHOME")
+         IF UH # "" THEN
+            OPEN "VOC" TO SVOC THEN
+               SP = ""
+               SP<1> = "F"
+               SP<2> = UH : "/sys/VOC"
+               SP<3> = UH : "/sys/D_VOC"
+               WRITE SP ON SVOC, "%GITSTOCK%"
+               OPEN "%GITSTOCK%" TO SSTK THEN
+                  IDS = ""
+                  SELECT SSTK TO 7
+                  LOOP WHILE READNEXT SID FROM 7 DO
+                     IDS := SID : CHAR(254)
+                  REPEAT
+                  R = CALLC GITSTOCKIDS(REPO, IDS)
+               END
+               DELETE SVOC, "%GITSTOCK%"
+            END
+         END
 *     FLUSH is REAL here now.  It was a no-op, with a note wondering whether
 *     UniData needed it; measured on 8.3, it does, for exactly the reason the
 *     note guessed — GIT ADD and GIT COMMIT are separate processes, so a batch
@@ -92,6 +127,7 @@
       CASE OP = "FLUSH"      ; R = CALLC GITFLUSH(REPO)
       CASE OP = "PRUNE"      ; R = CALLC GITPRUNE(REPO, A2)
       CASE OP = "INDEXIDS"   ; R = CALLC GITINDEXIDS(REPO, A2)
+      CASE OP = "STOCKIDS"   ; R = CALLC GITSTOCKIDS(REPO, A2)
       CASE OP = "PING"       ; R = CALLC GITPING(REPO)
       CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
       CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)

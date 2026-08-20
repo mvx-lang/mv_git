@@ -41,6 +41,7 @@
 #include <time.h>
 #include <strings.h>      /* strcasecmp / strncasecmp */
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* --- helpers ----------------------------------------------------------- */
 
@@ -463,6 +464,53 @@ void mv_git_set_stock(const char *path) {
     snprintf(g_stock_path, sizeof g_stock_path, "%s", path ? path : "");
 }
 
+/* The baseline as IDS ALONE, handed over by BASIC.
+ *
+ * In a session the engine cannot read records at all — that is the licence
+ * guard (-DMVXGIT_INSESSION, mv_git#54): a record primitive here would open a
+ * SECOND session into the account we are already inside.  So in-session it
+ * cannot build the baseline itself, and without one a checkout treats every
+ * stock VOC record as "extra" and DELETES it — a pull silently stripping the
+ * destination's own VOC, CT and all.
+ *
+ * Ids are enough for that job.  Deletion asks `is_stock_id`, which never looks
+ * at content, and ids are plain ASCII — so the whole baseline is one call
+ * instead of a per-record protocol.  BASIC can reach the master VOC (GIT.ADD
+ * already does, through a temporary F-pointer) and hands the list over here.
+ *
+ * Content-sensitive callers keep working the way they already do: in-session
+ * `add` compares against the live master in BASIC, and the CLI builds the full
+ * <oid> <id> file. */
+void mv_git_stock_ids(const char *ids) {
+    free(g_stock);
+    g_stock = NULL;
+    g_stock_n = g_stock_cap = 0;
+    g_stock_path[0] = '\0';
+    g_stock_loaded = 1;                 /* supplied, so never load a file over it */
+    if (!ids) return;
+    const char *p = ids;
+    while (*p) {
+        const char *e = p;
+        while (*e && (unsigned char)*e != 0xFE && *e != '\n') e++;
+        if (e > p) {
+            if (g_stock_n >= g_stock_cap) {
+                g_stock_cap = g_stock_cap ? g_stock_cap * 2 : 1024;
+                stock_rec *ns = realloc(g_stock, (size_t)g_stock_cap * sizeof *ns);
+                if (!ns) return;
+                g_stock = ns;
+            }
+            g_stock[g_stock_n].oid[0] = '\0';
+            int n = (int)(e - p);
+            if (n > 255) n = 255;
+            memcpy(g_stock[g_stock_n].id, p, (size_t)n);
+            g_stock[g_stock_n].id[n] = '\0';
+            g_stock_n++;
+        }
+        if (!*e) break;
+        p = e + 1;
+    }
+}
+
 static void stock_load(void) {
     if (g_stock_loaded) return;
     g_stock_loaded = 1;
@@ -517,6 +565,113 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
             return 1;
     return 0;
 }
+
+#if defined(MVXGIT_UDT)
+/* UniData supplies its baseline as a FILE, so nothing has to be stood up.
+ *
+ * `newacct` copies the master VOC into the new account verbatim — its own
+ * strings say `cp %ssys/VOC` / "cp MASTERVOC to VOC" — so $UDTHOME/sys/VOC IS
+ * the stock account's VOC, exact for the release actually running.  Measured on
+ * 8.3: a fresh account's 617 VOC records match the master with ZERO content
+ * differences, leaving 7 records that are genuinely the account's own.
+ *
+ * Reaching it needs no new machinery.  UniData has no OPENPATH and will not
+ * open a hash file by path, but a VOC F-pointer makes any path an ordinary file
+ * to OPEN — and WRITE/OPEN/SELECT/READNEXT/READ/DELETE are already the record
+ * contract, so this works identically for the CLI (agent_rt.c) and the
+ * in-session verb (udtgit_rt.c) with one implementation.  The pointer is
+ * removed again immediately; it exists only for the length of the scan.
+ *
+ * Contrast UniVerse, where the template is per FLAVOUR and not readable as a
+ * file, so uv-git stands up a throwaway account instead (build_stock).  Same
+ * baseline, same file format, different way of getting there — which is why the
+ * engine takes a supplied file rather than knowing about either. */
+#define STOCK_PTR "%GITSTOCK%"
+
+static int stock_build_udt(mv_ctx *ctx, const char *master, const char *mdict,
+                           const char *out) {
+    mv_value voc, ptr, id, rec, stk;
+    mv_init(&voc); mv_init(&ptr); mv_init(&id); mv_init(&rec); mv_init(&stk);
+    int n = -1;
+    if (!open_named(ctx, "VOC", &voc)) goto done;
+
+    char body[9000];
+    int bl = snprintf(body, sizeof body, "F%c%s%c%s", 0xFE, master, 0xFE, mdict);
+    mv_set_str(&rec, body, (int64_t)bl);
+    mv_set_str(&id, STOCK_PTR, (int64_t)strlen(STOCK_PTR));
+    if (!mv_write(ctx, &rec, &voc, &id, 0, 0)) goto done;
+
+    if (open_named(ctx, STOCK_PTR, &stk)) {
+        FILE *f = fopen(out, "w");
+        if (f) {
+            fprintf(f, "# stock VOC for this UniData release — generated here,\n"
+                       "# never committed: it belongs to %s (mv_git#46).\n",
+                    master);
+            n = 0;
+            mv_select(ctx, &stk);
+            while (mv_readnext(ctx, &id)) {
+                if (!mv_read(ctx, &rec, &stk, &id, 0)) continue;
+                const char *cp;
+                char nb[40];
+                int64_t cl = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                git_oid oid;
+                if (record_oid(cp, cl, &oid) != 0) continue;
+                char hex[GIT_OID_HEXSZ + 1];
+                git_oid_fmt(hex, &oid);
+                hex[GIT_OID_HEXSZ] = '\0';
+                char sid[256];
+                arg_str(&id, sid, sizeof sid);
+                fprintf(f, "%s %s\n", hex, sid);
+                n++;
+            }
+            fclose(f);
+        }
+    }
+    /* Always, including on every failure above: a stray pointer would be
+       committed as if it were the account's own record. */
+    mv_set_str(&id, STOCK_PTR, (int64_t)strlen(STOCK_PTR));
+    mv_delete_rec(ctx, &voc, &id);
+done:
+    mv_clear(&voc); mv_clear(&ptr); mv_clear(&id); mv_clear(&rec); mv_clear(&stk);
+    return n;
+}
+
+/* Point the engine at this clone's baseline, building it the first time.  Once
+   per process, and cached per clone beside git's own local-only state. */
+static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
+    static int done;
+    if (done || g_stock_path[0]) return;
+    done = 1;
+    const char *home = getenv("UDTHOME");
+    if (!home || !home[0]) return;
+    char master[4096], mdict[4096];
+    snprintf(master, sizeof master, "%s/sys/VOC", home);
+    snprintf(mdict, sizeof mdict, "%s/sys/D_VOC", home);
+    if (access(master, R_OK) != 0) return;
+
+    git_repository *r = NULL;
+    if (git_repository_open(&r, rp) != 0) return;
+    char dir[4096], path[4300];
+    snprintf(dir, sizeof dir, "%smvgit", git_repository_path(r));
+    git_repository_free(r);
+    mkdir(dir, 0700);
+    snprintf(path, sizeof path, "%s/stock-udt", dir);
+
+    if (access(path, R_OK) != 0) {
+        fprintf(stderr, "git: learning what a stock UniData account holds "
+                        "(once per clone)\n");
+        if (stock_build_udt(ctx, master, mdict, path) < 0) {
+            unlink(path);
+            fprintf(stderr, "git: could not read %s; commits will carry the "
+                            "system's own VOC records (mv_git#46)\n", master);
+            return;
+        }
+    }
+    mv_git_set_stock(path);
+}
+#else
+#define stock_ensure_udt(ctx, rp) ((void)0)
+#endif
 
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
@@ -1376,6 +1531,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
+    stock_ensure_udt(ctx, rp);          /* subtract the system's own VOC (#46) */
     const char *acct = getenv("MVXACCOUNT");
     if (!acct || !acct[0]) acct = ".";
     int64_t nfiles = 0;
@@ -1992,6 +2148,9 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     openaccount_sync(rp);
+    /* status must apply exactly what add applies, or a record add never stages
+       reads as untracked forever. */
+    stock_ensure_udt(ctx, rp);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
@@ -2888,6 +3047,11 @@ static git_tree *account_subtree(git_repository *repo, git_tree *root) {
 static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
                                git_tree *tree, int strict,
                                int64_t *nw, int64_t *nd) {
+    /* Every materialisation needs the stock baseline, not just `checkout`:
+       a clone and a pull remove records the tree does not carry, and the stock
+       ones it deliberately never carried must survive that.  Idempotent and
+       once per process, so calling it on the common path is free. */
+    stock_ensure_udt(ctx, git_repository_workdir(repo));
     /* Below a repository root, this account's files live in its own subtree. */
     git_tree *owned = NULL;
     if (g_prefix[0]) {
@@ -3172,6 +3336,12 @@ void mvx_sub_GITCHECKOUT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096], name[256];
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], name, sizeof name);
+    /* The baseline is needed to CHECK OUT as much as to add: records the commit
+       does not carry because they are stock must not then be deleted as
+       "extra".  Without it a clone strips the destination's own VOC — the
+       symptom is a stock verb like CT vanishing from a freshly cloned
+       account. */
+    stock_ensure_udt(ctx, rp);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
     git_reference *br = NULL;

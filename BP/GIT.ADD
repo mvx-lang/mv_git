@@ -13,6 +13,10 @@
 *  */
 SUBROUTINE GIT.ADD
       $INCLUDE BP.INC PLATFORM.H
+*     The stock-account baseline (mv_git#46); STOCKID is the temporary VOC
+*     pointer STOCKOPEN lays down and STOCKCLOSE takes away again.
+      STKOK = 0
+      STOCKID = "%GITSTOCK%"
 * The include is REQUIRED now, and was not before: the two-way $IFDEF MVX /
 * $ELSE / $ENDIF runs its $ELSE arm whether or not any define is in scope, so
 * this file worked without ever including PLATFORM.H.  Inlining keeps that shape
@@ -219,11 +223,23 @@ STAGEDATA:
       IF BLANKET THEN NSKIP += 1 ELSE PRINT "GIT: cannot open " : FILE
       RETURN
    END
+   IF BLANKET AND ISVOC THEN GOSUB STOCKOPEN
    SELECT DF
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DF, RID THEN
          DROP = 0
          IF SKIPOBJ AND INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
+*        The account did not write this record; the system did.  A record
+*        identical to the one a fresh account holds is furniture, not content
+*        (mv_git#46) -- and it is compared BY CONTENT, so a stock verb this
+*        account has EDITED differs and still travels.  Wholesale adds only:
+*        naming a record stages it, the rule every other exclusion follows.
+         IF RID = STOCKID THEN DROP = 1
+         IF STKOK AND NOT(DROP) THEN
+            READ SREC FROM STKF, RID THEN
+               IF SREC = RREC THEN DROP = 1
+            END
+         END
          IF OPENFMT AND ISVOC THEN
             RT = RREC<1>
             IF RT="V" OR RT="K" THEN DROP = 1
@@ -236,6 +252,46 @@ STAGEDATA:
          END
       END
    REPEAT
+   GOSUB STOCKCLOSE
+*  DRAIN WHAT WE OPENED.  A select list left behind is not inert on UniData:
+*  ECL feeds what remains of it to the NEXT command as stacked input, so the
+*  leftover ids appear as output and the command after this one — typically the
+*  COMMIT — is swallowed by them and never runs (mv_git#58).  A loop that ends
+*  early leaves a list, so clearing is the only reliable point, not the loop.
+$IFNDEF MVX
+   CLEARSELECT
+$ENDIF
+   RETURN
+*  What a fresh account of this release holds, so it can be subtracted (#46).
+*
+*  UniData needs nothing stood up: `newacct` copies $UDTHOME/sys/VOC into the
+*  new account verbatim, so the master IS the baseline, exact for the release
+*  running.  UniData will not open a hash file by path and has no OPENPATH, but
+*  a VOC F-pointer makes any path an ordinary file to OPEN.  The pointer is
+*  written into the very file being scanned, so it is dropped by id above, and
+*  removed again as soon as the scan ends.
+*
+*  Left alone on other platforms: UniVerse's template is per FLAVOUR and not a
+*  readable file, so uv-git supplies the baseline to the engine instead.
+STOCKOPEN:
+   STKOK = 0
+$IFDEF UDT
+      UH = GETENV("UDTHOME")
+      IF UH # "" THEN
+         SP = ""
+         SP<1> = "F"
+         SP<2> = UH : "/sys/VOC"
+         SP<3> = UH : "/sys/D_VOC"
+         WRITE SP ON VOCF, STOCKID
+         OPEN STOCKID TO STKF THEN STKOK = 1
+      END
+$ENDIF
+   RETURN
+STOCKCLOSE:
+   IF STKOK THEN
+      DELETE VOCF, STOCKID
+      STKOK = 0
+   END
    RETURN
 *  Unstage every id git holds for RCFILE that the account no longer has.  The
 *  engine says what it has (INDEXIDS) and we say what still READs — neither side

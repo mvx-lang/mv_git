@@ -13,6 +13,11 @@
 * (#11) and, if any, prompt to rebuild.
 SUBROUTINE GITUDT.CHECKOUT(REPO)
 $IFNDEF MVX
+*     Which VOC records are the SYSTEM's, so the delete-extras pass below does
+*     not remove the ones the commit deliberately never carried (mv_git#46).
+*     Without this a pull strips the destination account's own VOC — the
+*     symptom is a stock verb such as CT vanishing after a clone or pull.
+      CALL GIT.OBJ("STOCKPREP", 1, REPO, "", "", "", "", SPOUT)
    AM = CHAR(254) ; LF = CHAR(10)
    NREST = 0 ; NFC = 0 ; NDEL = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
    IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)

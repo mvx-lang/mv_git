@@ -27,3 +27,4 @@ AGOPEN:string:2:string,string
 AGREAD:string:2:string,string
 AGWRITE:string:1:string
 AGCLOSE:string:1:string
+GITSTOCKIDS:string:2:string,string
