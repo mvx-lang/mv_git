@@ -437,26 +437,41 @@ static int adopt(int argc, char **argv, int i) {
                             "flavour '%s'; asking instead\n", have);
     }
 
-    if (fi < 0 && already) {
-        /* The account exists, so nothing is about to be created with the wrong
-           flavour — and UniVerse cannot be asked what it was.  Say so rather
-           than record a guess in the descriptor. */
-        fprintf(stderr, "uv-git adopt: this is already a UniVerse account and "
-                        "its flavour cannot be read back;\n"
-                        "        pass --flavour=<name> to record it in the "
-                        "descriptor.\n");
-    } else if (fi < 0) {
+    if (fi < 0) {
+        /* ASK, in both cases.  UniVerse itself asks when an account is created,
+           so asking is the established way to learn this — and an account that
+           nobody ever told is exactly the case that cannot be recovered any
+           other way (mv_git#15).  Answering for an EXISTING account records
+           what it was created as; nothing here can verify that, which is why
+           the wording asks the operator to say rather than implying we know. */
         char line[64];
-        fprintf(stderr,
-            "This repository does not say which VOC flavour the account needs,\n"
-            "and UniVerse cannot be asked afterwards: the flavour is fixed when\n"
-            "the account is created and is not recorded anywhere readable.\n\n");
+        if (already)
+            fprintf(stderr,
+                "This is already a UniVerse account, and UniVerse cannot report\n"
+                "which VOC flavour it was created with — the flavour is fixed at\n"
+                "creation and recorded nowhere readable.  Say which it was, and\n"
+                "it travels with the repository from here on.\n\n");
+        else
+            fprintf(stderr,
+                "This repository does not say which VOC flavour the account needs,\n"
+                "and UniVerse cannot be asked afterwards: the flavour is fixed when\n"
+                "the account is created and is not recorded anywhere readable.\n\n");
         for (int k = 0; k < NFLAVOURS; k++)
             fprintf(stderr, "    %-8s %s\n",
                     uv_flavours[k].name, uv_flavours[k].shown);
         fprintf(stderr, "\n");
         while (fi < 0) {
             if (!ask("Flavour for this account [PICK]: ", line, sizeof line)) {
+                /* No terminal.  Creating an account without the answer would
+                   bake in a guess, so that still fails; an account that already
+                   exists is working fine and merely goes on unrecorded. */
+                if (already) {
+                    fprintf(stderr,
+                        "uv-git adopt: no terminal to ask on — the flavour stays "
+                        "unrecorded;\n        pass --flavour=<name> to record "
+                        "it.\n");
+                    break;
+                }
                 fprintf(stderr,
                     "uv-git adopt: no terminal to ask on — pass "
                     "--flavour=<name> (e.g. --flavour=PICK).\n");
@@ -465,6 +480,22 @@ static int adopt(int argc, char **argv, int i) {
             if (!line[0]) { fi = flavour_index("PICK"); break; }
             fi = flavour_index(line);
             if (fi < 0) fprintf(stderr, "  not a flavour: %s\n", line);
+        }
+        /* RECORD THE ANSWER.  Asking and then forgetting is worse than not
+           asking: the next clone asks again, and the knowledge dies with the
+           command that had it — the same fault the propagation half fixed.
+           Appended to the descriptor the account already has, so the rest of
+           it is left exactly as found.  Nothing here can verify the answer,
+           and it does not need to: the flavour only bites when an account is
+           CREATED, and the attribute editor (mv_git#15) can correct it. */
+        if (fi >= 0 && already) {
+            FILE *df = fopen(desc_name, "ab");
+            if (df) {
+                fprintf(df, "flavour = %s\n", uv_flavours[fi].name);
+                fclose(df);
+                fprintf(stderr, "uv-git adopt: recorded flavour %s in %s\n",
+                        uv_flavours[fi].name, desc_name);
+            }
         }
     }
 
