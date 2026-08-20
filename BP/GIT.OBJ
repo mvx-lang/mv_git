@@ -59,6 +59,7 @@
       CASE OP = "FILES"    ; CALL GITFILES(A1, OUT)
 *     Staging ops produce no output, here as everywhere else.
       CASE OP = "STAGECTL"
+         SOUT = ""
          CALL GITSTAGECTL(A1, A2, A3, SOUT)
          OUT = ""
       CASE 1

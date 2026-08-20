@@ -217,6 +217,26 @@ static const char *unprefix(const char *path) {
     return strncmp(path, g_prefix, n) == 0 ? path + n : NULL;
 }
 
+/* True for a path that is a dictionary's %FILE% control (…/…DICT/%FILE%). */
+static int is_file_control(const char *path) {
+    size_t pl = strlen(path);
+    const char *suf = ".DICT/%FILE%";
+    size_t sl = strlen(suf);
+    return pl >= sl && strcmp(path + pl - sl, suf) == 0;
+}
+
+/* True when a control's content is in the OPEN interchange form — the portable
+   class "DIR" or "hash …", possibly followed by `key = value` parameter lines —
+   as opposed to an account's own native %FILE% record (FILE<VM>type<VM>conn).
+   The two share a path and mean different things, which is why anything holding
+   one has to be able to tell them apart. */
+static int is_open_control(const char *c, int64_t cl) {
+    if (!c) return 0;
+    if (cl >= 3 && strncasecmp(c, "DIR", 3) == 0) return 1;
+    if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) return 1;
+    return 0;
+}
+
 static int ignored(const char *file, const char *path) {
     load_ignores();
     for (int i = 0; i < g_nign; i++) {
@@ -829,6 +849,36 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 skipped++;
                 continue;
             }
+            /* %FILE% IS CREATE-TIME METADATA, AND ON MVX IT IS ALSO A REAL
+               RECORD — which is the one place those two facts collide.  A
+               wholesale add would restage the account's own native control
+               (FILE<VM>type) straight over the OPEN control git is holding, and
+               the open one is the versioned artefact: it is what a clone onto
+               another platform reads, and what the attribute editor writes.  So
+               an edit made before an `add -A` would be gone, and status would go
+               clean as though the edit had landed.
+
+               Leave an open control where it is.  A file that has none is
+               unaffected — its native record still stages, and GITOPENFORM
+               converts it — so this only ever declines to overwrite geometry git
+               already holds, which is the sticky rule (mv_git#15) reaching the
+               one staging path that is a record rather than a blob. */
+            {
+                char ctlp[600];
+                record_path(ctlp, sizeof ctlp, fn, idb);
+                if (is_file_control(ctlp)) {
+                    const git_index_entry *pe =
+                        git_index_get_bypath(index, ctlp, 0);
+                    git_blob *pb = NULL;
+                    int keep = 0;
+                    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+                        keep = is_open_control(git_blob_rawcontent(pb),
+                                               (int64_t)git_blob_rawsize(pb));
+                        git_blob_free(pb);
+                    }
+                    if (keep) { if (one) break; else continue; }
+                }
+            }
             const char *sc = cp;
             int64_t sl = clen;
             char *dtmp = NULL;
@@ -983,6 +1033,19 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     /* only a path INSIDE a file is a record; the file's own entry is not */
     if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
         return 1;
+    /* A FILE'S CONTROL IS NEVER TAKEN FROM DISK.  <file>.DICT/%FILE% is
+       create-time metadata, and on MVX it is also an ordinary file on disk — so
+       git's own working-tree pass swept it up and staged the account's NATIVE
+       control over the OPEN one git was holding.  The open control is the
+       versioned artefact: it is what a clone onto another platform reads, and
+       what the attribute editor writes.  So an attribute edit made before an
+       `add -A` was silently gone, and status went clean as though it had landed.
+
+       Skipping it costs nothing.  A file that needs a control still gets one
+       from the record pass, which stages the native %FILE% record, and
+       GITOPENFORM converts that to the open class.  The disk pass was only ever
+       a third way to the same path, arriving last and knowing least. */
+    if (is_file_control(rel)) return 1;
     return 0;
 }
 
@@ -2057,19 +2120,36 @@ static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
     int alive = listed >= 0 ? listed : file_is_live(ctx, base);
     int ans = 0;
     if (!alive) {
-        /* GIT TRACKED IT AS A FILE if the index holds anything under its
-           DICTIONARY.  Not "<base>.DICT/%FILE% is present": that control is only
-           staged in OPEN-account mode, so keying on it made the whole rule a
-           no-op on a native commit — which is most of them.  Every MV file has a
-           dictionary and no plain directory does, so the .DICT subtree is the
-           mark that works in both modes.  (It also keeps an ordinary tracked
-           directory — docs/, say — from ever looking like a deleted file.) */
-        char pfx[600];
-        int pn = snprintf(pfx, sizeof pfx, "%s%s.DICT/", g_prefix, base);
-        if (pn > 0) {
+        /* GIT TRACKED IT AS A FILE if the index holds CONTENT for it — a
+           record, or a dictionary item — as opposed to nothing but its %FILE%
+           control.  Every MV file has a dictionary and no plain directory does,
+           so the .DICT subtree is the mark that works in both the open and the
+           native form.  (It also keeps an ordinary tracked directory — docs/,
+           say — from ever looking like a deleted file.)
+
+           THE CONTROL ALONE IS A DECLARATION, NOT A DELETION.  Attributes live
+           in the git objects, not in the account, so a control may perfectly
+           well describe a file that is not on this machine: setting a file's
+           geometry BEFORE the file exists, so a clone builds it right the first
+           time, is a use of the attribute editor rather than a mistake.  Keying
+           on "anything under the dictionary" counted that control as evidence
+           the file had once been live, and pruned the declaration away on the
+           next `add -A` — the edit simply evaporated.
+
+           The cost is narrow and worth naming: a file that was genuinely
+           deleted while EMPTY leaves its control behind, because nothing
+           distinguishes it from a declaration.  `GIT RM` removes it. */
+        char dpfx[600], rpfx[600], ctl[600];
+        int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, base);
+        int rn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, base);
+        snprintf(ctl, sizeof ctl, "%s%s.DICT/%%FILE%%", g_prefix, base);
+        if (dn > 0 && rn > 0) {
             for (size_t i = 0; i < git_index_entrycount(index); i++) {
                 const git_index_entry *e = git_index_get_byindex(index, i);
-                if (e && strncmp(e->path, pfx, (size_t)pn) == 0) { ans = 1; break; }
+                if (!e) continue;
+                if (strcmp(e->path, ctl) == 0) continue;   /* the declaration */
+                if (strncmp(e->path, dpfx, (size_t)dn) == 0 ||
+                    strncmp(e->path, rpfx, (size_t)rn) == 0) { ans = 1; break; }
             }
         }
     }
@@ -2134,14 +2214,6 @@ static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
         return 4;
     }
     return -1;
-}
-
-/* True for a path that is a dictionary's %FILE% control (…/…DICT/%FILE%). */
-static int is_file_control(const char *path) {
-    size_t pl = strlen(path);
-    const char *suf = ".DICT/%FILE%";
-    size_t sl = strlen(suf);
-    return pl >= sl && strcmp(path + pl - sl, suf) == 0;
 }
 
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
