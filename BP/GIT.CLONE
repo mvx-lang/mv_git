@@ -14,10 +14,10 @@
 SUBROUTINE GIT.CLONE
       $INCLUDE BP.INC PLATFORM.H
 * The include is REQUIRED now and was not before, which is exactly how this
-* handler broke.  It used to be `$IFDEF MVX / $ELSE / $ENDIF`, and with MVX
-* undefined the $ELSE arm ran whether or not any define had been seen — so the
+* handler broke.  It used to be `IFDEF MVX / ELSE / ENDIF`, and with MVX
+* undefined the ELSE arm ran whether or not any define had been seen — so the
 * file worked without ever including PLATFORM.H.  Splitting that into three
-* POSITIVE $IFDEFs removed the fallback: with no defines in scope, none matched,
+* POSITIVE IFDEFs removed the fallback: with no defines in scope, none matched,
 * and the whole body disappeared at compile time.  The symptom was a handler
 * that was entered, parsed its arguments, and then did nothing at all.
 CALL GIT.SENT(S)
@@ -51,10 +51,10 @@ IF URL = "" OR DIR = "" THEN
 END
 * THE PLATFORM IS DECIDED AT COMPILE TIME BUT ACTED ON AT RUNTIME.
 *
-* This handler used to put each platform's whole body inside its own $IFDEF, and
+* This handler used to put each platform's whole body inside its own IFDEF, and
 * on UniVerse the conditional body silently did not run — the subroutine was
 * entered, the sentence parsed, and then nothing happened at all (mv_git#52).
-* Every ingredient works in isolation: $IFDEF UV resolves, a cataloged
+* Every ingredient works in isolation: IFDEF UV resolves, a cataloged
 * subroutine called via CALL @H runs its conditional body, and EXECUTE …
 * CAPTURING works inside one.  Only the assembly failed, at this nesting depth.
 *

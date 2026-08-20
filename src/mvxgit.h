@@ -105,6 +105,11 @@ void mv_git_forget_account(void);
    missing file means no subtraction — every record is the account's own. */
 void mv_git_set_stock(const char *path);
 
+/* The baseline as ids alone (mark- or newline-separated), supplied by BASIC
+   where the engine may not read records itself.  Enough for the delete
+   protection, which never compares content. */
+void mv_git_stock_ids(const char *ids);
+
 int mv_git_desc_open(const char *name, const char *version,
                      const char *description, const char *hash,
                      char *out, size_t cap);

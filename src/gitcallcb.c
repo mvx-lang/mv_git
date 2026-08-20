@@ -82,6 +82,13 @@ char *GITPRUNE(char *repo, char *live) {
     return "";
 }
 
+/* GITSTOCKIDS(repo, ids) — the stock account's VOC ids, so a checkout does not
+   delete the records the commit deliberately never carried (mv_git#46). */
+char *GITSTOCKIDS(char *repo, char *ids) {
+    mv_git_stock_ids(ids ? ids : "");
+    return emit(repo, NULL);
+}
+
 /* GITINDEXIDS(repo, file) — the ids staged under <file>/, @AM-separated. */
 char *GITINDEXIDS(char *repo, char *file) {
     mv_git_batch_end();                 /* the index must be on disk first */

@@ -13,6 +13,31 @@
 * (#11) and, if any, prompt to rebuild.
 SUBROUTINE GITUDT.CHECKOUT(REPO)
 $IFNDEF MVX
+*     Which VOC records are the SYSTEM's, so the delete-extras pass below does
+*     not remove the ones the commit deliberately never carried (mv_git#46).
+*     Without this a pull strips the destination account's own VOC — the
+*     symptom is a stock verb such as CT vanishing after a clone or pull.
+      CALL GIT.OBJ("STOCKPREP", 1, REPO, "", "", "", "", SPOUT)
+*     And open it for THIS program too: the delete pass below is BASIC, so it
+*     asks the master directly rather than through the engine.
+      STKOK = 0
+*     No guard here: this file is already inside IFNDEF MVX, and an inner
+*     ENDIF would close it and drop the rest of the program from the build.
+*     GIT.STOCK holds the platform half — GETENV is UniData-only and does not
+*     even PARSE on UniVerse — and answers "" there, so STKOK stays 0 and the
+*     type list below still applies, exactly as it did before.
+      SPATH = ""
+      CALL GIT.STOCK(REPO, SPATH)
+      IF SPATH # "" THEN
+         OPEN "VOC" TO SVOCF THEN
+            SPP = ""
+            SPP<1> = "F"
+            SPP<2> = FIELD(SPATH, CHAR(254), 1)
+            SPP<3> = FIELD(SPATH, CHAR(254), 2)
+            WRITE SPP ON SVOCF, "%GITSTOCK%"
+            OPEN "%GITSTOCK%" TO STKF THEN STKOK = 1
+         END
+      END
    AM = CHAR(254) ; LF = CHAR(10)
    NREST = 0 ; NFC = 0 ; NDEL = 0 ; FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL)
    IXCTL = ".DICT/%INDEXES%" ; LIC = LEN(IXCTL)
@@ -43,7 +68,7 @@ $IFNDEF MVX
    NQR = 0
    FOR I = 1 TO NP
       IF PATHS<I> = "%QPOINTERS%" THEN
-*        GIT.OBJ("CAT"), not a raw CALLC.  This file is guarded $IFNDEF MVX,
+*        GIT.OBJ("CAT"), not a raw CALLC.  This file is guarded IFNDEF MVX,
 *        which is true on UniVerse as well as UniData — and CALLC is a UniData
 *        statement UniVerse parses as an ARRAY REFERENCE, so it failed to
 *        compile there with "Array 'GITCAT' never dimensioned", the verb never
@@ -151,6 +176,12 @@ NEXTDEL:
 *  account correctly says 0, and "across 0 file(s)" read like a bug every time.
    PRINT NREST : " record(s) restored, " : NFC : " file(s) created"
    IF NDEL > 0 THEN PRINT NDEL : " stale record(s) removed"
+*  The stock pointer exists only for the length of the checkout; left behind it
+*  would look like one of the account's own VOC records to the next add.
+   IF STKOK THEN
+      DELETE SVOCF, "%GITSTOCK%"
+      STKOK = 0
+   END
    GOSUB IXPROMPT
    RETURN
 * KEEPCHK — is this live record one that must NEVER be deleted as "stale"?
@@ -164,6 +195,23 @@ NEXTDEL:
 KEEPCHK:
    KEEP = 0
    IF FN # "VOC" THEN RETURN
+*  ASK THE STOCK ACCOUNT, DO NOT GUESS BY TYPE.  The type list below is a list
+*  of guesses, and it was wrong: measured on UniData 8.3, CT is type "PA" (a
+*  paragraph), not "V" — so a clone deleted CT and ~92 others like it, and the
+*  account lost stock verbs the commit had never claimed to carry (mv_git#46).
+*  Whatever a fresh account of this release already holds is the system's, at
+*  any type at all, so the master VOC is the authority and this test is exact.
+*
+*  By id, not by content, and that is deliberate: a stock record this account
+*  EDITED differs from stock, so it was committed, so it is in HW and the
+*  caller never asks about it.  An id-only test therefore protects nothing that
+*  should have been removed, and it costs no second record read.
+   IF STKOK THEN
+      READ SKR FROM STKF, LID THEN
+         KEEP = 1
+         RETURN
+      END
+   END
    READ KR FROM DV, LID ELSE RETURN
    KT = TRIM(KR<1>)
    IF KT = "V" OR KT = "K" THEN KEEP = 1

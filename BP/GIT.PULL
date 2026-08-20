@@ -73,6 +73,11 @@ $ENDIF
 *     Assumed!" and pulled nothing.  A thing that works on one platform by luck
 *     is exactly what the other platform is for.
       CALL GIT.REPO(REPO)
+*     BEFORE the ref moves, not after: PULLREF materialises the new HEAD itself,
+*     and that includes removing records the tree does not carry.  Telling the
+*     engine which VOC records are the system's only after PULLREF has run is
+*     too late — the stock records are already deleted (mv_git#46).
+      CALL GIT.OBJ("STOCKPREP", 1, REPO, "", "", "", "", OBJOUT)
       CALL GIT.OBJ("PULLREF", 3, REPO, RNAME, BR, "", "", OBJOUT)
       CALL GIT.ECHO(OBJOUT)             ;* fast-forward / up to date / conflict
       CALL GITUDT.CHECKOUT(REPO)        ;* materialise the new HEAD natively

@@ -1,0 +1,38 @@
+*  * @file GIT.STOCK
+*  *
+*  * GIT.STOCK(REPO, SPATH) — where a fresh account of this release keeps its
+*  * VOC, as "<data-path><AM><dict-path>", or "" where the platform has no such
+*  * thing to offer.
+*  *
+*  * WHY THIS IS A FILE OF ITS OWN, and not four lines inside GIT.ADD:
+*  *
+*  * IFDEF DOES NOT NEST.  An inner ENDIF closes the OUTER guard, and the rest
+*  * of the program silently falls out of the build — it still compiles, so the
+*  * only symptom is a change that appears to do nothing.  Both callers are
+*  * already wrapped whole (GIT.ADD in IFDEF MVX/ELSE, GITUDT.CHECKOUT in
+*  * IFNDEF MVX), so ANY guard placed inside them is a nested one.
+*  *
+*  * And a guard is unavoidable, because GETENV is UniData-only: on UniVerse it
+*  * does not return empty, it does not PARSE — the compiler reads GETENV("X")
+*  * as a subscripted array and says "Array 'GETENV' never dimensioned".
+*  *
+*  * Here the guard is the whole body, so it is top-level and nests inside
+*  * nothing.  On UniVerse this compiles to a subroutine that answers "", which
+*  * is the honest answer there: uv-git builds its own per-flavour baseline.
+*  *
+*  * The path is the baseline itself, not a copy of it — newacct copies
+*  * $UDTHOME/sys/VOC into every new account verbatim ("cp MASTERVOC to VOC"),
+*  * so the master IS the stock account, exact for the release running.  See
+*  * mv_git#46.
+*
+      SUBROUTINE GIT.STOCK(REPO, SPATH)
+      $INCLUDE BP.INC PLATFORM.H
+      SPATH = ""
+$IFDEF UDT
+      UH = GETENV("UDTHOME")
+      IF UH # "" THEN
+         SPATH = UH : "/sys/VOC" : CHAR(254) : UH : "/sys/D_VOC"
+      END
+$ENDIF
+      RETURN
+      END
