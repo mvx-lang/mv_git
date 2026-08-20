@@ -60,7 +60,122 @@ CALL GIT.REPO(REPO)
          END
       END CASE
    NEXT I
+   GOSUB UNTRACKED
    IF NCH = 0 THEN PRINT "nothing to commit, working tree clean"
+   RETURN
+*  Records the account HAS that git does NOT (mv_git#59).
+*
+*  The pass above walks the paths git holds, so it can see a record change or
+*  vanish but can never see one APPEAR — a new record was reported by nothing,
+*  on every session platform, and the suite never asked.  (The engine's own C
+*  status has always reported these; this arm is the one the in-session verb
+*  runs, and it simply never had the case.)
+*
+*  Same exclusions `add` applies, and for the same reason: reporting something
+*  no wholesale add will ever stage leaves it untracked forever.  Stock records
+*  are the account's furniture (mv_git#46), compiled objects are "_<PROG>"
+*  beside their source, and the %FILE% / %INDEXES% controls are synthesised
+*  rather than stored.
+UNTRACKED:
+   UFILES = ""
+   NP2 = DCOUNT(PATHS, AM)
+   FOR U = 1 TO NP2
+      UP = PATHS<U> ; USL = INDEX(UP, "/", 1)
+      IF USL > 0 THEN
+         UFN = UP[1, USL-1]
+         IF INDEX(AM : UFILES : AM, AM : UFN : AM, 1) = 0 THEN UFILES<-1> = UFN
+      END
+   NEXT U
+*  The account's own GIT IGNORE list, read through the same seam GIT.IGNORE
+*  writes it with (OSREAD/OSWRITE are UniData-only).  `add` skips these, so
+*  reporting them would leave them untracked forever — the same rule every
+*  other exclusion here follows.
+   IGL = ""
+   CALL GIT.OSFILE("READ", @PATH : "/GITIGNORE", IGL, IGOK)
+   IF NOT(IGOK) THEN IGL = ""
+   CONVERT LF TO AM IN IGL
+*  And git's OWN .gitignore, which is a separate list from the account's bulk
+*  GIT IGNORE one and is what an ordinary user reaches for first.  Full
+*  gitignore semantics live in the engine (libgit2); this honours the plain
+*  forms — an exact path, a file name, a trailing "*" — which is what the
+*  records path actually uses.
+   IGL2 = ""
+   CALL GIT.OSFILE("READ", @PATH : "/.gitignore", IGL2, IG2OK)
+   IF IG2OK AND IGL2 # "" THEN
+      CONVERT LF TO AM IN IGL2
+      IF IGL = "" THEN IGL = IGL2 ELSE IGL := AM : IGL2
+   END
+   SPATH = ""
+   CALL GIT.STOCK(REPO, SPATH)
+   USTK = 0
+   IF SPATH # "" THEN
+      OPEN "VOC" TO UVOC THEN
+         USP = ""
+         USP<1> = "F"
+         USP<2> = FIELD(SPATH, CHAR(254), 1)
+         USP<3> = FIELD(SPATH, CHAR(254), 2)
+         WRITE USP ON UVOC, "%GITSTOCK%"
+         OPEN "%GITSTOCK%" TO USTKF THEN USTK = 1
+      END
+   END
+   NU = DCOUNT(UFILES, AM)
+   FOR U = 1 TO NU
+      FN = UFILES<U>
+      UISVOC = (FN = "VOC" OR FN = "MD")
+      GOSUB OPENREC
+      IF ROK THEN
+*        A select-list VARIABLE, not a numbered list, and the LOOP/ELSE EXIT
+*        form: UniVerse rejects "SELECT x TO 6" ("option 'S' requires variable
+*        name") and will not parse "LOOP WHILE READNEXT ... DO".  Both platforms
+*        accept this spelling — the same one GITUDT.CHECKOUT settled on.
+         SELECT RV TO ULIST
+         LOOP
+            READNEXT URID FROM ULIST ELSE EXIT
+            UPATH = FN : "/" : URID
+            IF INDEX(AM : PATHS : AM, AM : UPATH : AM, 1) = 0 THEN
+               UDROP = 0
+               IF URID = "%FILE%" OR URID = "%INDEXES%" THEN UDROP = 1
+               IF URID = "%GITSTOCK%" THEN UDROP = 1
+*              An id git cannot store as a path is never staged (mv_git#42), so
+*              reporting it would leave it untracked forever.  UniVerse VOCs
+*              really do carry one: a record whose id is "/".
+               IF URID = "" OR INDEX(URID, "/", 1) > 0 THEN UDROP = 1
+               NIG = DCOUNT(IGL, AM)
+               FOR G = 1 TO NIG
+                  GP = TRIM(IGL<G>)
+                  IF GP # "" THEN
+*                    Exact path, bare file name, or a "FILE/" prefix — the
+*                    forms the list actually holds.  Not fnmatch: BASIC has no
+*                    pattern matcher, and the engine applies the full rules on
+*                    its own paths.
+                     IF GP = UPATH OR GP = FN THEN UDROP = 1
+                     GL = LEN(GP)
+                     IF GP[GL,1] = "*" THEN
+                        IF UPATH[1, GL-1] = GP[1, GL-1] THEN UDROP = 1
+                     END
+                  END
+               NEXT G
+               IF URID[1,1] = "_" THEN
+                  READ UOBJ FROM RV, URID[2, LEN(URID)] THEN UDROP = 1
+               END
+               IF NOT(UDROP) AND USTK AND UISVOC THEN
+                  READ USREC FROM USTKF, URID THEN UDROP = 1
+               END
+               IF NOT(UDROP) THEN
+                  READ UREC FROM RV, URID THEN
+                     IF INDEX(UREC, CHAR(0), 1) > 0 THEN UDROP = 1
+                  END ELSE UDROP = 1
+               END
+               IF NOT(UDROP) THEN
+                  PRINT "?? " : UPATH
+                  NCH += 1
+               END
+            END
+         REPEAT
+         CLEARSELECT
+      END
+   NEXT U
+   IF USTK THEN DELETE UVOC, "%GITSTOCK%"
    RETURN
 CTLSTAT:
    CHG = 0
