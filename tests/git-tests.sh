@@ -271,6 +271,69 @@ case "$(GITV "$A" GIT SHOW TMPF T1)" in
   *)     ok "file gone from HEAD";;
 esac
 
+say "-- GIT ATTR: the attribute editor (mv_git#15) --"
+# Every one of these runs through the SWITCHES, which is why the switches exist:
+# the full-screen editor is the same machinery with a screen on it, and a path
+# only reachable by hand is a path that rots.
+#
+# The attributes are carried by the OPEN interchange control, so the account is
+# staged in that form first.  `-o` is the flag on UniData/UniVerse; on MVX the
+# open form comes from mvx.openaccount, which this suite set at the top — so one
+# sentence serves all three.
+GITV "$A" GIT ADD -A -o >/dev/null
+GITV "$A" GIT COMMIT -m openform >/dev/null
+
+t  "attr lists account"  "name"      "$(GITV "$A" GIT ATTR)"
+t  "attr lists file"     "modulo"    "$(GITV "$A" GIT ATTR CUST)"
+t  "attr set"            "997"       "$(GITV "$A" GIT ATTR CUST --set modulo=997)"
+t  "attr set is staged"  "997"       "$(GITV "$A" GIT ATTR CUST)"
+# IT NEVER COMMITS.  The edit is a staged modification and nothing more, so it
+# has to show in status and must not have produced a commit of its own.
+t  "attr edit shows in status" "%FILE%" "$(GITV "$A" GIT STATUS)"
+case "$(GITV "$A" GIT LOG)" in
+  *modulo*|*attr*) bad "attr does not commit" "no commit from GIT ATTR" "one was made";;
+  *)               ok "attr does not commit";;
+esac
+# AN ORDINARY ADD MUST NOT UNDO IT.  Two staging paths restage a file's control
+# from the account — the working-tree sweep and the record pass — and either one
+# putting the live geometry back would drop the edit before it was ever
+# committed, with status then going clean as though it had landed.
+GITV "$A" GIT ADD -A >/dev/null
+t  "attr survives add -A" "997"      "$(GITV "$A" GIT ATTR CUST)"
+GITV "$A" GIT COMMIT -m geometry >/dev/null
+t  "attr survives commit" "997"      "$(GITV "$A" GIT ATTR CUST)"
+
+# The registry is what makes a value legal, so each kind of refusal is asserted.
+t  "attr rejects bad enum"   "must be one of" "$(GITV "$A" GIT ATTR CUST --set dynamic=maybe)"
+t  "attr rejects bad number" "is a number"    "$(GITV "$A" GIT ATTR CUST --set modulo=abc)"
+t  "attr rejects unknown"    "no attribute"   "$(GITV "$A" GIT ATTR CUST --set wibble=1)"
+# A refusal must change nothing, or a rejected edit would still be half applied.
+t  "refusal changes nothing" "997"   "$(GITV "$A" GIT ATTR CUST)"
+
+t  "attr unset"          "997 -> -"  "$(GITV "$A" GIT ATTR CUST --unset modulo)"
+case "$(GITV "$A" GIT ATTR CUST)" in
+  *997*) bad "attr unset takes effect" "no modulo" "still 997";;
+  *)     ok "attr unset takes effect";;
+esac
+
+# ATTRIBUTES LIVE IN THE GIT OBJECTS, NOT IN THE ACCOUNT.  Recording a file's
+# geometry BEFORE the file exists — so a clone builds it right the first time —
+# is a use of this, and the declaration has to outlive the next `add -A`: prune
+# once counted the control itself as evidence the file had been live and swept
+# it away again.
+t  "attr declares an absent file" "1009" "$(GITV "$A" GIT ATTR ORDERS --set modulo=1009)"
+GITV "$A" GIT ADD -A >/dev/null
+t  "declaration survives add -A"  "1009" "$(GITV "$A" GIT ATTR ORDERS)"
+
+# The account scope is the same editor with no file argument.
+GITV "$A" GIT ATTR --set version=2 >/dev/null
+t  "attr sets account version" "2"   "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+# Descriptor keys the registry does not name are NOT the editor's to discard:
+# `openaccount` is what marks the account open, and rewriting the descriptor
+# without it would quietly turn the open form off.
+t  "attr keeps unknown keys" "name"  "$(GITV "$A" GIT ATTR)"
+GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m attrs >/dev/null
+
 if [ "$SKIP_NET" = 1 ]; then
   skip "remote/clone/fetch/pull/push" "SKIP_NET=1"
 else
