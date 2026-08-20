@@ -302,12 +302,41 @@ static int is_live_account(const char *dir);
    flavour answer.  A fresh directory becomes an account on its first `uv`,
    which asks whether to set it up and then which flavour to use. */
 static int make_account(const char *code) {
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "printf 'Y\\n%s\\nQUIT\\n' | %s >/dev/null 2>&1",
-             code, UV_BIN);
+    /* KEEP WHAT uv SAID.  This discarded its output, and then reported only
+       "the account was not created (no VOC); is `uv` on PATH?" — a guess, and
+       a wrong one when uv is plainly on PATH.  It fails intermittently (roughly
+       one clone in three observed), and with the output thrown away there was
+       nothing to tell one cause from another, so it got a retry instead of a
+       diagnosis.  The reason is in what uv prints. */
+    char out[512];
+    snprintf(out, sizeof out, "%s", ".uvsetup.log");
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "printf 'Y\\n%s\\nQUIT\\n' | %s > %s 2>&1",
+             code, UV_BIN, out);
     int rc = system(cmd);
     (void)rc;
-    return is_live_account(".") ? 0 : -1;
+    if (is_live_account(".")) { unlink(out); return 0; }
+    /* Failed — say what happened, in uv's own words. */
+    FILE *f = fopen(out, "r");
+    if (f) {
+        char line[512], last[512] = "";
+        int shown = 0;
+        fprintf(stderr, "uv-git: uv did not create the account here. It said:\n");
+        while (fgets(line, sizeof line, f)) {
+            size_t n = strlen(line);
+            while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+            if (!n) continue;
+            snprintf(last, sizeof last, "%s", line);
+            if (shown++ < 12) fprintf(stderr, "        %s\n", line);
+        }
+        if (shown > 12) fprintf(stderr, "        ... (%d more) last: %s\n",
+                                shown - 12, last);
+        fclose(f);
+    } else {
+        fprintf(stderr, "uv-git: uv produced no output at all while creating "
+                        "the account — it may not have run.\n");
+    }
+    return -1;
 }
 
 /* Where we are in the repository: `gitdir` receives the real git directory
