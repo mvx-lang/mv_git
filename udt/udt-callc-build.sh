@@ -32,6 +32,7 @@
 #   udt-callc-build.sh                       rebuild from every staged fragment
 #   udt-callc-build.sh add <pkgdir> <name>   stage <pkgdir>/udt-callc as <name>, rebuild
 #   udt-callc-build.sh remove <name>         unstage <name>, rebuild
+#   udt-callc-build.sh list                  show what is staged (and shadowing)
 # The package manager calls `add`/`remove`; a bare call is a plain rebuild.
 set -e
 
@@ -64,6 +65,22 @@ remove)
 	pkg="$2" ; : "${pkg:?remove: need <name>}"
 	$SUDO rm -rf "${CALLCD:?}/$pkg"
 	echo "udt-callc: unstaged $pkg" ;;
+# list: what is actually staged.  The library is the union of these, and there
+# was no way to see them short of ls-ing $UDTHOME by hand — so a stray fragment
+# shadowing a real one was invisible until someone thought to look.
+list)
+	printf '%-28s %8s  %s\n' PACKAGE OBJECTS NEWEST
+	for d in "$CALLCD"/*/ ; do
+		[ -d "$d" ] || continue
+		n=0 ; newest=
+		for o in "$d"*.o ; do
+			[ -f "$o" ] || continue
+			n=$((n + 1))
+			[ -z "$newest" ] && newest=$(date -r "$o" '+%Y-%m-%d %H:%M' 2>/dev/null)
+		done
+		printf '%-28s %8s  %s\n' "$(basename "$d")" "$n" "${newest:--}"
+	done
+	exit 0 ;;
 esac
 
 # Every path below (re)links the library and needs a compiler.  A no-callc `add`
@@ -83,7 +100,7 @@ cp "$WORK/efsdef" "$WORK/libuvic.a" .
 echo "udt-callc: rebuilding $LIB from $CALLCD"
 
 # --- collect fragments --------------------------------------------------
-: > FUN ; : > OBJ ; : > LIBS
+: > FUN ; : > OBJ ; : > LIBS ; : > OWN
 OBJPATHS=""
 NPKG=0
 for d in "$CALLCD"/*/ ; do
@@ -101,14 +118,48 @@ for d in "$CALLCD"/*/ ; do
 		OBJPATHS="$OBJPATHS $o"
 		basename "$o" >> OBJ
 	done
-	# include any pre-built objects (binary-only release)
+	# include any pre-built objects (binary-only release).  NOT namespaced the
+	# way sources are, a few lines up: they arrive already compiled, so their
+	# basenames are whatever the shipping package chose.  Two packages shipping
+	# the same one is therefore possible, and is checked for below.
 	for o in "$d"*.o ; do
 		[ -f "$o" ] || continue
 		OBJPATHS="$OBJPATHS $o"
 		basename "$o" >> OBJ
+		echo "$(basename "$o")	$pkg" >> OWN
 	done
 done
 echo "udt-callc: $NPKG package(s), $(grep -c ':' FUN 2>/dev/null || echo 0) function(s)"
+
+# --- refuse to link two copies of the same object silently --------------
+# The library is the UNION of every staged fragment, so two fragments shipping
+# the same object name both reach the linker and ONE of them silently wins.
+# Nothing said which, and the loser's code simply was not there.
+#
+# That cost hours: a guard compiled into the library was provably present and
+# provably never executed; an error surfaced from a binary that did not contain
+# its own message; source edits "did not take effect" after a full rebuild.  All
+# one cause — a stray fragment staged by hand under a different name than the
+# installer uses (callc.d/git beside callc.d/mvx-lang_git), shadowing every
+# rebuild that followed.
+#
+# A warning, not an error: an existing box may have a duplicate right now, and
+# refusing to link would take its GIT verb away with no way to get it back.  But
+# it says both owners and which won, which is all anyone needed.
+if [ -f OWN ]; then
+	DUPS=$(cut -f1 OWN | sort | uniq -d)
+	if [ -n "$DUPS" ]; then
+		echo "udt-callc: WARNING — the same object is staged by more than one package:" >&2
+		for dup in $DUPS; do
+			owners=$(awk -F'\t' -v o="$dup" '$1==o {printf "%s ", $2}' OWN)
+			winner=$(awk -F'\t' -v o="$dup" '$1==o {print $2; exit}' OWN)
+			echo "udt-callc:   $dup  <- $owners" >&2
+			echo "udt-callc:      '$winner' wins; the others' copies are NOT in the library" >&2
+		done
+		echo "udt-callc:   a stale fragment shadows every rebuild until it is removed:" >&2
+		echo "udt-callc:      ls $CALLCD    then    udt-callc-build.sh remove <name>" >&2
+	fi
+fi
 
 # --- assemble the add-on cfuncdef (system base is added by gencdef) -----
 { echo '$$FUN'; cat FUN; echo '$$OBJ'; cat OBJ; echo '$$LIB'; } > cfuncdef
