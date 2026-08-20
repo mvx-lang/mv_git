@@ -12,6 +12,14 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.STATUS
+      $INCLUDE BP.INC PLATFORM.H
+* The include is REQUIRED now, and was not before.  This handler used to be a
+* two-way $IFDEF MVX / $ELSE / $ENDIF, and that form runs its $ELSE arm whether
+* or not any define is in scope — so it worked without ever including
+* PLATFORM.H.  Inlining the helper below keeps the two-way shape, but the file
+* now DEPENDS on the define being right rather than merely preferring it, and a
+* handler that silently compiles to nothing is the failure that cost an
+* afternoon on GIT CLONE (mv_git#52).  DECISIONS.md records the rule.
 $IFDEF MVX
 OUT = ""
 CALL GITSTATUS(".git", OUT)
@@ -19,7 +27,76 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
 $ELSE
+* Inlined from GITUDT.STATUS, which had exactly one caller — this one.
 CALL GIT.REPO(REPO)
-CALL GITUDT.STATUS(REPO)
+   AM = CHAR(254) ; LF = CHAR(10)
+   FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
+   CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
+   NP = DCOUNT(PATHS, AM)
+   FOR I = 1 TO NP
+      P = PATHS<I> ; LP = LEN(P)
+      BEGIN CASE
+      CASE P = ".mv-account" OR P = ".udt" OR P = ".mvx"
+         NULL
+      CASE LP > LC AND P[LP-LC+1, LC] = FCTL
+         BASE = P[1, LP-LC] ; GOSUB CTLSTAT
+         IF CHG THEN PRINT " M " : P ; NCH += 1
+      CASE 1
+         SL = INDEX(P, "/", 1)
+         IF SL > 0 THEN
+            FN = P[1, SL-1] ; RID = P[SL+1, LP]
+            CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
+            GOSUB OPENREC
+            IF ROK THEN
+               READ LV FROM RV, RID THEN
+                  GOSUB SAMEREC
+                  IF NOT(SAME) THEN PRINT " M " : P ; NCH += 1
+               END ELSE
+                  PRINT " D " : P ; NCH += 1
+               END
+            END ELSE
+               PRINT " D " : P ; NCH += 1
+            END
+         END
+      END CASE
+   NEXT I
+   IF NCH = 0 THEN PRINT "nothing to commit, working tree clean"
+   RETURN
+CTLSTAT:
+   CHG = 0
+   CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
+   CCL = TRIM(FIELD(CB, " ", 1))
+   IF CCL[1,3] = "DIR" THEN CCL = "DIR" ELSE CCL = "hash"
+   FILE = BASE ; GOSUB FILECLASS
+   LCL = TRIM(FIELD(CTL, " ", 1))
+   IF LCL[1,3] = "DIR" THEN LCL = "DIR" ELSE LCL = "hash"
+   IF CCL # LCL THEN CHG = 1
+   RETURN
+FILECLASS:
+   CTL = "hash"
+   OPEN FILE TO FCVAR THEN
+      FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
+      IF MODL <= 0 THEN
+         CTL = "DIR"
+      END ELSE
+         IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+         CTL = "hash " : MODL : " " : DS
+      END
+   END
+   RETURN
+OPENREC:
+   ROK = 0 ; LFN = LEN(FN)
+   IF LFN > 5 AND FN[LFN-4, 5] = ".DICT" THEN
+      OPEN "DICT", FN[1, LFN-5] TO RV THEN ROK = 1
+   END ELSE
+      OPEN FN TO RV THEN ROK = 1
+   END
+   RETURN
+SAMEREC:
+   IF INDEX(LV, CHAR(0), 1) > 0 THEN SAME = 1 ; RETURN
+   GLV = LV ; CONVERT AM TO LF IN GLV
+   GCB = CB ; CONVERT AM TO LF IN GCB
+   SAME = (GLV = GCB)
+   RETURN
 $ENDIF
 RETURN

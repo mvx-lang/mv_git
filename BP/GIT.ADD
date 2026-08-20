@@ -12,6 +12,12 @@
 *  * @version 4.1
 *  */
 SUBROUTINE GIT.ADD
+      $INCLUDE BP.INC PLATFORM.H
+* The include is REQUIRED now, and was not before: the two-way $IFDEF MVX /
+* $ELSE / $ENDIF runs its $ELSE arm whether or not any define is in scope, so
+* this file worked without ever including PLATFORM.H.  Inlining keeps that shape
+* but makes the define load-bearing, and a handler that silently compiles to
+* nothing is what cost an afternoon on GIT CLONE (mv_git#52).
 * -A/--all stages every changed record (also '.'); DICT addresses a dictionary;
 * otherwise a positional file {record}.  Flags are decoded by the cmd dispatch
 * (GIT.CMD.FLAG A/o).  The udt Model-B ADD re-reads the raw sentence itself.
@@ -40,8 +46,224 @@ OUT = ""
 CALL GITADD(".git", FN, ID, OUT)
 PRINT OUT
 $ELSE
+* Inlined from GITUDT.ADD, which had exactly one caller — this one.  Its
+* parameters were (REPO, S), the same names the caller already uses, so the body
+* below is byte-identical to the version verified on all three platforms.
 CALL GIT.SENT(S)
 CALL GIT.REPO(REPO)
-CALL GITUDT.ADD(REPO, S)
+   AM = CHAR(254) ; VM = CHAR(253) ; LF = CHAR(10)
+*  Where this account sits in its repository.  "" when the account IS the repo
+*  root — which is every single-account package, so those paths are unchanged.
+*  Below a root it is "<account>/", and every path staged here carries it, so
+*  two accounts in one repository cannot both claim CUST/C1.
+   CALL GIT.PREFIX(PFX)
+   ARG3 = FIELD(S, " ", 3)
+   OPENFMT = 0
+   IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
+   IF ARG3 = "-A" OR ARG3 = "." OR ARG3 = "--all" THEN
+      SKIPOBJ = 1
+      GOSUB ADDALL
+      PRINT NSTAGED : " record(s) staged across " : NFILES : " file(s)"
+      IF NSKIP > 0 THEN PRINT NSKIP : " virtual file(s) skipped (SQL catalog / DataView — no data to stage)"
+   END ELSE
+      FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0 ; BLANKET = 0
+*     A NAMED RECORD stages just that record.  This arm ignored the id entirely
+*     and staged the whole file — `GIT ADD VOC ZZPULL` reported "617 record(s)
+*     staged" — while MVX and UniVerse both stage the one record named.  Three
+*     implementations, and this was the one that had never been asked.
+      ONEID = FIELD(S, " ", 4)
+      IF ONEID # "" AND ONEID[1,1] # "-" THEN
+         OPEN FILE TO OF1 ELSE
+            PRINT "GIT: cannot open " : FILE
+            RETURN
+         END
+         READ OREC FROM OF1, ONEID THEN
+            CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, ONEID, OREC, "", OBJOUT)
+            PRINT "1 record(s) staged"
+         END ELSE
+            PRINT "GIT: no record " : ONEID : " in " : FILE
+         END
+      END ELSE
+         GOSUB STAGEDATA
+         PRINT NSTAGED : " record(s) staged"
+      END
+   END
+*  Write the staged index to disk before returning.  It is the handover to
+*  COMMIT, which reads it from disk in a separate process — so a batch still
+*  held in memory here is a commit of nothing there.
+   CALL GIT.OBJ("FLUSH", 1, REPO, "", "", "", "", OBJOUT)
+*  RECORDS DELETED from a live file.  Staging only ever ADDS, so a record removed
+*  from the account stayed in the index and went on being committed — and a clone
+*  brought it back.  status has always reported these correctly, so the two
+*  disagreed about the same account.  The C add reconciles this per file; this is
+*  that, for the platforms whose add is BASIC.
+*
+*  AFTER THE FLUSH, not during the walk.  Staging batches in memory and only the
+*  flush writes it; unstaging edits the index ON DISK, so a reconcile done inside
+*  the loop was silently undone the moment the batch landed on top of it.  That
+*  is why this worked on UniData (CallC flushes per op) and not on UniVerse.
+   IF BLANKET THEN
+      NRC = DCOUNT(FILES, AM)
+      FOR RK = 1 TO NRC
+         RCBASE = FIELD(FILES<RK>, VM, 1)
+         RCFILE = RCBASE            ; GOSUB RECONCILE
+         RCFILE = RCBASE : ".DICT"  ; GOSUB RECONCILE
+      NEXT RK
+   END ELSE
+      RCFILE = FILE           ; GOSUB RECONCILE
+      RCFILE = FILE : ".DICT" ; GOSUB RECONCILE
+   END
+*  FILES THAT ARE GONE.  The walk above stages what EXISTS, so a file deleted
+*  from the account is never visited and its records stay staged for ever —
+*  committed again every time, and brought back whole by a clone.  %FILE% is the
+*  file's existence in git, so when it goes the file goes: PRUNE drops every
+*  record under <file>/ and <file>.DICT/.  Only on a blanket add — naming one
+*  file is about that file.  The engine does exactly this inside its own C
+*  add; calling the same primitive here is what keeps the two agreeing.
+*  FILES is the list this walk actually found, and it has to be US who says so:
+*  mvgitd has no record backend of its own — it cannot open the account — so
+*  asked to decide what is live it would answer "nothing" and unstage the lot.
+   IF BLANKET THEN
+      PRUNEOUT = ""
+      CALL GIT.OBJ("PRUNE", 2, REPO, FILES, "", "", "", PRUNEOUT)
+      IF PRUNEOUT # "" THEN CALL GIT.ECHO(PRUNEOUT)
+   END
+*  A record whose id cannot be a git path is not versioned, so say so rather
+*  than let the count quietly disagree with what was committed.
+   IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)
+   RETURN
+*  Stage the whole account: collect the local files from VOC first (drain the VOC
+*  select before opening any file), then stage each file's data + dictionary (+
+*  open-form controls when -o).
+ADDALL:
+   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0
+   OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
+   SELECT VOCF
+   LOOP WHILE READNEXT VID DO
+      READ VREC FROM VOCF, VID THEN
+*        Attribute 1 is the TYPE, but it is not always the type ALONE: UniVerse
+*        appends the file description a user may give at CREATE.FILE time, so a
+*        described file reads "F Customer master" and an exact match against
+*        "F" makes it invisible to this scan — the file is simply never staged,
+*        with no error.  Take the first token, and trim, so a description (or a
+*        trailing space from an empty one) cannot hide a file from GIT ADD -A.
+         VT = TRIM(FIELD(VREC<1>, " ", 1))
+         IF VT = "F" OR VT = "DIR" THEN
+            DP = VREC<2> ; DD = VREC<3> ; LOC = 1
+            IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
+            IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
+            L = LEN(VID)
+            IF VID[1,1]="_" AND VID[L,1]="_" THEN LOC = 0
+            IF VID[1,1]="&" AND VID[L,1]="&" THEN LOC = 0
+            IF LOC THEN FILES<-1> = VID : VM : VT
+         END
+      END
+   REPEAT
+   NF = DCOUNT(FILES, AM)
+   FOR K = 1 TO NF
+      FILE  = FIELD(FILES<K>, VM, 1)
+      FTYPE = FIELD(FILES<K>, VM, 2)
+      ISVOC = (FILE = "VOC")
+      GOSUB STAGEDATA
+      GOSUB STAGEDICT
+      IF OPENFMT THEN
+         GOSUB FILECLASS
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
+         GOSUB IXSTAGE
+      END
+      NFILES += 1
+   NEXT K
+   IF OPENFMT THEN
+      NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
+      DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
+      CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:".mv-account", DESC, "", "", OBJOUT)
+   END
+   RETURN
+FILECLASS:
+   CTL = "hash"
+   OPEN FILE TO FCVAR THEN
+      FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
+      IF MODL <= 0 THEN
+         CTL = "DIR"
+      END ELSE
+         IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+         CTL = "hash " : MODL : " " : DS
+      END
+   END
+   RETURN
+IXSTAGE:
+   OPEN FILE TO IXVAR THEN
+      IXL = INDICES(IXVAR)
+      IF IXL # "" THEN
+         IXG = IXL ; CONVERT AM TO LF IN IXG
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%INDEXES%", IXG, "", "", OBJOUT)
+      END
+   END
+   RETURN
+STAGEDATA:
+   OPEN FILE TO DF ELSE
+      IF BLANKET THEN NSKIP += 1 ELSE PRINT "GIT: cannot open " : FILE
+      RETURN
+   END
+   SELECT DF
+   LOOP WHILE READNEXT RID DO
+      READ RREC FROM DF, RID THEN
+         DROP = 0
+         IF SKIPOBJ AND INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
+         IF OPENFMT AND ISVOC THEN
+            RT = RREC<1>
+            IF RT="V" OR RT="K" THEN DROP = 1
+            IF RT="F" OR RT="LF" OR RT="DF" OR RT="DIR" THEN DROP = 1
+            IF RT="Q" OR RT="X" OR RT="R" THEN DROP = 1
+         END
+         IF NOT(DROP) THEN
+            CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, RID, RREC, "", OBJOUT)
+            NSTAGED += 1
+         END
+      END
+   REPEAT
+   RETURN
+*  Unstage every id git holds for RCFILE that the account no longer has.  The
+*  engine says what it has (INDEXIDS) and we say what still READs — neither side
+*  can do it alone: BASIC cannot see the index, and mvgitd has no record backend.
+*  The READs are local, so the only traffic is one INDEXIDS and one RM per record
+*  actually deleted; an account with no deletions costs a single call per file.
+RECONCILE:
+   IDS = ""
+   CALL GIT.OBJ("INDEXIDS", 2, REPO, RCFILE, "", "", "", IDS)
+   IF IDS = "" THEN RETURN
+*  A dictionary is not opened by name: "CUST.DICT" is not a file, DICT CUST is.
+   RCL = LEN(RCFILE)
+   IF RCL > 5 AND RCFILE[RCL - 4, 5] = ".DICT" THEN
+      OPEN "DICT", RCFILE[1, RCL - 5] TO RCV ELSE RETURN
+   END ELSE
+      OPEN RCFILE TO RCV ELSE RETURN
+   END
+   NID = DCOUNT(IDS, AM)
+   FOR RI = 1 TO NID
+      RID = IDS<RI>
+*     %FILE% is SYNTHESISED from the live file's geometry, never a record — so it
+*     can never be read and must never be reported gone.
+      IF RID # "%FILE%" AND RID # "%INDEXES%" THEN
+         READ RCHK FROM RCV, RID THEN
+            NULL
+         END ELSE
+*           RCOUT, not OBJOUT: OBJOUT is echoed when this handler returns, so
+*           borrowing it here made the reconcile's chatter the command's output.
+            CALL GIT.OBJ("RM", 3, REPO, RCFILE, RID, "", "", RCOUT)
+         END
+      END
+   NEXT RI
+   RETURN
+STAGEDICT:
+   OPEN "DICT", FILE TO DCF ELSE RETURN
+   SELECT DCF
+   LOOP WHILE READNEXT RID DO
+      READ RREC FROM DCF, RID THEN
+         CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE:".DICT", RID, RREC, "", OBJOUT)
+         NSTAGED += 1
+      END
+   REPEAT
+   RETURN
 $ENDIF
 RETURN
