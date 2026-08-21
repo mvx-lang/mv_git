@@ -287,6 +287,14 @@ case "$(GITV "$A" GIT SHOW TMPF T1)" in
   *)     ok "file gone from HEAD";;
 esac
 
+# GIT ATTR is an IN-SESSION VERB, so the UniVerse CLI path cannot reach it —
+# and must not: giving uv-git its own copy would mean a second implementation of
+# the registry, the validation and the staging, in C, which is exactly what
+# "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
+# where this is tested on UniVerse, and it runs there in full.
+if [ "$PLATFORM" = uv ] && [ "${UV_VIA:-verb}" = cli ]; then
+  skip "GIT ATTR" "in-session verb; covered by the UV_VIA=verb run"
+else
 say "-- GIT ATTR: the attribute editor (mv_git#15) --"
 # Every one of these runs through the SWITCHES, which is why the switches exist:
 # the full-screen editor is the same machinery with a screen on it, and a path
@@ -383,6 +391,7 @@ t  "attr sets account version" "2"   "$(GITV "$A" GIT ATTR | sed -n 's/^ *versio
 # without it would quietly turn the open form off.
 t  "attr keeps unknown keys" "name"  "$(GITV "$A" GIT ATTR)"
 GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m attrs >/dev/null
+fi
 
 if [ "$SKIP_NET" = 1 ]; then
   skip "remote/clone/fetch/pull/push" "SKIP_NET=1"

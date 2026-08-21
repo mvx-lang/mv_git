@@ -864,6 +864,22 @@ static int run_account(int argc, char **argv, int i) {
         const char *msg = a0;
         if (!strcmp(a0, "-m")) msg = a1;
         out = mv_git_commit(ctx, repo, msg);
+    } else if (!strcmp(sub, "attr")) {
+        /* ATTR IS AN IN-SESSION VERB, and deliberately has no twin here.  Every
+           other command in this file is the engine reached directly from C;
+           GIT ATTR is BASIC — registry, validation, staging and a full-screen
+           editor — and verbs are BASIC rather than C on purpose, so writing a
+           second implementation to reach it from the shell is the one thing
+           that must not happen.  Say where it lives instead of "unknown
+           command", which reads as "this does not exist". */
+        fprintf(stderr,
+            "uv-git: 'attr' is an in-session verb, not a shell command.\n"
+            "        Run it inside a UniVerse session in this account:\n"
+            "            GIT ATTR                       account attributes\n"
+            "            GIT ATTR <file>                a file's parameters\n"
+            "            GIT ATTR <file> --set k=v      change one\n");
+        mv_ctx_destroy(ctx);
+        return 2;
     } else {
         fprintf(stderr, "uv-git: unknown command '%s'\n", sub);
         mv_ctx_destroy(ctx);
