@@ -92,8 +92,33 @@ jobs:
           # bundled cmd fallback, no BASIC source.  Native -> os/arch-locked.
           DIST="dist/$BASE"; rm -rf "$DIST"; mkdir -p "$DIST"
           cp -a LIB bin PKG mvpkg.json LICENSE README.md "$DIST/"
-          for d in VOC VOC.DICT CMD.BP CMD.BP.DICT; do [ -e "$d" ] && cp -a "$d" "$DIST/" || true; done
+          # CATALOG carries the COMPILED VERBS, and was missing from this list:
+          # VOC/GIT is a "V" record pointing at CATALOG/GIT, so the package
+          # registered a verb whose executable it did not ship.  Every mvx
+          # binary release so far — 1.5.0 through 2.0.0-beta4 — was 15 entries
+          # with no CATALOG, and `GIT` from one could only ever answer
+          # "mvx: cannot execute .../CATALOG/GIT".  The udt and uv packages
+          # compile their verbs at install time, which is why only this one was
+          # affected, and why nothing noticed.
+          for d in VOC VOC.DICT CMD.BP CMD.BP.DICT CATALOG; do [ -e "$d" ] && cp -a "$d" "$DIST/" || true; done
           rm -rf "$DIST"/LIB/*.dSYM "$DIST"/LIB/*.debug
+          rm -rf "$DIST"/CATALOG/*.dSYM "$DIST"/CATALOG/*.debug
+
+          # EVERY VERB THE PACKAGE REGISTERS MUST BE IN THE PACKAGE.  This is the
+          # check that would have caught the above: walk the V records and prove
+          # each one's target exists, rather than trusting the copy list to stay
+          # in step with what mkpkg produces.
+          for v in "$DIST"/VOC/*; do
+            [ -f "$v" ] || continue
+            [ "$(head -1 "$v")" = "V" ] || continue
+            tgt="$(sed -n 2p "$v")"
+            [ -n "$tgt" ] || continue
+            if [ ! -e "$DIST/$tgt" ]; then
+              echo "package would ship VOC/$(basename "$v") pointing at missing $tgt" >&2
+              exit 1
+            fi
+          done
+
           tar czf "$BASE.tar.gz" -C "$DIST" .   # contents at the tar root (no wrapping dir)
           sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
           echo "tarball=mv_git/$BASE.tar.gz" >> "$GITHUB_OUTPUT"
