@@ -103,16 +103,32 @@ mkfile() {
 # Rather than hand-build the VOC record, let CREATE.FILE do it properly and move
 # the sources in afterwards: it exists to create the pointer, the dictionary and
 # the directory together, and refuses when the directory is already there.
-if [ ! -e D_BP ]; then
+# WHAT MAKES BP USABLE IS ITS VOC POINTER, not a dictionary file on disk — and
+# those two come apart more often than they look like they should.  An account
+# that received a copy of the package, or one materialised by a clone, has D_BP
+# sitting right there with no VOC record naming it; this test used to be
+# `[ ! -e D_BP ]`, so in exactly those accounts it decided BP was already
+# registered, skipped this, and `BASIC BP *` then found nothing.  The failure is
+# "compiled 0 program(s)" — no error, just a verb that never appears.
+#
+# So ask the VOC.  It is the thing the compiler consults.
+voc_has() {
+    printf 'CT VOC %s\nQUIT\n' "$1" | uv 2>/dev/null | grep -q '^0001[[:space:]]*F'
+}
+if ! voc_has BP; then
     say "registering BP as a UniVerse file"
+    # CREATE.FILE builds the pointer, the dictionary and the directory together,
+    # and refuses when any of them is already there — so everything it is about
+    # to make moves aside first, and the sources come back afterwards.
     [ -d BP ] && mv BP BP.staged
+    [ -e D_BP ] && rm -rf D_BP
     [ -d BP.staged ] || cp -r "$SRC/BP.staged" BP.staged
     mkfile BP
     [ -d BP ] || { echo "install.sh: CREATE.FILE did not create BP" >&2; exit 1; }
     for f in BP.staged/*; do [ -f "$f" ] && cp "$f" "BP/"; done
     rm -rf BP.staged
 fi
-mkfile BP.INC
+voc_has BP.INC || mkfile BP.INC
 
 # PLATFORM.H comes from the BUILD, not from here — the package ships the exact
 # defines its sources were built against, and install puts them where the
