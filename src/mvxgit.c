@@ -3859,6 +3859,97 @@ void mvx_sub_GITMERGE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* --- authenticating to a remote ------------------------------------------
+ *
+ * LIBGIT2 DOES NOT USE CREDENTIALS EMBEDDED IN A URL BY ITSELF.  Put a token in
+ * https://user:token@host/… and it still answers "remote authentication
+ * required but no callback set": the userinfo is parsed off and offered to a
+ * callback, and with no callback there is nowhere for it to go.  So a private
+ * repository was unreachable by every transport, whatever the URL said.
+ *
+ * Two ways to supply it, in this order:
+ *
+ *   $MVXGIT_TOKEN   the token alone (username comes from the URL, or "git",
+ *                   which is what GitHub and GitLab both accept).  Nothing on
+ *                   disk, which is what a script or a CI job wants.
+ *   the remote URL  user:token@host, for the case where it is already there.
+ *
+ * A token in the URL is stored in .git/config in the clear and printed by
+ * GIT REMOTE, so it is the convenient answer rather than the good one; the
+ * environment is offered first for that reason.
+ */
+typedef struct { char user[256]; char pass[512]; int why; } git_creds;
+enum { CRED_OK = 0, CRED_NONE = 1, CRED_UNSUPPORTED = 2 };
+
+/* Pull user:pass out of a URL's authority, if it carries them. */
+static void creds_from_url(const char *url, git_creds *c) {
+    if (!url) return;
+    const char *scheme = strstr(url, "://");
+    if (!scheme) return;
+    const char *auth = scheme + 3;
+    const char *at = strchr(auth, '@');
+    const char *slash = strchr(auth, '/');
+    if (!at || (slash && at > slash)) return;      /* no userinfo, just a path */
+    const char *colon = memchr(auth, ':', (size_t)(at - auth));
+    size_t ul = (size_t)((colon ? colon : at) - auth);
+    if (ul && ul < sizeof c->user) snprintf(c->user, sizeof c->user, "%.*s", (int)ul, auth);
+    if (colon) {
+        size_t pl = (size_t)(at - colon - 1);
+        if (pl && pl < sizeof c->pass)
+            snprintf(c->pass, sizeof c->pass, "%.*s", (int)pl, colon + 1);
+    }
+}
+
+static int cred_cb(git_credential **out, const char *url,
+                   const char *username_from_url, unsigned int allowed,
+                   void *payload) {
+    git_creds *c = payload;
+    char user[256] = "", pass[512] = "";
+    const char *env = getenv("MVXGIT_TOKEN");
+    if (env && env[0]) {
+        snprintf(pass, sizeof pass, "%s", env);
+        snprintf(user, sizeof user, "%s",
+                 (c && c->user[0]) ? c->user
+                 : (username_from_url && username_from_url[0]) ? username_from_url
+                 : "git");
+    } else if (c && c->pass[0]) {
+        snprintf(user, sizeof user, "%s", c->user[0] ? c->user : "git");
+        snprintf(pass, sizeof pass, "%s", c->pass);
+    } else {
+        /* WHY, recorded for the caller.  libgit2's own message is
+           "authentication required", which sends people looking for a
+           transport problem; the caller turns this into what to do instead.
+           (git_error_set_str would say it here, but it lives in a sys header
+           this file deliberately does not reach into.) */
+        if (c) c->why = CRED_NONE;
+        return GIT_EAUTH;
+    }
+    if (allowed & GIT_CREDENTIAL_USERPASS_PLAINTEXT)
+        return git_credential_userpass_plaintext_new(out, user, pass);
+    /* Nothing we can satisfy — an ssh-key-only server, most likely. */
+    (void)url;
+    if (c) c->why = CRED_UNSUPPORTED;
+    return GIT_EAUTH;
+}
+
+/* Fill `c` from REMOTE's configured URL so the callback can use it.
+   READ THE RAW CONFIG VALUE, not git_remote_url(): libgit2 hands back a remote's
+   url with the userinfo already stripped — which is sensible of it, and means
+   the one place the credentials still exist is the config string itself. */
+static void creds_for_remote(git_repository *repo, const char *name,
+                             git_creds *c) {
+    memset(c, 0, sizeof *c);
+    git_config *cfg = NULL;
+    if (git_repository_config(&cfg, repo) != 0) return;
+    char key[300];
+    snprintf(key, sizeof key, "remote.%s.url", name);
+    git_buf b = GIT_BUF_INIT;
+    if (git_config_get_string_buf(&b, cfg, key) == 0 && b.ptr)
+        creds_from_url(b.ptr, c);
+    git_buf_dispose(&b);
+    git_config_free(cfg);
+}
+
 /* GITFETCH(repo, remote, out) — fetch REMOTE (default origin), updating the
    remote-tracking refs; no working-tree change (records untouched). */
 void mvx_sub_GITFETCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
@@ -3875,6 +3966,10 @@ void mvx_sub_GITFETCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     int rc = git_remote_lookup(&rem, repo, rn);
     if (rc == 0) {
         git_fetch_options fo = GIT_FETCH_OPTIONS_INIT;
+        git_creds fcreds;
+        creds_for_remote(repo, rn, &fcreds);
+        fo.callbacks.credentials = cred_cb;
+        fo.callbacks.payload = &fcreds;
         rc = git_remote_fetch(rem, NULL, &fo, NULL);
     }
     if (rem) git_remote_free(rem);
@@ -3886,8 +3981,7 @@ void mvx_sub_GITFETCH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 }
 
 /* GITPUSH(repo, remote, refspec, out) — push REFSPEC (default: the current
-   branch) to REMOTE (default origin).  Needs a writable remote; public transport
-   only for now (add a credential callback for authenticated pushes). */
+   branch) to REMOTE (default origin). */
 void mvx_sub_GITPUSH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 4) return;
@@ -3914,16 +4008,34 @@ void mvx_sub_GITPUSH(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         snprintf(specbuf, sizeof specbuf, "refs/heads/%s:refs/heads/%s", spec, spec);
     }
     git_remote *rem = NULL;
+    git_creds pcreds;
+    creds_for_remote(repo, rn, &pcreds);
     int rc = specbuf[0] ? git_remote_lookup(&rem, repo, rn) : -1;
     if (rc == 0) {
         char *specs[1] = {specbuf};
         git_strarray arr = {specs, 1};
         git_push_options po = GIT_PUSH_OPTIONS_INIT;
+        po.callbacks.credentials = cred_cb;
+        po.callbacks.payload = &pcreds;
         rc = git_remote_push(rem, &arr, &po);
     }
     if (rem) git_remote_free(rem);
     git_repository_free(repo);
-    if (rc != 0) { fail(argv[3], "push"); return; }
+    if (rc != 0) {
+        if (pcreds.why == CRED_NONE) {
+            fail(argv[3], "push: no credentials - set MVXGIT_TOKEN, "
+                          "or put user:token in the remote URL");
+            return;
+        }
+        if (pcreds.why == CRED_UNSUPPORTED) {
+            fail(argv[3], "push: the remote wants an authentication method "
+                          "this build cannot supply (ssh keys need a libgit2 "
+                          "built with ssh)");
+            return;
+        }
+        fail(argv[3], "push");
+        return;
+    }
     char out[800];
     snprintf(out, sizeof out, "pushed %s to %s", specbuf, rn);
     mv_set_str(argv[3], out, (int64_t)strlen(out));
@@ -3956,6 +4068,10 @@ void mvx_sub_GITPULL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     int rc = git_remote_lookup(&rem, repo, rn);
     if (rc == 0) {
         git_fetch_options fo = GIT_FETCH_OPTIONS_INIT;
+        git_creds fcreds;
+        creds_for_remote(repo, rn, &fcreds);
+        fo.callbacks.credentials = cred_cb;
+        fo.callbacks.payload = &fcreds;
         rc = git_remote_fetch(rem, NULL, &fo, NULL);
     }
     if (rem) git_remote_free(rem);
@@ -4150,6 +4266,14 @@ void mvx_sub_GITCLONE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 
     git_repository *repo = NULL;
     git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
+    /* A private repository needs credentials to CLONE as much as to push; the
+       URL is the only place they can come from here, since there is no remote
+       configured yet. */
+    git_creds ccreds;
+    memset(&ccreds, 0, sizeof ccreds);
+    creds_from_url(url, &ccreds);
+    opts.fetch_opts.callbacks.credentials = cred_cb;
+    opts.fetch_opts.callbacks.payload = &ccreds;
     if (git_clone(&repo, url, dir, &opts) != 0) { fail(argv[3], "clone"); return; }
 
     if (ref[0]) {
