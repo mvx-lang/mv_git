@@ -44,19 +44,40 @@ $IFNDEF MVX
    CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
 *  pass 1 - create each file from its %FILE% control (open format)
+*
+*  NEVER CREATE.FILE A FILE THAT IS ALREADY THERE.  CREATE.FILE is interactive:
+*  asked to make a file that exists, it asks whether to recreate it, and nothing
+*  here answers.  The prompt then eats whatever the session had queued next and
+*  the file is left HALF-BUILT — a dictionary with no data part — after which
+*  every OPEN of it in this session fails and its records are silently skipped.
+*
+*  Which is why a checkout into an EMPTY account was always fine and a pull into
+*  a live one was not: a clone creates files that are genuinely absent, while a
+*  pull re-runs this pass over an account that already has them.  The pulled
+*  record was simply never written — the file it belonged to could not be opened
+*  — and both `pull` and the checkout reported success (mv_git#65).
+*
+*  The same guard DO.CREATEFILE has carried all along, for the same stated
+*  reason; this is the path that never got it.  A file that exists needs no
+*  creating, and its geometry is create-time metadata that a checkout must not
+*  act on anyway.
    FOR I = 1 TO NP
       P = PATHS<I> ; LP = LEN(P)
       IF LP > LC AND P[LP-LC+1, LC] = FCTL THEN
          BASE = P[1, LP-LC]
-         CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", TY)
-         TY = TRIM(TY)
-         IF TY = "DIR" THEN
-            EXECUTE "CREATE.FILE DIR ":BASE CAPTURING JUNK
-         END ELSE
-            MODL = FIELD(TY, " ", 2) ; IF NUM(MODL) = 0 THEN MODL = "11"
-            EXECUTE "CREATE.FILE ":BASE:" ":MODL:",2" CAPTURING JUNK
+         EXISTS = 0
+         OPEN BASE TO CFEXV THEN EXISTS = 1
+         IF NOT(EXISTS) THEN
+            CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", TY)
+            TY = TRIM(TY)
+            IF TY = "DIR" THEN
+               EXECUTE "CREATE.FILE DIR ":BASE CAPTURING JUNK
+            END ELSE
+               MODL = FIELD(TY, " ", 2) ; IF NUM(MODL) = 0 THEN MODL = "11"
+               EXECUTE "CREATE.FILE ":BASE:" ":MODL:",2" CAPTURING JUNK
+            END
+            NFC += 1
          END
-         NFC += 1
       END
    NEXT I
 *  pass 1b - restore the account's Q-pointers from the %QPOINTERS% control.
