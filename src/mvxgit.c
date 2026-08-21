@@ -2878,6 +2878,60 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* GITPUTDESC(repo, path, content, out) — put an edited account descriptor back
+   on disk, in whatever form this platform keeps there.
+
+   THE DESCRIPTOR IS ONE THING IN TWO SPELLINGS.  Git carries the portable
+   `.mv-account`; MVX keeps the native `.mvx` beside the account, and the engine
+   already converts in both directions — commit projects the native form down,
+   checkout rebuilds it.  So an edit that lands in only one of them is not an
+   edit to the account at all, and that is exactly what happened: `GIT ATTR
+   --set version=2` staged `.mv-account`, the next `add -A` regenerated
+   `.mv-account` FROM the untouched `.mvx`, and the edit was gone — with the
+   commit reporting "nothing to commit" as though nothing had been asked for.
+   Before it vanished it also showed in both status columns at once, staged and
+   modified, which is the same disagreement seen from the other side.
+
+   The two cases are the ones checkout already handles, and for the same reasons:
+   an open-form descriptor is CONVERTED to native, a native one is written
+   verbatim so its local permit/deny policy round-trips.
+
+   UniData and UniVerse keep no descriptor on disk — theirs live only in git — so
+   there is nothing to write there and this does nothing.  That is a build-time
+   difference, not a runtime one: those platforms would have nowhere to put it. */
+void mvx_sub_GITPUTDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    if (argc >= 4) mv_set_str(argv[3], "", 0);
+#if defined(MVXGIT_UDT) || defined(MVXGIT_GITD)
+    (void)argv;                 /* no on-disk descriptor on these platforms */
+#else
+    ensure_init();
+    char path[700];
+    arg_str(argv[1], path, sizeof path);
+    const char *cp;
+    char nb[40];
+    int64_t cl = mv_val_chars(argv[2], nb, sizeof nb, &cp);
+    size_t pl = strlen(path);
+    int is_open = pl >= 11 && strcmp(path + pl - 11, ".mv-account") == 0;
+    int is_nat  = pl >= 4  && strcmp(path + pl - 4,  ".mvx") == 0;
+    if (!is_open && !is_nat) return;      /* .udt / .uv: git-only, nothing here */
+    FILE *f = fopen(".mvx", "wb");
+    if (!f) return;
+    if (is_open) {
+        acct_desc d;
+        desc_parse(cp, (size_t)cl, &d);
+        char nat[2048];
+        int nl = desc_render_native(&d, nat, sizeof nat);
+        if (nl > 0) fwrite(nat, 1, (size_t)nl, f);
+    } else {
+        if (cl > 0) fwrite(cp, 1, (size_t)cl, f);
+    }
+    fclose(f);
+    mv_set_str(argv[3], "descriptor written", 18);
+#endif
+}
+
 /* GITIXCAT(repo, path, out) — the STAGED content of blob `path`: the index, not
    HEAD, with attribute marks restored the way GITCAT does.  "" when the index
    has no such path.
@@ -4470,6 +4524,11 @@ char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
 char *mv_git_staged(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITSTAGED, ctx, a, 1);
+}
+char *mv_git_putdesc(mv_ctx *ctx, const char *repo, const char *path,
+                     const char *content) {
+    const char *a[] = {repo, path, content};
+    return run_sub(mvx_sub_GITPUTDESC, ctx, a, 3);
 }
 char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
                       const char *content) {

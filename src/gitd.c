@@ -360,6 +360,7 @@ BRIDGE1(op_log,        mv_git_log(ctx, rp(A(g,0)), A(g,1)[0] ? A(g,1) : "20"))
 BRIDGE1(op_branch,     mv_git_branch(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 BRIDGE1(op_staged,     mv_git_staged(ctx, rp(A(g,0))))
+BRIDGE1(op_putdesc,    mv_git_putdesc(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 /* CAT returns committed record content, which is arbitrary bytes and may
    contain NULs — so it must carry an explicit length rather than be measured
    with strlen, or a binary record comes back truncated. */
@@ -403,6 +404,7 @@ static const struct {
     { "STAGECTL",    3, op_stagectl   },
     { "IXCAT",       2, op_ixcat      },
     { "STAGED",      1, op_staged     },
+    { "PUTDESC",     3, op_putdesc    },
     { "COMMIT",      2, op_commit     },
     { "STATUS",      1, op_status     },
     { "PRUNE",       2, op_prune      },

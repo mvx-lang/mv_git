@@ -861,6 +861,21 @@ STAGE:
       IF SRCOUT[LEN(SRCOUT), 1] # LF THEN SRCOUT = SRCOUT : LF
       CALL GIT.OBJ("STAGECTL", 3, REPO, PATH, SRCOUT, "", "", OBJOUT)
       IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)
+*     AND THE ACCOUNT DESCRIPTOR GOES BACK ON DISK TOO, where the platform keeps
+*     one.  It is one thing in two spellings — git carries the portable form,
+*     MVX keeps the native `.mvx` beside the account — and the engine already
+*     converts both ways, so an edit landing in only the git side is not an edit
+*     to the account: the next `add -A` regenerated the portable form from the
+*     untouched native one and the edit was simply gone.
+*
+*     This is not the file case and does not contradict it.  A file's modulo
+*     describes something that already exists, so recording it must not resize
+*     anything; the descriptor IS the thing being described, and there is no
+*     separate live object to leave alone.
+      IF SCOPE = "ACCOUNT" THEN
+         DOUT = ""
+         CALL GIT.OBJ("PUTDESC", 3, REPO, PATH, SRCOUT, "", "", DOUT)
+      END
       PRINT "staged " : PATH : " - commit to record it"
       RETURN
       END

@@ -438,7 +438,23 @@ t  "attr sets account version" "2"   "$(GITV "$A" GIT ATTR | sed -n 's/^ *versio
 # `openaccount` is what marks the account open, and rewriting the descriptor
 # without it would quietly turn the open form off.
 t  "attr keeps unknown keys" "name"  "$(GITV "$A" GIT ATTR)"
-GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m attrs >/dev/null
+# THE DESCRIPTOR IS ONE THING IN TWO SPELLINGS, and an edit has to reach both.
+# Git carries the portable form; MVX keeps the native one beside the account and
+# the engine converts each way, so an edit landing only in git was regenerated
+# straight back out of the untouched native copy by the next `add -A` — the
+# value was gone and the commit said "nothing to commit", as though nothing had
+# been asked for.  It showed in BOTH status columns first, staged and modified
+# at once, which is the same disagreement seen from the other end.
+#
+# The suite could not have caught it: it edited, added, committed and never
+# looked again.  So the assertion is specifically that it is still there AFTER
+# an add, and that status reports it once.
+GITV "$A" GIT ADD -A >/dev/null
+t  "account edit survives add -A" "2" "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+te "account edit reported once" "1" "$(GITV "$A" GIT STATUS | grep -c 'account\|\.mvx' || true)"
+GITV "$A" GIT COMMIT -m attrs >/dev/null
+t  "account edit survives commit" "2" "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+t  "clean after committing it" "clean" "$(GITV "$A" GIT STATUS)"
 fi
 
 if [ "$SKIP_NET" = 1 ]; then

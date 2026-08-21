@@ -204,6 +204,19 @@ char *GITUDIFF(char *repo, char *oldtext, char *newtext, char *path) {
     return "";
 }
 
+/* GITPUTDESC(repo, path, content) — put an edited descriptor back on disk.
+   UniData keeps none there, so this is the engine's no-op; it exists so the
+   BASIC side can call it unconditionally rather than knowing which platforms
+   have an on-disk descriptor. */
+char *GITPUTDESC(char *repo, char *path, char *content) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_putdesc(ctx, rp(repo), path ? path : "",
+                             content ? content : "");
+    mv_ctx_destroy(ctx);
+    free(r);
+    return emit(repo, NULL);
+}
+
 /* GITCOMMIT(repo, msg) — flush the batched index, then commit. */
 char *GITCOMMIT(char *repo, char *msg) {
     mv_git_batch_end();                 /* write the accumulated index to disk */

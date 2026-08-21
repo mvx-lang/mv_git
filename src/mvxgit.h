@@ -85,6 +85,13 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
    effect of resizing a file. */
 char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
                       const char *content);
+/* Put an edited account descriptor back on disk in this platform's own form —
+   the portable one is CONVERTED, a native one written verbatim.  The descriptor
+   is one thing in two spellings and the engine converts both ways already, so an
+   edit landing in only the git side is not an edit to the account.  Does nothing
+   where no descriptor lives on disk (UniData, UniVerse). */
+char *mv_git_putdesc(mv_ctx *ctx, const char *repo, const char *path,
+                     const char *content);
 /* The STAGED content of `path` (the index, not HEAD), marks restored.  An
    editor must build on the edit before it, not on the last commit. */
 char *mv_git_ixcat(mv_ctx *ctx, const char *repo, const char *path);
