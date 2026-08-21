@@ -115,20 +115,38 @@ mkfile() {
 voc_has() {
     printf 'CT VOC %s\nQUIT\n' "$1" | uv 2>/dev/null | grep -q '^0001[[:space:]]*F'
 }
-if ! voc_has BP; then
-    say "registering BP as a UniVerse file"
-    # CREATE.FILE builds the pointer, the dictionary and the directory together,
-    # and refuses when any of them is already there — so everything it is about
-    # to make moves aside first, and the sources come back afterwards.
-    [ -d BP ] && mv BP BP.staged
-    [ -e D_BP ] && rm -rf D_BP
-    [ -d BP.staged ] || cp -r "$SRC/BP.staged" BP.staged
-    mkfile BP
-    [ -d BP ] || { echo "install.sh: CREATE.FILE did not create BP" >&2; exit 1; }
-    for f in BP.staged/*; do [ -f "$f" ] && cp "$f" "BP/"; done
-    rm -rf BP.staged
-fi
-voc_has BP.INC || mkfile BP.INC
+# Make $1 a real UniVerse file, whatever state the directory is in.  CREATE.FILE
+# builds the pointer, the dictionary and the directory TOGETHER and refuses when
+# any of the three is already there — so OS files with no pointer are debris in
+# its way, and they go first.  $2, when given, is content to put back afterwards.
+ensure_file() {
+    voc_has "$1" && return 0
+    say "registering $1 as a UniVerse file"
+    if [ -n "${2:-}" ] && [ -d "$1" ]; then mv "$1" "$1.staged"; else rm -rf "$1"; fi
+    rm -rf "D_$1"
+    mkfile "$1"
+    [ -e "$1" ] || { echo "install.sh: CREATE.FILE did not create $1" >&2; exit 1; }
+    if [ -d "$1.staged" ]; then
+        for f in "$1.staged"/*; do [ -f "$f" ] && cp "$f" "$1/"; done
+        rm -rf "$1.staged"
+    fi
+}
+
+# BP holds the sources, so they are kept across the rebuild.
+[ -d BP ] || [ -d BP.staged ] || cp -r "$SRC/BP.staged" BP.staged
+if ! voc_has BP && [ ! -d BP ] && [ -d BP.staged ]; then mv BP.staged BP; fi
+ensure_file BP keep
+ensure_file BP.INC keep
+
+# BP.O IS BUILD OUTPUT, and is rebuilt rather than carried.  It also has to
+# EXIST as a UniVerse file before the compiler runs: `BASIC BP *` creates it
+# implicitly, and cannot when an OS file of that name is already sitting there
+# with no pointer naming it — "An operating system file already exists with the
+# name D_BP.O. Unable to create BP.O file.", after which nothing compiles.
+#
+# Objects from somewhere else are worse than none: they compile clean and run
+# code that is not the source beside them.  So they are dropped, not preserved.
+ensure_file BP.O
 
 # PLATFORM.H comes from the BUILD, not from here — the package ships the exact
 # defines its sources were built against, and install puts them where the
