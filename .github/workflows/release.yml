@@ -6,6 +6,7 @@
 #   source                        -> mvx-lang_git-<ver>-source.tar.gz
 #   mvx binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-mvx-linux-x86_64-le.tar.gz
 #   udt binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
+#   uv  binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-uv-linux-x86_64-le.tar.gz
 #
 # git is native (libgit2).  The mvx binary is the compiled verbs plus the
 # libgit2 extension library and the mvx-git CLI, built against a published mvx
@@ -102,6 +103,10 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
+          # A tag carrying a -beta/-rc suffix is a PRE-RELEASE, and GitHub has to
+          # be told: 2.0.0-beta1 published as a full release, which is what
+          # "latest" then points at and what anyone installing by name would get.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.checksum }}
@@ -117,5 +122,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: mvx-lang/mv-package-registry/.github/actions/udt-build@main
+        with:
+          package: mvx-lang/git
+
+  # ---- UniVerse binary -------------------------------------------------------
+  # Same shape as udt, and on the same runner: both build inside their licensed
+  # container on the general VM, so neither depends on a development machine
+  # being in any particular state.  The uv build itself needs no UniVerse — only
+  # the install does — but it is built in the container anyway so the binary is
+  # linked against the platform it will run on rather than whatever the runner
+  # happens to have.
+  uv-binary:
+    runs-on: [self-hosted, linux, uv]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mvx-lang/mv-package-registry/.github/actions/uv-build@main
         with:
           package: mvx-lang/git
