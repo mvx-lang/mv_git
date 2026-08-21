@@ -104,9 +104,17 @@
 *     an INDEXIDS, which UniData then PAGINATED — "Enter <New line> to
 *     continue..." — swallowing the next commands in a piped session.  Stale
 *     output that reads as this command's is worse than none.
+*     NO `ELSE` ON OSWRITE.  UniData's OSWRITE has no ELSE clause and does not
+*     compile with one — it fails with "Misuse of reserved word 'ELSE'" and,
+*     because the error puts the parser at end-of-program, the message points at
+*     a line well past the real one.  install.sh sends the compiler to
+*     /dev/null and leaves the OLD catalog object in place on failure, so this
+*     was invisible: every udt run went on using a GIT.OBJ built before the
+*     clearing was added, and reported success.  (OSREAD does take an ELSE, and
+*     keeps it below.)
       EMPTY = ""
-      OSWRITE EMPTY ON REPO : "/gitmsg" ELSE NULL
-      OSWRITE EMPTY ON REPO : "/gitcat" ELSE NULL
+      OSWRITE EMPTY ON REPO : "/gitmsg"
+      OSWRITE EMPTY ON REPO : "/gitcat"
       BEGIN CASE
 *     STOCKPREP — tell the engine which VOC records belong to the SYSTEM, so a
 *     checkout does not delete them (mv_git#46).

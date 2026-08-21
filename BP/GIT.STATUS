@@ -28,9 +28,29 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
 NEXT I
 $ELSE
 * Inlined from GITUDT.STATUS, which had exactly one caller — this one.
+REPO = ""
 CALL GIT.REPO(REPO)
    AM = CHAR(254) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
+*  STAGED FIRST — what the index holds that HEAD does not.
+*
+*  This walk compares the paths git HOLDS against the live records, which can
+*  see a record change or a record vanish but never sees the index.  So anything
+*  staged with no backing record to compare against — a %FILE% control, the
+*  account descriptor — was invisible here and visible on MVX, whose C status
+*  has always had this section, for the same repository.  An attribute edit is
+*  exactly that kind of change, and a status that stayed clean after one is the
+*  worst possible answer: it reads as "the edit did not happen".
+   STG = ""
+   CALL GIT.OBJ("STAGED", 1, REPO, "", "", "", "", STG)
+   NSG = DCOUNT(STG, AM)
+   FOR SGI = 1 TO NSG
+      IF STG<SGI> # "" THEN
+         PRINT STG<SGI>
+         NCH += 1
+      END
+   NEXT SGI
+   PATHS = ""
    CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    FOR I = 1 TO NP
