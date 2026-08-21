@@ -1,0 +1,51 @@
+*  * @file GIT.ATTR.DEFS
+*  *
+*  * GIT.ATTR.DEFS(SCOPE, DEFS) — every attribute this system knows about, for
+*  * SCOPE "ACCOUNT" or "FILE".
+*  *
+*  * ONE REGISTRY, NOT ONE PER PLATFORM.  A row names which platforms the
+*  * parameter applies to, so the open interchange form can carry a value this
+*  * platform has no use for — that is the whole point of the open form, and it
+*  * is how an account prepared here can be created correctly somewhere else.
+*  * The native form only ever uses the rows its own platform claims.
+*  *
+*  * A row is NAME<VM>PLATFORMS<VM>KIND<VM>DEFAULT<VM>VALUES<VM>TEXT
+*  *
+*  *   PLATFORMS  space-separated from MVX UDT UV, or "*" for all
+*  *   KIND       NUM, TEXT, or ENUM
+*  *   VALUES     for ENUM, the accepted words, space separated
+*  *
+*  * These values describe what to CREATE, not what is live: editing one never
+*  * touches the file sitting here (mv_git#15).  They travel, and a clone or a
+*  * CREATE.FILE on the far side uses them.
+*
+      SUBROUTINE GIT.ATTR.DEFS(SCOPE, DEFS)
+      $INCLUDE BP.INC PLATFORM.H
+      VM = CHAR(253)
+      DEFS = ""
+      IF SCOPE = "ACCOUNT" THEN
+         DEFS<-1> = "name":VM:"*":VM:"TEXT":VM:"":VM:"":VM:"account name"
+         DEFS<-1> = "version":VM:"*":VM:"NUM":VM:"1":VM:"":VM:"descriptor version"
+*        UniVerse fixes the flavour when the account is created and records it
+*        nowhere readable, so it must travel with the repository or be asked
+*        for.  Meaningless on the others, which is why the row says UV.
+         DEFS<-1> = "flavour":VM:"UV":VM:"ENUM":VM:"PICK":VM:"IDEAL IN2 PRIME PICK PIOPEN REALITY":VM:"VOC flavour, fixed at account creation"
+*        MVX names its storage driver; the others have exactly one.
+         DEFS<-1> = "driver":VM:"MVX":VM:"TEXT":VM:"lmdb":VM:"":VM:"storage driver"
+      END ELSE
+         DEFS<-1> = "type":VM:"*":VM:"ENUM":VM:"hash":VM:"hash DIR":VM:"file kind"
+         DEFS<-1> = "modulo":VM:"*":VM:"NUM":VM:"1":VM:"":VM:"data modulo"
+         DEFS<-1> = "dynamic":VM:"UDT UV":VM:"ENUM":VM:"no":VM:"yes no":VM:"dynamic rather than static"
+         DEFS<-1> = "blocksize":VM:"UDT UV":VM:"NUM":VM:"":VM:"":VM:"block size"
+         DEFS<-1> = "hashtype":VM:"UDT UV":VM:"NUM":VM:"":VM:"":VM:"hashing algorithm"
+         DEFS<-1> = "separation":VM:"UV":VM:"NUM":VM:"":VM:"":VM:"group separation"
+*        The dynamic-file parameters a clone silently defaults today: a file
+*        recreated without them lands on the system's split/merge/largerec
+*        rather than the original's, which shows up only as performance drift.
+         DEFS<-1> = "minmod":VM:"UDT":VM:"NUM":VM:"":VM:"":VM:"minimum modulo (dynamic)"
+         DEFS<-1> = "split":VM:"UDT":VM:"NUM":VM:"":VM:"":VM:"split load (dynamic)"
+         DEFS<-1> = "merge":VM:"UDT":VM:"NUM":VM:"":VM:"":VM:"merge load (dynamic)"
+         DEFS<-1> = "largerec":VM:"UDT":VM:"NUM":VM:"":VM:"":VM:"large record size (dynamic)"
+      END
+      RETURN
+      END

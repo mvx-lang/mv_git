@@ -135,7 +135,7 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record) {
 char *GITSTAGEBLOB(char *repo, char *path, char *content) {
     const char *p = path ? path : "";
     const char *use = content ? content : "";
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     int64_t ulen = (int64_t)strlen(use);
     use = mv_git_sticky_control(rp(repo), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(repo));
@@ -144,6 +144,76 @@ char *GITSTAGEBLOB(char *repo, char *path, char *content) {
        leaves it alone is read back as this op's result, so `add` echoed the
        ids a previous INDEXIDS had left there.  Every op owns the channel for
        the length of its call. */
+    return emit(repo, NULL);
+}
+
+/* GITSTAGECTL(repo, path, content) — stage a control blob VERBATIM.
+   GITSTAGEBLOB puts the recorded geometry back through mv_git_sticky_control,
+   which is what stops a resize becoming a commit; the attribute editor is the
+   one place that is meant to yield, so it has its own way in (mv_git#15).  The
+   batch is ended first, so a pending add cannot be written over the edit. */
+char *GITSTAGECTL(char *repo, char *path, char *content) {
+    mv_git_batch_end();
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_stagectl(ctx, rp(repo), path ? path : "",
+                              content ? content : "");
+    mv_ctx_destroy(ctx);
+    free(r);
+    return emit(repo, NULL);
+}
+
+/* GITIXCAT(repo, path) — the STAGED blob at `path` (the index, not HEAD),
+   written to <repo>/gitcat like GITCAT: an editor has to build on the edit
+   before it rather than on the last commit. */
+char *GITIXCAT(char *repo, char *path) {
+    mv_git_batch_end();               /* read what this session has staged */
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_ixcat(ctx, rp(repo), path ? path : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}
+
+/* GITSTAGED(repo) — what the index holds that HEAD does not, so the in-session
+   status can report a staged edit the way the C status already does. */
+char *GITSTAGED(char *repo) {
+    mv_git_batch_end();
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_staged(ctx, rp(repo));
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
+/* GITUDIFF(old, new, path) — a unified diff of two contents.  Answers through
+   the gitcat side channel like CAT: what comes back is content-shaped and may
+   be long, not a status message. */
+char *GITUDIFF(char *repo, char *oldtext, char *newtext, char *path) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_udiff(ctx, oldtext ? oldtext : "", newtext ? newtext : "",
+                           path ? path : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}
+
+/* GITPUTDESC(repo, path, content) — put an edited descriptor back on disk.
+   UniData keeps none there, so this is the engine's no-op; it exists so the
+   BASIC side can call it unconditionally rather than knowing which platforms
+   have an on-disk descriptor. */
+char *GITPUTDESC(char *repo, char *path, char *content) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_putdesc(ctx, rp(repo), path ? path : "",
+                             content ? content : "");
+    mv_ctx_destroy(ctx);
+    free(r);
     return emit(repo, NULL);
 }
 

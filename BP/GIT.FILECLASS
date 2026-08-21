@@ -1,0 +1,52 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.FILECLASS
+*  * @version 1.0
+*  */
+* GIT.FILECLASS(FILE, CTL) — the LIVE file's class, in the open interchange
+* spelling: "DIR", or "hash <modulo> STATIC|DYNAMIC", or a bare "hash" when the
+* platform has no size to report.
+*
+* ONE COPY.  This was written out three times — in GIT.ADD, in GIT.STATUS, and
+* nearly a fourth in GIT.ATTR — and three copies of a rule is how the sticky
+* control came to be applied on two staging paths out of three (540c066).  The
+* drift check in particular has to ask the question the SAME way `add` asks it,
+* or a file would read as diverged the moment the two copies disagreed.
+      SUBROUTINE GIT.FILECLASS(FILE, CTL)
+      $INCLUDE BP.INC PLATFORM.H
+      CTL = "hash"
+      $IFNDEF MVX
+*     FILEINFO key 3 is the type and key 5 the modulus.  A directory file has no
+*     modulus, which is what separates it from a hashed one.
+      OPEN FILE TO FCVAR THEN
+         FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
+         IF MODL <= 0 THEN
+            CTL = "DIR"
+         END ELSE
+            IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
+            CTL = "hash " : MODL : " " : DS
+         END
+      END
+      $ENDIF
+      $IFDEF MVX
+*     MVX HAS NO FILEINFO, and needs none: a file's live description IS its
+*     dictionary's own %FILE% record — `FILE` and the driver — which is what the
+*     account opens it by.  It says which KIND of file this is and nothing about
+*     size, because an LMDB-backed file has no modulo to report.
+      OPEN "DICT", FILE TO FCDV THEN
+         FCREC = ""
+         READ FCREC FROM FCDV, "%FILE%" THEN
+            IF OCONV(FCREC<1, 2>, "MCL") = "dir" THEN CTL = "DIR"
+         END
+      END
+      $ENDIF
+      RETURN
+      END

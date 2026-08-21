@@ -31,8 +31,11 @@
 *             in-process bridge to use.  The frame carries an explicit length, so
 *             the result comes back inline and needs no side-channel file.
 *
-* MVX never gets here: its handlers call the engine directly, since the engine
-* IS its runtime and reads the records itself.
+* MVX mostly does not get here: its heavy handlers call the engine directly,
+* since the engine IS its runtime and reads the records itself.  It has an arm
+* below all the same, carrying the few opcodes a verb written ONCE for all three
+* platforms needs — GIT ATTR is the first of them, and one BASIC body doing the
+* same work everywhere is only possible if this seam exists everywhere.
 *
 * `out` is the operation's output — @AM-separated engine text, or raw record
 * content for CAT.  Staging ops produce none.
@@ -43,6 +46,33 @@
       SUBROUTINE GIT.OBJ(OP, NARGS, A1, A2, A3, A4, A5, OUT)
       $INCLUDE BP.INC PLATFORM.H
       OUT = ""
+*
+      $IFDEF MVX
+*     ---- MVX: the engine is in this process --------------------------------
+*     Only the ops a shared BASIC body needs; anything else is refused BY NAME
+*     rather than quietly answering "", because an op that silently produced
+*     nothing here would read as an empty attribute set rather than as a bug.
+      BEGIN CASE
+      CASE OP = "CAT"      ; CALL GITCAT(A1, A2, OUT)
+      CASE OP = "IXCAT"    ; CALL GITIXCAT(A1, A2, OUT)
+      CASE OP = "STAGED"   ; CALL GITSTAGED(A1, OUT)
+*     DIFFU is the MVX unstaged diff with hunk headers.  It has no arm on the
+*     session platforms and needs none: there the unstaged diff is the BASIC
+*     body below, which renders through UDIFF like the staged one does.
+      CASE OP = "DIFFU"    ; CALL GITDIFFU(A1, A2, OUT)
+      CASE OP = "UDIFF"    ; CALL GITUDIFF(A2, A3, A4, OUT)
+      CASE OP = "PUTDESC"  ; CALL GITPUTDESC(A1, A2, A3, OUT)
+      CASE OP = "FILES"    ; CALL GITFILES(A1, OUT)
+*     Staging ops produce no output, here as everywhere else.
+      CASE OP = "STAGECTL"
+         SOUT = ""
+         CALL GITSTAGECTL(A1, A2, A3, SOUT)
+         OUT = ""
+      CASE 1
+         OUT = "GIT: unknown git-object operation '" : OP : "'"
+      END CASE
+      RETURN
+      $ENDIF
 *
       $IFDEF UV
 *     ---- UniVerse: the background process ---------------------------------
@@ -80,9 +110,17 @@
 *     an INDEXIDS, which UniData then PAGINATED — "Enter <New line> to
 *     continue..." — swallowing the next commands in a piped session.  Stale
 *     output that reads as this command's is worse than none.
+*     NO `ELSE` ON OSWRITE.  UniData's OSWRITE has no ELSE clause and does not
+*     compile with one — it fails with "Misuse of reserved word 'ELSE'" and,
+*     because the error puts the parser at end-of-program, the message points at
+*     a line well past the real one.  install.sh sends the compiler to
+*     /dev/null and leaves the OLD catalog object in place on failure, so this
+*     was invisible: every udt run went on using a GIT.OBJ built before the
+*     clearing was added, and reported success.  (OSREAD does take an ELSE, and
+*     keeps it below.)
       EMPTY = ""
-      OSWRITE EMPTY ON REPO : "/gitmsg" ELSE NULL
-      OSWRITE EMPTY ON REPO : "/gitcat" ELSE NULL
+      OSWRITE EMPTY ON REPO : "/gitmsg"
+      OSWRITE EMPTY ON REPO : "/gitcat"
       BEGIN CASE
 *     STOCKPREP — tell the engine which VOC records belong to the SYSTEM, so a
 *     checkout does not delete them (mv_git#46).
@@ -132,11 +170,20 @@
       CASE OP = "INIT"       ; R = CALLC GITINIT(REPO)
       CASE OP = "STAGE"      ; R = CALLC GITSTAGE(REPO, A2, A3, A4)
       CASE OP = "STAGEBLOB"  ; R = CALLC GITSTAGEBLOB(REPO, A2, A3)
+      CASE OP = "STAGECTL"   ; R = CALLC GITSTAGECTL(REPO, A2, A3)
+      CASE OP = "STAGED"     ; R = CALLC GITSTAGED(REPO)
+      CASE OP = "PUTDESC"    ; R = CALLC GITPUTDESC(REPO, A2, A3)
       CASE OP = "COMMIT"     ; R = CALLC GITCOMMIT(REPO, A2)
       CASE OP = "LOG"        ; R = CALLC GITLOG(REPO, A2)
       CASE OP = "BRANCH"     ; R = CALLC GITBRANCH(REPO, A2)
       CASE OP = "FILES"      ; R = CALLC GITFILES(REPO)
       CASE OP = "CAT"        ; R = CALLC GITCAT(REPO, A2) ; ISCAT = 1
+*     IXCAT answers through the same side channel as CAT, and for the same
+*     reason: what comes back is blob content, not a message.
+      CASE OP = "IXCAT"      ; R = CALLC GITIXCAT(REPO, A2) ; ISCAT = 1
+*     UDIFF returns diff TEXT, which is content-shaped and can be long — the
+*     side channel CAT uses, not the message one.
+      CASE OP = "UDIFF"      ; R = CALLC GITUDIFF(REPO, A2, A3, A4) ; ISCAT = 1
       CASE OP = "SHOW"       ; R = CALLC GITSHOW(REPO, A2, A3)
       CASE OP = "RM"         ; R = CALLC GITRM(REPO, A2, A3)
       CASE OP = "MERGE"      ; R = CALLC GITMERGE(REPO, A2)

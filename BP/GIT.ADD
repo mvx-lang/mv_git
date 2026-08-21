@@ -197,17 +197,11 @@ ADDALL:
       CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:".mv-account", DESC, "", "", OBJOUT)
    END
    RETURN
+*  One copy of this rule now, in GIT.FILECLASS — the drift check has to ask the
+*  question exactly the way `add` asks it.
 FILECLASS:
-   CTL = "hash"
-   OPEN FILE TO FCVAR THEN
-      FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
-      IF MODL <= 0 THEN
-         CTL = "DIR"
-      END ELSE
-         IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
-         CTL = "hash " : MODL : " " : DS
-      END
-   END
+   CTL = ""
+   CALL GIT.FILECLASS(FILE, CTL)
    RETURN
 IXSTAGE:
    OPEN FILE TO IXVAR THEN

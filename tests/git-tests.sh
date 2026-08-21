@@ -46,6 +46,12 @@ if [ "$PLATFORM" = mvx ]; then
   CF()   { "$MVX" -a "$1" -c "CREATE-FILE $2" >/dev/null 2>&1; }
   DF()   { "$MVX" -a "$1" -c "DELETE-FILE $2" >/dev/null 2>&1; }
   GITV() { local a="$1"; shift; "$MVX" -a "$a" -c "$*" 2>&1; }
+  # GITK <acct> <keys> <sentence...> — run a sentence with KEYSTROKES on stdin,
+  # so the full-screen editor can be driven headlessly.  A prompt no automated
+  # test can reach is a prompt that rots, and this suite has already found two
+  # paths that were untested for exactly that reason.
+  GITK() { local a="$1" k="$2"; shift 2
+           printf '%s' "$k" | "$MVX" -a "$a" -c "$*" 2>&1; }
   CT()   { "$MVX" -a "$1" -c "CT $2 $3" 2>&1; }
   SEED() { local a="$1" body="$2" b="$WORK/seed.$RANDOM.b"
            printf '%s\n' "$body" > "$b"
@@ -123,6 +129,11 @@ elif [ "$PLATFORM" = uv ]; then
              ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
                | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   fi
+  # The session script IS stdin, so the editor's keystrokes simply follow the
+  # sentence that starts it.
+  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+           ( cd "$a" && printf 'GIT -M %s\n%sQUIT\n' "${s#GIT }" "$k" | "$MVX" ) 2>&1 \
+             | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
@@ -174,6 +185,11 @@ else
   # out as "GIT -M GIT STATUS".
   GITV() { local a="$1"; shift; local s="$*"
            ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
+             | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+  # The session script IS stdin, so the editor's keystrokes simply follow the
+  # sentence that starts it.
+  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+           ( cd "$a" && printf 'GIT -M %s\n%sQUIT\n' "${s#GIT }" "$k" | "$MVX" ) 2>&1 \
              | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
@@ -287,6 +303,176 @@ case "$(GITV "$A" GIT SHOW TMPF T1)" in
   *one*) bad "file gone from HEAD" "no TMPF/T1" "still there";;
   *)     ok "file gone from HEAD";;
 esac
+
+# GIT ATTR is an IN-SESSION VERB, so the UniVerse CLI path cannot reach it —
+# and must not: giving uv-git its own copy would mean a second implementation of
+# the registry, the validation and the staging, in C, which is exactly what
+# "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
+# where this is tested on UniVerse, and it runs there in full.
+if [ "$PLATFORM" = uv ] && [ "${UV_VIA:-verb}" = cli ]; then
+  skip "GIT ATTR" "in-session verb; covered by the UV_VIA=verb run"
+else
+say "-- GIT ATTR: the attribute editor (mv_git#15) --"
+# Every one of these runs through the SWITCHES, which is why the switches exist:
+# the full-screen editor is the same machinery with a screen on it, and a path
+# only reachable by hand is a path that rots.
+#
+# The attributes are carried by the OPEN interchange control, so the account is
+# staged in that form first.  `-o` is the flag on UniData/UniVerse; on MVX the
+# open form comes from mvx.openaccount, which this suite set at the top — so one
+# sentence serves all three.
+GITV "$A" GIT ADD -A -o >/dev/null
+GITV "$A" GIT COMMIT -m openform >/dev/null
+
+t  "attr lists account"  "name"      "$(GITV "$A" GIT ATTR)"
+t  "attr lists file"     "modulo"    "$(GITV "$A" GIT ATTR CUST)"
+t  "attr set"            "997"       "$(GITV "$A" GIT ATTR CUST --set modulo=997)"
+t  "attr set is staged"  "997"       "$(GITV "$A" GIT ATTR CUST)"
+# IT NEVER COMMITS.  The edit is a staged modification and nothing more, so it
+# has to show in status and must not have produced a commit of its own.
+t  "attr edit shows in status" "%FILE%" "$(GITV "$A" GIT STATUS)"
+case "$(GITV "$A" GIT LOG)" in
+  *modulo*|*attr*) bad "attr does not commit" "no commit from GIT ATTR" "one was made";;
+  *)               ok "attr does not commit";;
+esac
+# AN ORDINARY ADD MUST NOT UNDO IT.  Two staging paths restage a file's control
+# from the account — the working-tree sweep and the record pass — and either one
+# putting the live geometry back would drop the edit before it was ever
+# committed, with status then going clean as though it had landed.
+GITV "$A" GIT ADD -A >/dev/null
+t  "attr survives add -A" "997"      "$(GITV "$A" GIT ATTR CUST)"
+GITV "$A" GIT COMMIT -m geometry >/dev/null
+t  "attr survives commit" "997"      "$(GITV "$A" GIT ATTR CUST)"
+
+# The registry is what makes a value legal, so each kind of refusal is asserted.
+t  "attr rejects bad enum"   "must be one of" "$(GITV "$A" GIT ATTR CUST --set dynamic=maybe)"
+t  "attr rejects bad number" "is a number"    "$(GITV "$A" GIT ATTR CUST --set modulo=abc)"
+t  "attr rejects unknown"    "no attribute"   "$(GITV "$A" GIT ATTR CUST --set wibble=1)"
+# A refusal must change nothing, or a rejected edit would still be half applied.
+t  "refusal changes nothing" "997"   "$(GITV "$A" GIT ATTR CUST)"
+
+t  "attr unset"          "997 -> -"  "$(GITV "$A" GIT ATTR CUST --unset modulo)"
+case "$(GITV "$A" GIT ATTR CUST)" in
+  *997*) bad "attr unset takes effect" "no modulo" "still 997";;
+  *)     ok "attr unset takes effect";;
+esac
+
+# ATTRIBUTES LIVE IN THE GIT OBJECTS, NOT IN THE ACCOUNT.  Recording a file's
+# geometry BEFORE the file exists — so a clone builds it right the first time —
+# is a use of this, and the declaration has to outlive the next `add -A`: prune
+# once counted the control itself as evidence the file had been live and swept
+# it away again.
+t  "attr declares an absent file" "1009" "$(GITV "$A" GIT ATTR ORDERS --set modulo=1009)"
+GITV "$A" GIT ADD -A >/dev/null
+t  "declaration survives add -A"  "1009" "$(GITV "$A" GIT ATTR ORDERS)"
+
+# A CLASS FIELD MUST NOT LEAK INTO THE ONES IT IS NOT CHANGING.  type, modulo
+# and dynamic share one line, so setting one means re-reading the other two —
+# and those reads answer only their own key, returning early for a class that
+# has no modulo.  Anything not cleared first therefore came back as the PREVIOUS
+# read's answer: `--set type=DIR` then `--sync` wrote "hash hash DYNAMIC", with
+# the modulo holding the string "DIR" left over from the type read.
+GITV "$A" GIT ATTR CUST --set modulo=997 --set dynamic=yes >/dev/null
+GITV "$A" GIT ATTR CUST --set type=DIR >/dev/null
+case "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *modulo *//p')" in
+  *DIR*|*hash*) bad "class fields do not leak" "no modulo" "leaked the type";;
+  *)            ok "class fields do not leak";;
+esac
+# A value that DIFFERS from the committed one, so there is a delta to see:
+# staging the same bytes HEAD already has is correctly no change at all.
+GITV "$A" GIT ATTR CUST --set type=hash --set modulo=1201 --set dynamic=yes >/dev/null
+
+# WHAT DID I JUST STAGE?  status says a path changed; --staged says how.  Built
+# from ops rather than a per-platform diff, so this is the same body everywhere.
+t  "diff --staged shows the edit" "+hash 1201" "$(GITV "$A" GIT DIFF --staged)"
+t  "diff --cached is the same"    "+hash 1201" "$(GITV "$A" GIT DIFF --cached)"
+t  "diff --staged filters by file" "CUST"      "$(GITV "$A" GIT DIFF --staged CUST)"
+case "$(GITV "$A" GIT DIFF --staged CUST)" in
+  *ORDERS*) bad "diff --staged filter excludes others" "no ORDERS" "included it";;
+  *)        ok "diff --staged filter excludes others";;
+esac
+# -u is the SAME comparison told properly.  The hunk header is the part the
+# compact form has never had, and it is the part that says WHERE in the record
+# the change is — so its presence is the assertion.
+t  "diff --staged -u has hunk headers" "@@" "$(GITV "$A" GIT DIFF --staged -u)"
+GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m staged-diff >/dev/null
+t  "nothing staged after a commit" "nothing staged" "$(GITV "$A" GIT DIFF --staged)"
+# ...and on the UNSTAGED side too, which is a different body on every platform:
+# C on MVX, BASIC on the session ones.  Both render through the same libgit2
+# call, so both must produce a header.
+SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+WRITE "Ada":@AM:"Vienna" ON F, "C1"'
+t  "diff -u has hunk headers" "@@"  "$(GITV "$A" GIT DIFF CUST -u)"
+case "$(GITV "$A" GIT DIFF CUST)" in
+  *@@*) bad "diff without -u has no header" "no @@" "printed one";;
+  *)    ok "diff without -u has no header";;
+esac
+GITV "$A" GIT RESTORE CUST >/dev/null
+
+# DRIFT.  A resize is local operational tuning: it must NOT show as a diff and
+# must not ride out to other clones as a new default (540c066).  So the editor
+# is the one place the divergence becomes intent — it says the live file no
+# longer matches, and --sync is the explicit answer.
+#
+# The drift is made on `type` rather than `modulo` because every platform can
+# probe which KIND of file something is, while MVX has no modulo to differ
+# about — so the same two assertions run everywhere.
+GITV "$A" GIT ATTR CUST --set type=DIR >/dev/null
+t  "drift reported"      "no longer matches" "$(GITV "$A" GIT ATTR CUST)"
+t  "sync adopts live"    "DIR -> hash"       "$(GITV "$A" GIT ATTR CUST --sync)"
+t  "nothing left to sync" "nothing to sync"  "$(GITV "$A" GIT ATTR CUST --sync)"
+case "$(GITV "$A" GIT ATTR CUST)" in
+  *"no longer matches"*) bad "drift gone after sync" "no drift" "still reported";;
+  *)                     ok "drift gone after sync";;
+esac
+
+# THE FULL-SCREEN EDITOR, driven headlessly.  It is the same registry, the same
+# validation and the same staging the switches use, with a screen on it — which
+# is why the switches were built first — but "same machinery" is a claim, and an
+# untested screen is how it stops being true.
+#
+# `jj` moves to `dynamic`, ENTER cycles the enum, `s` stages.  Letters as well
+# as arrows: a piped test cannot send a decoded key, and the letters are what
+# work when the terminal sends something the platform has not decoded.
+# `dynamic` is part of the class line — "hash <modulo> STATIC|DYNAMIC" — so it
+# needs a modulo to sit beside.  Recorded first, and asserted on its own: the
+# refusal is the behaviour, not an accident of ordering.
+t  "dynamic needs a modulo" "set modulo first" "$(GITV "$A" GIT ATTR CUST --unset modulo; GITV "$A" GIT ATTR CUST --set dynamic=yes)"
+GITV "$A" GIT ATTR CUST --set modulo=997 >/dev/null
+t  "editor stages an edit" "staged" "$(GITK "$A" 'jj
+s' GIT ATTR CUST --edit)"
+t  "editor edit took"      "yes"    "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *dynamic *//p')"
+# ABANDON MEANS ABANDON.  `d` clears the value and `q` leaves without staging,
+# so the recorded value must be exactly what it was.
+t  "editor abandons"       "abandoned" "$(GITK "$A" 'jjdq' GIT ATTR CUST --edit)"
+t  "abandoned edit is not kept" "yes" "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *dynamic *//p')"
+GITV "$A" GIT ATTR CUST --unset dynamic >/dev/null
+
+# The account scope is the same editor with no file argument.
+GITV "$A" GIT ATTR --set version=2 >/dev/null
+t  "attr sets account version" "2"   "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+# Descriptor keys the registry does not name are NOT the editor's to discard:
+# `openaccount` is what marks the account open, and rewriting the descriptor
+# without it would quietly turn the open form off.
+t  "attr keeps unknown keys" "name"  "$(GITV "$A" GIT ATTR)"
+# THE DESCRIPTOR IS ONE THING IN TWO SPELLINGS, and an edit has to reach both.
+# Git carries the portable form; MVX keeps the native one beside the account and
+# the engine converts each way, so an edit landing only in git was regenerated
+# straight back out of the untouched native copy by the next `add -A` — the
+# value was gone and the commit said "nothing to commit", as though nothing had
+# been asked for.  It showed in BOTH status columns first, staged and modified
+# at once, which is the same disagreement seen from the other end.
+#
+# The suite could not have caught it: it edited, added, committed and never
+# looked again.  So the assertion is specifically that it is still there AFTER
+# an add, and that status reports it once.
+GITV "$A" GIT ADD -A >/dev/null
+t  "account edit survives add -A" "2" "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+te "account edit reported once" "1" "$(GITV "$A" GIT STATUS | grep -c 'account\|\.mvx' || true)"
+GITV "$A" GIT COMMIT -m attrs >/dev/null
+t  "account edit survives commit" "2" "$(GITV "$A" GIT ATTR | sed -n 's/^ *version *//p')"
+t  "clean after committing it" "clean" "$(GITV "$A" GIT STATUS)"
+fi
 
 if [ "$SKIP_NET" = 1 ]; then
   skip "remote/clone/fetch/pull/push" "SKIP_NET=1"

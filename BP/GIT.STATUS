@@ -28,9 +28,29 @@ FOR I = 1 TO DCOUNT(OUT, @AM)
 NEXT I
 $ELSE
 * Inlined from GITUDT.STATUS, which had exactly one caller — this one.
+REPO = ""
 CALL GIT.REPO(REPO)
    AM = CHAR(254) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
+*  STAGED FIRST — what the index holds that HEAD does not.
+*
+*  This walk compares the paths git HOLDS against the live records, which can
+*  see a record change or a record vanish but never sees the index.  So anything
+*  staged with no backing record to compare against — a %FILE% control, the
+*  account descriptor — was invisible here and visible on MVX, whose C status
+*  has always had this section, for the same repository.  An attribute edit is
+*  exactly that kind of change, and a status that stayed clean after one is the
+*  worst possible answer: it reads as "the edit did not happen".
+   STG = ""
+   CALL GIT.OBJ("STAGED", 1, REPO, "", "", "", "", STG)
+   NSG = DCOUNT(STG, AM)
+   FOR SGI = 1 TO NSG
+      IF STG<SGI> # "" THEN
+         PRINT STG<SGI>
+         NCH += 1
+      END
+   NEXT SGI
+   PATHS = ""
    CALL GIT.OBJ("FILES", 1, REPO, "", "", "", "", PATHS)
    NP = DCOUNT(PATHS, AM)
    FOR I = 1 TO NP
@@ -177,27 +197,29 @@ UNTRACKED:
    NEXT U
    IF USTK THEN DELETE UVOC, "%GITSTOCK%"
    RETURN
+*  A %FILE% control's CLASS is its FIRST LINE — the lines after it are the
+*  registry's `key = value` parameters (mv_git#15), and CAT hands the blob back
+*  with newlines already turned into attribute marks, so line 1 is <1>.  Reading
+*  the whole blob made every extended control look like neither DIR nor hash.
+*
+*  Only the class is compared, deliberately: a modulo that moved is a RESIZE,
+*  which is local operational tuning and must not read as a change to the thing
+*  being versioned (540c066).  Geometry becomes a change only when GIT ATTR says
+*  so, and that shows up as a staged edit rather than through here.
 CTLSTAT:
    CHG = 0
    CALL GIT.OBJ("CAT", 2, REPO, P, "", "", "", CB)
-   CCL = TRIM(FIELD(CB, " ", 1))
+   CCL = TRIM(FIELD(CB<1>, " ", 1))
    IF CCL[1,3] = "DIR" THEN CCL = "DIR" ELSE CCL = "hash"
    FILE = BASE ; GOSUB FILECLASS
-   LCL = TRIM(FIELD(CTL, " ", 1))
+   LCL = TRIM(FIELD(CTL<1>, " ", 1))
    IF LCL[1,3] = "DIR" THEN LCL = "DIR" ELSE LCL = "hash"
    IF CCL # LCL THEN CHG = 1
    RETURN
+*  One copy of this rule now, in GIT.FILECLASS.
 FILECLASS:
-   CTL = "hash"
-   OPEN FILE TO FCVAR THEN
-      FTY = FILEINFO(FCVAR, 3) ; MODL = FILEINFO(FCVAR, 5)
-      IF MODL <= 0 THEN
-         CTL = "DIR"
-      END ELSE
-         IF FTY = 2 THEN DS = "STATIC" ELSE DS = "DYNAMIC"
-         CTL = "hash " : MODL : " " : DS
-      END
-   END
+   CTL = ""
+   CALL GIT.FILECLASS(FILE, CTL)
    RETURN
 OPENREC:
    ROK = 0 ; LFN = LEN(FN)

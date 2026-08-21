@@ -131,11 +131,11 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                    suggested default: keep an already-committed one STICKY so this
                    account's resize does not overwrite the shipped default and
                    ripple out to other clones — only seed it for a new file. */
-                char type[128];
+                char type[MV_GIT_CTL_MAX];
                 if (!mv_fileclass(ctx, name, type, sizeof type))
                     snprintf(type, sizeof type, "hash");
                 if (strncmp(type, "hash", 4) == 0) {
-                    char committed[128];
+                    char committed[MV_GIT_CTL_MAX];
                     if (mv_git_committed_control(repo, name, committed,
                                                  sizeof committed) >= 0 &&
                         strncmp(committed, "hash", 4) == 0)

@@ -78,6 +78,35 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name);
    controls (.mv-account, <file>.DICT/%FILE%) that have no backing record. */
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content);
+/* Stage a control blob VERBATIM, with no stickiness — the attribute editor's
+   way in (mv_git#15).  Everything else stages through mv_git_stageblob and
+   keeps the recorded geometry; this is the one path meant to change it, which
+   is why deliberately changing a shipped default is a command and not a side
+   effect of resizing a file. */
+char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
+                      const char *content);
+/* Put an edited account descriptor back on disk in this platform's own form —
+   the portable one is CONVERTED, a native one written verbatim.  The descriptor
+   is one thing in two spellings and the engine converts both ways already, so an
+   edit landing in only the git side is not an edit to the account.  Does nothing
+   where no descriptor lives on disk (UniData, UniVerse). */
+char *mv_git_putdesc(mv_ctx *ctx, const char *repo, const char *path,
+                     const char *content);
+/* The STAGED content of `path` (the index, not HEAD), marks restored.  An
+   editor must build on the edit before it, not on the last commit. */
+char *mv_git_ixcat(mv_ctx *ctx, const char *repo, const char *path);
+/* …with the true byte length, for the same reason CAT has one: a staged blob is
+   arbitrary bytes and strlen would truncate it at the first NUL. */
+char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
+                       int64_t *outlen);
+/* What the index holds that HEAD does not: "<status>  <path>" per delta. */
+char *mv_git_staged(mv_ctx *ctx, const char *repo);
+/* The unstaged diff with hunk headers — the -u form of mv_git_diff. */
+char *mv_git_diff_u(mv_ctx *ctx, const char *repo, const char *file);
+/* A unified diff of two @AM-separated CONTENTS, so the BASIC diff bodies render
+   through the same libgit2 call the C diff does instead of hand-rolling one. */
+char *mv_git_udiff(mv_ctx *ctx, const char *oldtext, const char *newtext,
+                   const char *path);
 
 /* Render the canonical portable `.mv-account` descriptor for an account with the
    given identity and default hash backend into `out`; returns its length.  One
@@ -144,6 +173,20 @@ int mv_git_desc_adopt(const char *src, size_t srclen, const char *platform,
 int mv_git_desc_field(const char *src, size_t srclen, const char *key,
                       char *out, size_t cap);
 
+/* A %FILE% CONTROL IS EXTENSIBLE, AND ITS FIRST LINE IS THE WHOLE OF THE OLD
+   FORMAT.  Line 1 is the file's class — "DIR", or "hash <modulo> STATIC|DYNAMIC"
+   — and every line after it is one `key = value` parameter from the attribute
+   registry (BP/GIT.ATTR.DEFS, mv_git#15): the UniData dynamic set (minmod,
+   split, merge, largerec, blocksize, hashtype) and whatever later backends
+   bring.  Growing the control this way rather than widening line 1 is what lets
+   a reader that predates a parameter still get the class right, and it is the
+   same `key = value` grammar the account descriptor already uses.
+
+   So a reader that wants the class takes LINE ONE, not the trimmed blob.  A
+   control now runs to a few hundred bytes rather than the couple of dozen the
+   single line needed, which is what MV_GIT_CTL_MAX sizes. */
+#define MV_GIT_CTL_MAX 512
+
 /* The open-form %FILE% control committed for `base` (HEAD's <base>.DICT/%FILE%)
    in `out`; returns its length, or -1 if `base` has no committed control yet.
    Generators use it to keep a shipped hash modulo sticky: a re-add preserves the
@@ -155,7 +198,7 @@ int mv_git_committed_control(const char *repo, const char *base,
 /* %FILE% IS CREATE-TIME METADATA, NOT LIVE STATE.  Given a blob about to be
    staged at `path`, return the content that should actually go in: for a hash
    file's <base>.DICT/%FILE% that HEAD already carries, the committed control,
-   otherwise `content` unchanged.  `keep` is scratch of at least 128 bytes; the
+   otherwise `content` unchanged.  `keep` is scratch of at least MV_GIT_CTL_MAX bytes; the
    returned pointer is either `content` or `keep`, and *len is updated to match.
 
    A file's geometry is recorded when git first learns the file exists, and then

@@ -1,0 +1,881 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.ATTR
+*  * @version 1.0
+*  */
+* GIT ATTR — view and edit the attributes git records for an account or a file
+* (mv_git#15).
+*
+*     GIT ATTR                             the ACCOUNT's attributes
+*     GIT ATTR <file>                      that FILE's parameters
+*     GIT ATTR {<file>} --set name=value   change one
+*     GIT ATTR {<file>} --unset name       remove one
+*
+* No file argument means account level; a file argument means that file.  Same
+* editor, different subject.
+*
+* THESE VALUES DESCRIBE WHAT TO CREATE, NOT WHAT IS LIVE.  Editing `modulo` does
+* not resize anything here — it says what a clone, or a CREATE.FILE on the far
+* side, should build.  Resizing the live file is local operational tuning and
+* deliberately does not show as a diff (540c066); this is the one place geometry
+* changes on purpose.
+*
+* AND IT NEVER COMMITS.  It edits, the edit shows up in `git status` like any
+* other modification, and the user commits it when they mean to.  So the
+* versioned change stays "edit the attributes, then commit" rather than the
+* editor being a shortcut around it.
+*
+* One body for all three platforms: the registry is shared (GIT.ATTR.DEFS) and
+* every git-object call goes through GIT.OBJ, which now has an MVX arm for
+* exactly this reason.
+      SUBROUTINE GIT.ATTR
+      $INCLUDE BP.INC PLATFORM.H
+      AM = CHAR(254) ; VM = CHAR(253) ; LF = CHAR(10)
+*     Which platform's rows are this platform's.  FLAT guards, never nested: an
+*     $IFDEF inside another arm silently drops the rest of the program on
+*     UniVerse (mv_git#46), and $ELSEIF is not honoured at all.
+      PLAT = ""
+      $IFDEF MVX
+      PLAT = "MVX"
+      $ENDIF
+      $IFDEF UDT
+      PLAT = "UDT"
+      $ENDIF
+      $IFDEF UV
+      PLAT = "UV"
+      $ENDIF
+      IF PLAT = "" THEN PLAT = "MVX"
+*
+*     Every output this program hands to a subroutine starts assigned, so the
+*     runtime has nothing to warn about before the call fills it in.
+      FILE = "" ; SETS = "" ; UNSETS = "" ; DEFS = "" ; REPO = "" ; PFX = ""
+      GSRC = "" ; OBJOUT = "" ; HASSET = 0 ; HASUNSET = 0 ; HASSYNC = 0 ; HASEDIT = 0
+      CALL GIT.CMD.ARG(1, FILE)
+      CALL GIT.CMD.HAS("set", HASSET)     ; CALL GIT.CMD.VAL("set", SETS)
+      CALL GIT.CMD.HAS("unset", HASUNSET) ; CALL GIT.CMD.VAL("unset", UNSETS)
+      CALL GIT.CMD.HAS("sync", HASSYNC)
+      CALL GIT.CMD.HAS("edit", HASEDIT)
+      IF NOT(HASSET) THEN SETS = ""
+      IF NOT(HASUNSET) THEN UNSETS = ""
+      IF FILE = "" THEN SCOPE = "ACCOUNT" ELSE SCOPE = "FILE"
+      CALL GIT.ATTR.DEFS(SCOPE, DEFS)
+      NDEFS = DCOUNT(DEFS, AM)
+*     The registry's names, so an error can say what IS accepted rather than
+*     only what is not.
+      KNOWN = ""
+      FOR DI = 1 TO NDEFS
+         IF KNOWN # "" THEN KNOWN = KNOWN : " "
+         KNOWN = KNOWN : DEFS<DI, 1>
+      NEXT DI
+      CALL GIT.REPO(REPO)
+      CALL GIT.PREFIX(PFX)
+      GOSUB SUBJECT
+      IF FAILED THEN RETURN
+      NCHG = 0
+*     ---- edits ------------------------------------------------------------
+      IF SETS # "" THEN
+         NS = DCOUNT(SETS, VM)
+         FOR SI = 1 TO NS
+            IT = TRIM(SETS<1, SI>)
+            EQP = INDEX(IT, "=", 1)
+            IF EQP = 0 THEN
+               PRINT "GIT ATTR: --set takes name=value, not '" : IT : "'"
+               RETURN
+            END
+            SK = OCONV(TRIM(IT[1, EQP - 1]), "MCL")
+            SV = TRIM(IT[EQP + 1, LEN(IT) - EQP])
+            GOSUB EDITABLE
+            IF NOT(OKED) THEN RETURN
+            GOSUB CHECKVAL
+            IF NOT(VOK) THEN RETURN
+            AK = SK ; GOSUB GETATTR ; OLDV = AV
+            AK = SK ; AV = SV ; GOSUB PUTATTR
+            IF PUTERR # "" THEN
+               PRINT "GIT ATTR: " : SK : ": " : PUTERR
+               RETURN
+            END
+            GOSUB REPORT
+            NCHG += 1
+         NEXT SI
+      END
+      IF UNSETS # "" THEN
+         NU = DCOUNT(UNSETS, VM)
+         FOR UI = 1 TO NU
+            SK = OCONV(TRIM(UNSETS<1, UI>), "MCL")
+            SV = ""
+            GOSUB EDITABLE
+            IF NOT(OKED) THEN RETURN
+            AK = SK ; GOSUB GETATTR ; OLDV = AV
+            AK = SK ; AV = "" ; GOSUB DELATTR
+            GOSUB REPORT
+            NCHG += 1
+         NEXT UI
+      END
+*     ---- adopt the live geometry -------------------------------------------
+*
+*     A RESIZE IS NOT A CHANGE TO WHAT IS VERSIONED.  Resizing a live file is
+*     local operational tuning, so it deliberately does not show as a diff and
+*     does not ride out to other clones as a new default (540c066).  But the
+*     divergence is worth KNOWING about, and this is the one place it can become
+*     intent: --sync takes the live values as an edit, which then shows in
+*     status and is committed like any other.
+      IF HASSYNC THEN
+         GOSUB DRIFT
+         IF DN = 0 THEN
+            PRINT "nothing to sync - the live file matches what is recorded"
+            RETURN
+         END
+         FOR SYI = 1 TO DN
+            SK = DKEYS<SYI> ; SV = DLIVE<SYI>
+            GOSUB EDITABLE
+            IF NOT(OKED) THEN RETURN
+            OLDV = DREC<SYI>
+            AK = SK ; AV = SV ; GOSUB PUTATTR
+            IF PUTERR # "" THEN
+               PRINT "GIT ATTR: " : SK : ": " : PUTERR
+               RETURN
+            END
+            GOSUB REPORT
+            NCHG += 1
+         NEXT SYI
+      END
+*     ---- the full-screen editor --------------------------------------------
+      IF HASEDIT THEN
+         GOSUB EDITOR
+         PRINT @(-1) :
+         IF ECANCEL THEN
+            PRINT "abandoned - nothing staged"
+            RETURN
+         END
+         IF NCHG = 0 THEN
+            PRINT "nothing changed"
+            RETURN
+         END
+         GOSUB STAGE
+         RETURN
+      END
+*     ---- nothing asked for: just say what is recorded ----------------------
+      IF NCHG = 0 THEN
+         GOSUB LIST
+         RETURN
+      END
+      GOSUB STAGE
+      RETURN
+*
+*     ---- what is being edited, and where it lives -------------------------
+*
+*     THE OPEN FORM WINS WHEN IT IS THERE.  `.mv-account` in the repository is
+*     what makes this the open interchange format, and in that form every
+*     parameter is editable whatever platform it came from — an account being
+*     prepared for another platform carries values this one has no use for.  A
+*     native repository has this platform's own marker instead, and only the
+*     rows this platform claims apply.
+SUBJECT:
+      FAILED = 0 ; NATIVECTL = 0
+      GPATH = PFX : ".mv-account" ; GOSUB GETBLOB
+      OPENFMT = 0
+      IF GSRC # "" THEN OPENFMT = 1
+      IF SCOPE = "ACCOUNT" THEN
+         IF OPENFMT THEN
+            PATH = GPATH ; SRC = GSRC
+            RETURN
+         END
+*        The native marker is per platform, and its name is meaningful: a
+*        `flavour` belongs in a `.uv`, and its absence from a `.udt` or `.mvx`
+*        says the platform has no such notion rather than that the value is
+*        missing.
+         NATV = ".mvx"
+         IF PLAT = "UDT" THEN NATV = ".udt"
+         IF PLAT = "UV" THEN NATV = ".uv"
+         GPATH = PFX : NATV ; GOSUB GETBLOB
+         PATH = GPATH ; SRC = GSRC
+         IF SRC = "" THEN
+            SRC = "# " : NATV : " - MV account descriptor"
+         END
+         RETURN
+      END
+      PATH = PFX : FILE : ".DICT/%FILE%" ; GPATH = PATH ; GOSUB GETBLOB
+      SRC = GSRC
+      IF SRC # "" THEN
+*        IS THIS THE PORTABLE CONTROL, OR THE PLATFORM'S OWN RECORD?  They share
+*        a path and mean different things.  On MVX a file's %FILE% is a real
+*        dictionary record — `FILE` and the driver, mark-separated — and a
+*        native commit carries it verbatim, because on the same platform it is
+*        exactly what recreates the file.  The open control is the portable
+*        class, and only that one describes geometry.
+*
+*        Rewriting a record as though it were a control would put "hash 997"
+*        where the dictionary expects its own descriptor, and a checkout would
+*        write that back into the account.  So the record form is read-only
+*        here, and says where the editable one comes from.
+         NATIVECTL = 0
+         IF SRC<1, 1> = "FILE" AND DCOUNT(SRC<1>, VM) > 1 THEN NATIVECTL = 1
+         RETURN
+      END
+*     NO CONTROL RECORDED YET, AND THE FILE NEED NOT BE HERE.
+*
+*     These attributes live in the git objects, not in the account: they say
+*     what to CREATE, and the thing they describe may not exist on this machine
+*     at all.  Setting up a file's geometry BEFORE the file — so a clone builds
+*     it right the first time — is a use of this, not a mistake to be caught.
+*
+*     So a name with no control starts from the bare class.  A file that is not
+*     in the account is worth SAYING, because it is also what a typo looks like,
+*     but it is not an error.
+      SRC = "hash"
+      OPEN FILE TO ATTRFV ELSE
+         PRINT "note: '" : FILE : "' is not a file in this account - recording what to create"
+      END
+      RETURN
+*
+*     The blob as git has it: THE INDEX FIRST, then HEAD.  An edit builds on the
+*     edit before it — reading HEAD would build on the last commit instead, so a
+*     second --set before a commit would quietly drop the first.
+GETBLOB:
+      CALL GIT.OBJ("IXCAT", 2, REPO, GPATH, "", "", "", GSRC)
+      IF GSRC = "" THEN
+         CALL GIT.OBJ("CAT", 2, REPO, GPATH, "", "", "", GSRC)
+      END
+*     A blob ends with a newline, which comes back as a trailing empty
+*     attribute; carrying it would put a blank line into the file on every
+*     single edit.
+      NB = DCOUNT(GSRC, AM)
+      IF NB > 1 AND GSRC<NB> = "" THEN GSRC = DELETE(GSRC, NB, 0, 0)
+      RETURN
+*
+*     ---- the registry -----------------------------------------------------
+*
+*     SK -> DROW, 0 when the registry does not name it.
+LOOKUP:
+      DROW = 0
+      FOR DI = 1 TO NDEFS
+         IF DEFS<DI, 1> = SK THEN
+            DROW = DI
+            DI = NDEFS                    ;* found — stop looking
+         END
+      NEXT DI
+      RETURN
+*
+*     Does the row at DROW apply on THIS platform?  OKPLAT is the plain answer;
+*     EDITOK is the one that governs an edit, and in the open format it is
+*     always yes — carrying a parameter this platform cannot use is the whole
+*     point of the interchange form.
+APPLIES:
+      OKPLAT = 0
+      PL = DEFS<DROW, 2>
+      IF PL = "*" THEN OKPLAT = 1
+      IF INDEX(" " : PL : " ", " " : PLAT : " ", 1) > 0 THEN OKPLAT = 1
+      EDITOK = OKPLAT
+      IF OPENFMT THEN EDITOK = 1
+      RETURN
+*
+*     Can SK be edited here?  Says why not, rather than failing quietly.
+EDITABLE:
+      OKED = 0
+      IF NATIVECTL THEN
+         PRINT "GIT ATTR: " : FILE : "'s control here is this platform's own %FILE% record, not the portable one"
+         PRINT "  geometry is carried by the open interchange control; stage this account in the"
+         PRINT "  open format (GIT ADD -A -o) and it becomes editable"
+         RETURN
+      END
+      GOSUB LOOKUP
+      IF DROW = 0 THEN
+         PRINT "GIT ATTR: no attribute '" : SK : "' at " : OCONV(SCOPE, "MCL") : " level"
+         PRINT "  known: " : KNOWN
+         RETURN
+      END
+      GOSUB APPLIES
+      IF NOT(EDITOK) THEN
+         PRINT "GIT ATTR: '" : SK : "' applies to " : DEFS<DROW, 2> : ", and this is a native " : PLAT : " repository"
+         PRINT "  the open format carries every platform's parameters; a native one carries its own"
+         RETURN
+      END
+      OKED = 1
+      RETURN
+*
+*     SV against the row's KIND, normalised to the registry's own spelling so
+*     `--set dynamic=YES` and `--set dynamic=yes` record the same bytes.
+CHECKVAL:
+      VOK = 1
+      KIND = DEFS<DROW, 3>
+      IF KIND = "NUM" THEN
+         IF SV = "" OR NUM(SV) = 0 THEN
+            PRINT "GIT ATTR: " : SK : " is a number, not '" : SV : "'"
+            VOK = 0
+            RETURN
+         END
+      END
+      IF KIND = "ENUM" THEN
+         EVALS = DEFS<DROW, 5>
+         NEV = DCOUNT(EVALS, " ")
+         HIT = "" ; WANT = OCONV(SV, "MCU")
+         FOR EI = 1 TO NEV
+            CAND = FIELD(EVALS, " ", EI)
+            IF OCONV(CAND, "MCU") = WANT THEN HIT = CAND
+         NEXT EI
+         IF HIT = "" THEN
+            PRINT "GIT ATTR: " : SK : " must be one of: " : EVALS
+            VOK = 0
+            RETURN
+         END
+         SV = HIT
+      END
+      RETURN
+*
+*     ---- reading and writing one attribute --------------------------------
+*
+*     A file's type, modulo and dynamic-ness are LINE ONE of the control — the
+*     class the rest of the engine reads — and every other parameter is a
+*     `key = value` line below it.  So those three are handled apart; everything
+*     else, on both scopes, is the same line edit.
+GETATTR:
+      AV = ""
+      ISCLASS = 0
+      IF SCOPE = "FILE" THEN
+         IF AK = "type" OR AK = "modulo" OR AK = "dynamic" THEN ISCLASS = 1
+      END
+      IF ISCLASS THEN
+         GOSUB CLASSGET
+         RETURN
+      END
+      GOSUB DESCKEY
+      NL = DCOUNT(SRC, AM)
+      FOR LI = 1 TO NL
+         GOSUB LINEKEY
+         IF LK = AKEY THEN
+            AV = LV
+            LI = NL                       ;* found — stop
+         END
+      NEXT LI
+      RETURN
+*
+PUTATTR:
+      PUTERR = ""
+      ISCLASS = 0
+      IF SCOPE = "FILE" THEN
+         IF AK = "type" OR AK = "modulo" OR AK = "dynamic" THEN ISCLASS = 1
+      END
+      IF ISCLASS THEN
+         GOSUB CLASSPUT
+         RETURN
+      END
+      GOSUB DESCKEY
+      NEWLN = AKEY : " = " : AV
+      PUTDONE = 0 ; NL = DCOUNT(SRC, AM)
+      FOR LI = 1 TO NL
+         GOSUB LINEKEY
+         IF LK = AKEY THEN
+            SRC<LI> = NEWLN
+            PUTDONE = 1
+            LI = NL
+         END
+      NEXT LI
+      IF NOT(PUTDONE) THEN SRC<-1> = NEWLN
+      RETURN
+*
+DELATTR:
+      ISCLASS = 0
+      IF SCOPE = "FILE" THEN
+         IF AK = "type" OR AK = "modulo" OR AK = "dynamic" THEN ISCLASS = 1
+      END
+      IF ISCLASS THEN
+         GOSUB CLASSPUT                   ;* an empty value rewrites line 1
+         RETURN
+      END
+      GOSUB DESCKEY
+      NL = DCOUNT(SRC, AM)
+*     Backwards, so removing a line cannot move the one not yet looked at.
+      FOR LI = NL TO 1 STEP -1
+         GOSUB LINEKEY
+         IF LK = AKEY THEN SRC = DELETE(SRC, LI, 0, 0)
+      NEXT LI
+      RETURN
+*
+*     The registry name and the descriptor key are the same word everywhere but
+*     one: the account descriptor has always spelled its storage backend `hash`,
+*     and the registry calls it `driver` because that is what it is.  Renaming
+*     the descriptor key would break every reader of it, so the editor maps.
+DESCKEY:
+      AKEY = AK
+      IF SCOPE = "ACCOUNT" AND AK = "driver" THEN AKEY = "hash"
+      RETURN
+*
+*     Line LI of SRC as a `key = value` pair: LK is the lower-cased key ("" when
+*     the line is a comment, a blank, or the class line), LV the value.
+LINEKEY:
+      LK = "" ; LV = ""
+      TL = TRIM(SRC<LI>)
+      IF TL = "" THEN RETURN
+      IF TL[1, 1] = "#" OR TL[1, 1] = "*" THEN RETURN
+      EQL = INDEX(TL, "=", 1)
+      IF EQL = 0 THEN RETURN
+      LK = OCONV(TRIM(TL[1, EQL - 1]), "MCL")
+      LV = TRIM(TL[EQL + 1, LEN(TL) - EQL])
+      RETURN
+*
+*     ---- line one: the file's class ---------------------------------------
+*     AV IS CLEARED HERE, not left to the caller.  Most of the arms below answer
+*     only their own key and RETURN — a directory file has no modulo, a hash
+*     class may carry no dynamic token — so anything they do not set has to be
+*     empty on the way in or it keeps whatever the LAST call left there.
+*     GETATTR happened to clear it first, which is why reading was always right;
+*     CLASSPUT calls straight in, three times in a row, and so read each field
+*     it was NOT changing as the previous field's answer.  `--set type=DIR`
+*     followed by `--sync` wrote a class line of "hash hash DYNAMIC": the modulo
+*     was the string "DIR" left over from the type read before it.
+CLASSGET:
+      AV = ""
+*     The platform's own record says which KIND of file it is and nothing about
+*     geometry, so that is all it can answer.
+      IF NATIVECTL THEN
+         IF AK = "type" THEN
+            IF OCONV(SRC<1, 2>, "MCL") = "dir" THEN AV = "DIR" ELSE AV = "hash"
+         END
+         RETURN
+      END
+      CLIN = SRC<1>
+*     One parser for the recorded class and for the live one, so the drift check
+*     cannot decide a file has diverged because two readers disagreed.
+CLASSPARSE:
+      AV = ""
+      CL = TRIM(CLIN)
+      CTOK = OCONV(TRIM(FIELD(CL, " ", 1)), "MCU")
+      IF CTOK = "DIR" THEN
+*        A directory file has neither a modulo nor a dynamic/static form.
+         IF AK = "type" THEN AV = "DIR"
+         RETURN
+      END
+      IF AK = "type" THEN
+         AV = "hash"
+         RETURN
+      END
+      CMOD = TRIM(FIELD(CL, " ", 2))
+      IF AK = "modulo" THEN
+         IF CMOD # "" AND NUM(CMOD) THEN AV = CMOD
+         RETURN
+      END
+      CDYN = OCONV(TRIM(FIELD(CL, " ", 3)), "MCU")
+      IF CDYN = "DYNAMIC" THEN AV = "yes"
+      IF CDYN = "STATIC" THEN AV = "no"
+      RETURN
+*
+*     Rewrite line 1 with AK set to AV, leaving the other two as they were.  An
+*     empty AV is the unset: "hash" alone means whatever the target platform
+*     defaults to, which is exactly what having no recorded modulo meant before
+*     any of this existed.
+CLASSPUT:
+      PK = AK ; PV = AV
+      AK = "type"    ; GOSUB CLASSGET ; CTY = AV
+      AK = "modulo"  ; GOSUB CLASSGET ; CMO = AV
+      AK = "dynamic" ; GOSUB CLASSGET ; CDY = AV
+      IF PK = "type"    THEN CTY = PV
+      IF PK = "modulo"  THEN CMO = PV
+      IF PK = "dynamic" THEN CDY = PV
+*     DYNAMIC QUALIFIES A SIZED HASH FILE, and the class grammar says so:
+*     "hash <modulo> STATIC|DYNAMIC".  With no modulo there is nowhere on the
+*     line to put it, and the alternative spellings are worse — inventing a
+*     modulo would record a size nobody chose, and "hash DYNAMIC" is not a form
+*     any reader here parses, including this one.  So say it rather than write a
+*     line that silently drops the answer, which is what happened before: the
+*     value was accepted, reported as changed, and then not there.
+      IF PK = "dynamic" AND PV # "" AND CMO = "" THEN
+         IF OCONV(CTY, "MCU") # "DIR" THEN
+            PUTERR = "dynamic qualifies a sized hash file - set modulo first"
+            AK = PK ; AV = PV
+            RETURN
+         END
+      END
+      IF OCONV(CTY, "MCU") = "DIR" THEN
+         SRC<1> = "DIR"
+      END ELSE
+         NEWCL = "hash"
+         IF CMO # "" THEN
+            NEWCL = NEWCL : " " : CMO
+            IF CDY = "yes" THEN NEWCL = NEWCL : " DYNAMIC"
+            IF CDY = "no" THEN NEWCL = NEWCL : " STATIC"
+         END
+         SRC<1> = NEWCL
+      END
+      AK = PK ; AV = PV
+      RETURN
+*
+*     ---- output -----------------------------------------------------------
+*     ---- drift: the live file against what is recorded ---------------------
+*
+*     Only where something IS recorded.  An unrecorded parameter is not a
+*     divergence, it is simply unrecorded — comparing against it would report
+*     every untouched file as drifted and the signal would be worthless.
+*
+*     And only what this platform can actually probe: on MVX that is the KIND of
+*     file and nothing else, because an LMDB-backed file has no modulo to differ
+*     about.
+DRIFT:
+      DN = 0 ; DKEYS = "" ; DLIVE = "" ; DREC = ""
+      IF SCOPE # "FILE" THEN RETURN
+      IF NATIVECTL THEN RETURN
+      LCTL = ""
+      CALL GIT.FILECLASS(FILE, LCTL)
+      IF LCTL = "" THEN RETURN
+      DPROBE = "type" : AM : "modulo" : AM : "dynamic"
+      FOR DRI = 1 TO 3
+         AK = DPROBE<DRI> ; GOSUB GETATTR ; RECV = AV
+         IF RECV # "" THEN
+            CLIN = LCTL ; AK = DPROBE<DRI> ; AV = "" ; GOSUB CLASSPARSE
+            IF AV # "" AND AV # RECV THEN
+               DN += 1
+               DKEYS<DN> = DPROBE<DRI> ; DLIVE<DN> = AV ; DREC<DN> = RECV
+            END
+         END
+      NEXT DRI
+      RETURN
+*
+DRIFTSAY:
+      IF DN = 0 THEN RETURN
+      PRINT "the live file no longer matches what is recorded:"
+      FOR DSI = 1 TO DN
+         PADS = DKEYS<DSI> ; PADW = 12 ; GOSUB PAD
+         PRINT "  " : PADS : DREC<DSI> : " recorded, " : DLIVE<DSI> : " live"
+      NEXT DSI
+      PRINT "a resize is local tuning, not a change to what is versioned;"
+      PRINT "GIT ATTR " : FILE : " --sync makes it one"
+      RETURN
+*
+LIST:
+      GOSUB HEADING
+      FOR DI = 1 TO NDEFS
+         AK = DEFS<DI, 1> ; GOSUB GETATTR
+         DROW = DI ; GOSUB APPLIES
+         SHOW = AV
+         IF SHOW = "" THEN SHOW = "-"
+         NOTE = ""
+         IF NOT(OKPLAT) THEN NOTE = "   [" : DEFS<DROW, 2> : "]"
+         IF AV = "" AND DEFS<DROW, 4> # "" THEN NOTE = NOTE : "   default " : DEFS<DROW, 4>
+         PADS = AK ; PADW = 12 ; GOSUB PAD
+         PRINT "  " : PADS : SHOW : NOTE
+      NEXT DI
+      GOSUB DRIFT
+      GOSUB DRIFTSAY
+      RETURN
+*
+HEADING:
+      IF OPENFMT THEN FMTN = "open" ELSE FMTN = "native"
+      IF SCOPE = "ACCOUNT" THEN
+         PRINT "account attributes (" : FMTN : " format, " : PATH : ")"
+      END ELSE
+         PRINT FILE : " attributes (" : FMTN : " format, " : PATH : ")"
+      END
+      RETURN
+*
+REPORT:
+      PADS = SK ; PADW = 12 ; GOSUB PAD
+      OSHOW = OLDV ; IF OSHOW = "" THEN OSHOW = "-"
+      NSHOW = SV   ; IF NSHOW = "" THEN NSHOW = "-"
+      PRINT "  " : PADS : OSHOW : " -> " : NSHOW
+      RETURN
+*
+*     Pad by hand.  FMT's %-fill and the MX mask are not portable across these
+*     three; a hand-built pad is.
+PAD:
+      PADN = PADW - LEN(PADS)
+      IF PADN < 1 THEN PADN = 1
+      PADS = PADS : STR(" ", PADN)
+      RETURN
+*
+*
+*     ---- the full-screen editor --------------------------------------------
+*
+*     Menuconfig-shaped, over PRINT @(col,row) — which all three platforms have.
+*     NOT ncurses: udt_curses is a UniData-only add-on, so it cannot carry a
+*     feature that has to work everywhere.
+*
+*     It is the SAME machinery the switches drive — same registry, same
+*     validation, same PUTATTR, same staging — with a screen on it.  That is the
+*     order this was built in on purpose: the switches make every one of those
+*     paths testable headlessly, so the screen adds a way in rather than a
+*     second implementation to keep in step.
+*
+*     And it never commits either.  `s` stages, exactly as --set does.
+EDITOR:
+      CUR = 1 ; EDONE = 0 ; ECANCEL = 0 ; EMSG = ""
+      IF SCOPE = "ACCOUNT" THEN SUBJNAME = "account" ELSE SUBJNAME = FILE
+      IF OPENFMT THEN FMTN = "open" ELSE FMTN = "native"
+      GOSUB SCRBEGIN
+      LOOP
+         GOSUB PAINT
+         GOSUB SCRKEY
+         GOSUB EDITKEY
+         IF EDONE THEN EXIT
+      REPEAT
+      GOSUB SCREND
+      RETURN
+*
+*     ---- the screen, chosen at run time ------------------------------------
+*
+*     CURSES IF IT IS THERE, THE PICK SCREEN OTHERWISE.  udt_curses gives real
+*     ncurses — raw keys, no echo, proper refresh — but it is a UniData-only
+*     add-on, so it cannot be what this depends on: the fallback is
+*     PRINT @(col,row) and KEYIN, which all three platforms have, and which is
+*     what runs when curses is absent.
+*
+*     GIT.HAS is the probe, the same seam that picks the installed cmd over the
+*     bundled one.  And the CALLC arm is guarded on UDT rather than on "not
+*     MVX", because CALLC is a UniData statement UniVerse parses as an array
+*     reference — it has to be excluded by the PREPROCESSOR, not by a runtime
+*     branch, or it never compiles there at all (mv_git#52).
+SCRBEGIN:
+      USECURS = 0
+      $IFDEF UDT
+      CALL GIT.HAS("curses", HASCURS)
+      IF HASCURS THEN
+         USECURS = 1
+         CRC = CALLC CURSINIT("")
+         CRC = CALLC CURSCURSOR("0")
+      END
+      $ENDIF
+      RETURN
+*
+SCREND:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSCURSOR("1")
+         CRC = CALLC CURSEND("")
+      END
+      $ENDIF
+      RETURN
+*
+*     One keystroke.  Curses hands back a LOGICAL NAME (UP, ENTER, …) and so
+*     does MVX's own KEYIN; UniData and UniVerse hand back the raw character.
+*     EDITKEY reads both, so neither convention has to be normalised away.
+SCRKEY:
+      KEY = ""
+      $IFDEF UDT
+      IF USECURS THEN
+         KEY = CALLC CURSKEY("")
+         RETURN
+      END
+*     UNIDATA HAS NO KEYIN.  `KEYIN()` does not parse there at all, and a bare
+*     `KEYIN` compiles as an ordinary variable that was never assigned — which
+*     is the worse of the two, because it compiles.  One character comes from
+*     INPUT with a length instead.  Excluded by the PREPROCESSOR on the other
+*     two, since MVX's INPUT takes no length.
+      INPUT KEY, 1
+*     AN EMPTY READ IS ENTER HERE, not the end of input: INPUT with a length
+*     returns "" when the character read was the line terminator.  Normalised at
+*     the seam, which is where a platform's own convention belongs — EDITKEY
+*     then reads the same "ENTER" curses and MVX's KEYIN hand it, and the empty
+*     string keeps its other meaning (nothing left to read) on the platforms
+*     where that is what it means.
+      IF KEY = "" THEN KEY = "ENTER"
+      RETURN
+      $ENDIF
+*     And this line must be excluded from UniData by the preprocessor too, not
+*     merely stepped over by the RETURN above: the text still has to COMPILE.
+      $IFNDEF UDT
+      KEY = KEYIN()
+      $ENDIF
+      RETURN
+*
+*     Text at a position, and clear.  The curses arm buffers, so a paint ends
+*     with a refresh; the plain arm writes straight out.
+SCRCLEAR:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSCLEAR("")
+         SROW = 0
+         RETURN
+      END
+      $ENDIF
+      PRINT @(-1) :
+      SROW = 0
+      RETURN
+*
+SCRLINE:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSMOVE(SROW : " 0")
+         CRC = CALLC CURSADDSTR(SLINE)
+         SROW += 1
+         RETURN
+      END
+      $ENDIF
+      PRINT SLINE
+      SROW += 1
+      RETURN
+*
+SCRFLUSH:
+      $IFDEF UDT
+      IF USECURS THEN CRC = CALLC CURSREFRESH("")
+      $ENDIF
+      RETURN
+*
+PAINT:
+      GOSUB SCRCLEAR
+      SLINE = "GIT ATTR - " : SUBJNAME : "   (" : FMTN : " format)" ; GOSUB SCRLINE
+      SLINE = PATH ; GOSUB SCRLINE
+      SLINE = "" ; GOSUB SCRLINE
+      FOR PI = 1 TO NDEFS
+         AK = DEFS<PI, 1> ; GOSUB GETATTR
+         SHOW = AV
+         IF SHOW = "" THEN SHOW = "-"
+         DROW = PI ; GOSUB APPLIES
+         NOTE = ""
+         IF NOT(OKPLAT) THEN NOTE = "   [" : DEFS<PI, 2> : "]"
+         IF PI = CUR THEN MARK = " > " ELSE MARK = "   "
+         PADS = AK ; PADW = 12 ; GOSUB PAD
+         SLINE = MARK : PADS : SHOW : NOTE ; GOSUB SCRLINE
+      NEXT PI
+      SLINE = "" ; GOSUB SCRLINE
+      SLINE = "j/k move   ENTER edit   d clear   s stage and quit   q abandon"
+      GOSUB SCRLINE
+      IF EMSG # "" THEN
+         SLINE = EMSG ; GOSUB SCRLINE
+         EMSG = ""
+      END
+      GOSUB SCRFLUSH
+      RETURN
+*
+*     Letters as well as arrows.  An arrow arrives as ESC [ A|B, which is three
+*     KEYINs; letters are what works when the terminal sends something else, and
+*     they are what a piped test can send.
+EDITKEY:
+      EK = OCONV(KEY, "MCL")
+      EU = OCONV(KEY, "MCU")
+      BEGIN CASE
+*     A raw escape sequence: ESC [ A|B is three keystrokes, and this is what a
+*     terminal sends where nothing has decoded it for us.
+      CASE KEY = CHAR(27)
+         GOSUB SCRKEY ; GOSUB SCRKEY
+         IF KEY = "A" THEN CUR -= 1
+         IF KEY = "B" THEN CUR += 1
+*     A decoded NAME.  Curses returns one, and so does MVX's own KEYIN, so the
+*     same three lines serve both.
+      CASE EU = "UP" ; CUR -= 1
+      CASE EU = "DOWN" ; CUR += 1
+      CASE EU = "ENTER" ; GOSUB EDVALUE
+      CASE EK = "k" ; CUR -= 1
+      CASE EK = "j" ; CUR += 1
+      CASE EK = "q" ; EDONE = 1 ; ECANCEL = 1
+      CASE EK = "s" ; EDONE = 1
+      CASE EK = "d" ; GOSUB EDCLEAR
+      CASE KEY = CHAR(13) OR KEY = CHAR(10) ; GOSUB EDVALUE
+*     Nothing left to read — a closed input, not an instruction.  Treat it as
+*     abandoning rather than as staging whatever happens to be on screen.
+      CASE EK = "" ; EDONE = 1 ; ECANCEL = 1
+      END CASE
+      IF CUR < 1 THEN CUR = NDEFS
+      IF CUR > NDEFS THEN CUR = 1
+      RETURN
+*
+*     Can the highlighted row be changed at all?  Same two answers the switches
+*     give, said on the screen instead of to stdout.
+EDROWOK:
+      EDOK = 0
+      SK = DEFS<CUR, 1> ; DROW = CUR
+      IF NATIVECTL THEN
+         EMSG = "read-only: " : FILE : "'s control here is this platform's own %FILE% record"
+         RETURN
+      END
+      GOSUB APPLIES
+      IF NOT(EDITOK) THEN
+         EMSG = "'" : SK : "' applies to " : DEFS<CUR, 2> : ", and this is a native " : PLAT : " repository"
+         RETURN
+      END
+      EDOK = 1
+      RETURN
+*
+*     An ENUM CYCLES — there is a known set, so typing one of them out is work
+*     the screen can do for you.  Everything else is typed.
+EDVALUE:
+      GOSUB EDROWOK
+      IF NOT(EDOK) THEN RETURN
+      AK = SK ; GOSUB GETATTR ; OLDV = AV
+      IF DEFS<CUR, 3> = "ENUM" THEN
+         GOSUB EDCYCLE
+      END ELSE
+*        A typed value needs the line editor, which curses raw mode does not
+*        provide — so it leaves curses for the length of the prompt and goes
+*        back in.  An ENUM never gets here, and an ENUM is most of them.
+         GOSUB SCREND
+         PRINT
+         PRINT SK : " [" : OLDV : "]: " :
+         NEWV = ""
+         INPUT NEWV
+         GOSUB SCRBEGIN
+         IF TRIM(NEWV) = "" THEN RETURN
+         SV = TRIM(NEWV)
+         GOSUB CHECKVAL
+         IF NOT(VOK) THEN
+            EMSG = "'" : SV : "' is not a valid " : DEFS<CUR, 3> : " for " : SK
+            RETURN
+         END
+      END
+      AK = SK ; AV = SV ; GOSUB PUTATTR
+      IF PUTERR # "" THEN
+         EMSG = SK : ": " : PUTERR
+         RETURN
+      END
+      NCHG += 1
+      RETURN
+*
+EDCYCLE:
+      EVALS = DEFS<CUR, 5> ; NEV = DCOUNT(EVALS, " ")
+      POSN = 0
+      FOR CYI = 1 TO NEV
+         IF FIELD(EVALS, " ", CYI) = OLDV THEN POSN = CYI
+      NEXT CYI
+      POSN += 1
+      IF POSN > NEV THEN POSN = 1
+      SV = FIELD(EVALS, " ", POSN)
+      RETURN
+*
+*     REMOVE, not just set — a parameter that does not apply here should be able
+*     to go away rather than only take another value.
+EDCLEAR:
+      GOSUB EDROWOK
+      IF NOT(EDOK) THEN RETURN
+      AK = SK ; GOSUB GETATTR ; OLDV = AV
+      IF OLDV = "" THEN RETURN
+      AK = SK ; AV = "" ; GOSUB DELATTR
+      NCHG += 1
+      RETURN
+*
+*     ---- write it back ----------------------------------------------------
+*
+*     STAGECTL, not STAGEBLOB: staging a control normally goes through the
+*     sticky rule, which puts the recorded geometry straight back so that a
+*     resize cannot become a commit.  This is the one place that is meant to
+*     yield — which is the whole reason the editor exists.
+STAGE:
+*     The CONVERT FUNCTION, not the statement: mvx-basic has the three-argument
+*     function and every platform here has it, while the `CONVERT x TO y IN z`
+*     statement is not universal.
+      SRCOUT = CONVERT(AM, LF, SRC)
+      IF SRCOUT[LEN(SRCOUT), 1] # LF THEN SRCOUT = SRCOUT : LF
+      CALL GIT.OBJ("STAGECTL", 3, REPO, PATH, SRCOUT, "", "", OBJOUT)
+      IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)
+*     AND THE ACCOUNT DESCRIPTOR GOES BACK ON DISK TOO, where the platform keeps
+*     one.  It is one thing in two spellings — git carries the portable form,
+*     MVX keeps the native `.mvx` beside the account — and the engine already
+*     converts both ways, so an edit landing in only the git side is not an edit
+*     to the account: the next `add -A` regenerated the portable form from the
+*     untouched native one and the edit was simply gone.
+*
+*     This is not the file case and does not contradict it.  A file's modulo
+*     describes something that already exists, so recording it must not resize
+*     anything; the descriptor IS the thing being described, and there is no
+*     separate live object to leave alone.
+      IF SCOPE = "ACCOUNT" THEN
+         DOUT = ""
+         CALL GIT.OBJ("PUTDESC", 3, REPO, PATH, SRCOUT, "", "", DOUT)
+      END
+      PRINT "staged " : PATH : " - commit to record it"
+      RETURN
+      END

@@ -307,12 +307,35 @@ static opres op_stage(const args *g) {
 static opres op_stageblob(const args *g) {
     const char *p = A(g, 1);
     const char *use = A(g, 2);
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     int64_t ulen = (int64_t)g->l[2];
     use = mv_git_sticky_control(rp(A(g, 0)), p, use, &ulen, keep, sizeof keep);
     mv_git_batch_begin(rp(A(g, 0)));
     mv_git_batch_add(p, use, ulen, 0);
     return ok(NULL);
+}
+
+/* STAGECTL(repo, path, content) — a control blob staged VERBATIM: the attribute
+   editor's way past mv_git_sticky_control, which is what keeps a resize from
+   becoming a commit everywhere else (mv_git#15).  The batch is flushed first so
+   a pending add cannot land on top of the edit afterwards. */
+static opres op_stagectl(const args *g) {
+    mv_ctx *ctx = mv_ctx_create();
+    mv_git_batch_end();
+    char *r = mv_git_stagectl(ctx, rp(A(g, 0)), A(g, 1), A(g, 2));
+    mv_ctx_destroy(ctx);
+    return ok(r);
+}
+
+/* IXCAT(repo, path) — the STAGED blob, which like CAT is arbitrary bytes and
+   carries its own length rather than being measured with strlen. */
+static opres op_ixcat(const args *g) {
+    mv_ctx *ctx = mv_ctx_create();
+    mv_git_batch_end();               /* read what this session has staged */
+    int64_t n = 0;
+    char *r = mv_git_ixcat_len(ctx, rp(A(g, 0)), A(g, 1), &n);
+    mv_ctx_destroy(ctx);
+    return ok_n(r, (long)n);
 }
 
 static opres op_commit(const args *g) {
@@ -336,6 +359,8 @@ BRIDGE1(op_indexids,   mv_git_index_ids(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_log,        mv_git_log(ctx, rp(A(g,0)), A(g,1)[0] ? A(g,1) : "20"))
 BRIDGE1(op_branch,     mv_git_branch(ctx, rp(A(g,0)), A(g,1)))
 BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
+BRIDGE1(op_staged,     mv_git_staged(ctx, rp(A(g,0))))
+BRIDGE1(op_putdesc,    mv_git_putdesc(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 /* CAT returns committed record content, which is arbitrary bytes and may
    contain NULs — so it must carry an explicit length rather than be measured
    with strlen, or a binary record comes back truncated. */
@@ -347,6 +372,8 @@ static opres op_cat(const args *g) {
     return ok_n(r, (long)n);
 }
 BRIDGE1(op_diff,       mv_git_diff(ctx, rp(A(g,0)), A(g,1)))
+BRIDGE1(op_diffu,      mv_git_diff_u(ctx, rp(A(g,0)), A(g,1)))
+BRIDGE1(op_udiff,      mv_git_udiff(ctx, A(g,1), A(g,2), A(g,3)))
 BRIDGE1(op_show,       mv_git_show(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 BRIDGE1(op_rm,         mv_git_rm(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 BRIDGE1(op_addsub,     mv_git_addsub(ctx, rp(A(g,0)), A(g,1)))
@@ -374,6 +401,10 @@ static const struct {
     { "INIT",        1, op_init       },
     { "STAGE",       4, op_stage      },
     { "STAGEBLOB",   3, op_stageblob  },
+    { "STAGECTL",    3, op_stagectl   },
+    { "IXCAT",       2, op_ixcat      },
+    { "STAGED",      1, op_staged     },
+    { "PUTDESC",     3, op_putdesc    },
     { "COMMIT",      2, op_commit     },
     { "STATUS",      1, op_status     },
     { "PRUNE",       2, op_prune      },
@@ -383,6 +414,8 @@ static const struct {
     { "FILES",       1, op_files      },
     { "CAT",         2, op_cat        },
     { "DIFF",        2, op_diff       },
+    { "DIFFU",       2, op_diffu      },
+    { "UDIFF",       4, op_udiff      },
     { "SHOW",        3, op_show       },
     { "RM",          3, op_rm         },
     { "ADDSUB",      2, op_addsub     },

@@ -32,7 +32,17 @@
 * account below it, two accounts would both claim `CUST/C1` and overwrite each
 * other, and a checkout could not tell whose record it was holding.
       SUBROUTINE GIT.PREFIX(PFX)
+      $INCLUDE BP.INC PLATFORM.H
       PFX = ""
+      $IFDEF MVX
+*     MVX has no @PATH to compare against a root, and needs none: in session the
+*     account is the working directory and therefore the repository itself, so
+*     there is no prefix.  Where several accounts DO share one repository — the
+*     mvx-git CLI walking them — the engine sets its own prefix in C, at the one
+*     boundary where a record's git path is built.
+      RETURN
+      $ENDIF
+      REPO = ""
       CALL GIT.REPO(REPO)
 *     GIT.REPO returns "<root>/.git"; the root is that with the suffix removed.
       L = LEN(REPO)

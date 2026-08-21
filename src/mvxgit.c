@@ -217,6 +217,26 @@ static const char *unprefix(const char *path) {
     return strncmp(path, g_prefix, n) == 0 ? path + n : NULL;
 }
 
+/* True for a path that is a dictionary's %FILE% control (…/…DICT/%FILE%). */
+static int is_file_control(const char *path) {
+    size_t pl = strlen(path);
+    const char *suf = ".DICT/%FILE%";
+    size_t sl = strlen(suf);
+    return pl >= sl && strcmp(path + pl - sl, suf) == 0;
+}
+
+/* True when a control's content is in the OPEN interchange form — the portable
+   class "DIR" or "hash …", possibly followed by `key = value` parameter lines —
+   as opposed to an account's own native %FILE% record (FILE<VM>type<VM>conn).
+   The two share a path and mean different things, which is why anything holding
+   one has to be able to tell them apart. */
+static int is_open_control(const char *c, int64_t cl) {
+    if (!c) return 0;
+    if (cl >= 3 && strncasecmp(c, "DIR", 3) == 0) return 1;
+    if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) return 1;
+    return 0;
+}
+
 static int ignored(const char *file, const char *path) {
     load_ignores();
     for (int i = 0; i < g_nign; i++) {
@@ -829,6 +849,36 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 skipped++;
                 continue;
             }
+            /* %FILE% IS CREATE-TIME METADATA, AND ON MVX IT IS ALSO A REAL
+               RECORD — which is the one place those two facts collide.  A
+               wholesale add would restage the account's own native control
+               (FILE<VM>type) straight over the OPEN control git is holding, and
+               the open one is the versioned artefact: it is what a clone onto
+               another platform reads, and what the attribute editor writes.  So
+               an edit made before an `add -A` would be gone, and status would go
+               clean as though the edit had landed.
+
+               Leave an open control where it is.  A file that has none is
+               unaffected — its native record still stages, and GITOPENFORM
+               converts it — so this only ever declines to overwrite geometry git
+               already holds, which is the sticky rule (mv_git#15) reaching the
+               one staging path that is a record rather than a blob. */
+            {
+                char ctlp[600];
+                record_path(ctlp, sizeof ctlp, fn, idb);
+                if (is_file_control(ctlp)) {
+                    const git_index_entry *pe =
+                        git_index_get_bypath(index, ctlp, 0);
+                    git_blob *pb = NULL;
+                    int keep = 0;
+                    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+                        keep = is_open_control(git_blob_rawcontent(pb),
+                                               (int64_t)git_blob_rawsize(pb));
+                        git_blob_free(pb);
+                    }
+                    if (keep) { if (one) break; else continue; }
+                }
+            }
             const char *sc = cp;
             int64_t sl = clen;
             char *dtmp = NULL;
@@ -983,6 +1033,19 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     /* only a path INSIDE a file is a record; the file's own entry is not */
     if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
         return 1;
+    /* A FILE'S CONTROL IS NEVER TAKEN FROM DISK.  <file>.DICT/%FILE% is
+       create-time metadata, and on MVX it is also an ordinary file on disk — so
+       git's own working-tree pass swept it up and staged the account's NATIVE
+       control over the OPEN one git was holding.  The open control is the
+       versioned artefact: it is what a clone onto another platform reads, and
+       what the attribute editor writes.  So an attribute edit made before an
+       `add -A` was silently gone, and status went clean as though it had landed.
+
+       Skipping it costs nothing.  A file that needs a control still gets one
+       from the record pass, which stages the native %FILE% record, and
+       GITOPENFORM converts that to the open class.  The disk pass was only ever
+       a third way to the same path, arriving last and knowing least. */
+    if (is_file_control(rel)) return 1;
     return 0;
 }
 
@@ -1344,12 +1407,12 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            track this working copy's current size, or one customer's growth/resize
            would become everyone's — so preserve HEAD's control and only guess for
            a file with none committed yet. */
-        char spec[128];
+        char spec[MV_GIT_CTL_MAX];
         const char *cont = cls;
         if (strcmp(cls, "hash") == 0) {
             char base[600];
             snprintf(base, sizeof base, "%.*s", (int)(pl - sl), e->path);
-            char committed[128];
+            char committed[MV_GIT_CTL_MAX];
             if (head_control(repo, ht, base, committed, sizeof committed) >= 0 &&
                 strncmp(committed, "hash", 4) == 0) {
                 snprintf(spec, sizeof spec, "%s", committed);   /* sticky default */
@@ -2057,19 +2120,36 @@ static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
     int alive = listed >= 0 ? listed : file_is_live(ctx, base);
     int ans = 0;
     if (!alive) {
-        /* GIT TRACKED IT AS A FILE if the index holds anything under its
-           DICTIONARY.  Not "<base>.DICT/%FILE% is present": that control is only
-           staged in OPEN-account mode, so keying on it made the whole rule a
-           no-op on a native commit — which is most of them.  Every MV file has a
-           dictionary and no plain directory does, so the .DICT subtree is the
-           mark that works in both modes.  (It also keeps an ordinary tracked
-           directory — docs/, say — from ever looking like a deleted file.) */
-        char pfx[600];
-        int pn = snprintf(pfx, sizeof pfx, "%s%s.DICT/", g_prefix, base);
-        if (pn > 0) {
+        /* GIT TRACKED IT AS A FILE if the index holds CONTENT for it — a
+           record, or a dictionary item — as opposed to nothing but its %FILE%
+           control.  Every MV file has a dictionary and no plain directory does,
+           so the .DICT subtree is the mark that works in both the open and the
+           native form.  (It also keeps an ordinary tracked directory — docs/,
+           say — from ever looking like a deleted file.)
+
+           THE CONTROL ALONE IS A DECLARATION, NOT A DELETION.  Attributes live
+           in the git objects, not in the account, so a control may perfectly
+           well describe a file that is not on this machine: setting a file's
+           geometry BEFORE the file exists, so a clone builds it right the first
+           time, is a use of the attribute editor rather than a mistake.  Keying
+           on "anything under the dictionary" counted that control as evidence
+           the file had once been live, and pruned the declaration away on the
+           next `add -A` — the edit simply evaporated.
+
+           The cost is narrow and worth naming: a file that was genuinely
+           deleted while EMPTY leaves its control behind, because nothing
+           distinguishes it from a declaration.  `GIT RM` removes it. */
+        char dpfx[600], rpfx[600], ctl[600];
+        int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, base);
+        int rn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, base);
+        snprintf(ctl, sizeof ctl, "%s%s.DICT/%%FILE%%", g_prefix, base);
+        if (dn > 0 && rn > 0) {
             for (size_t i = 0; i < git_index_entrycount(index); i++) {
                 const git_index_entry *e = git_index_get_byindex(index, i);
-                if (e && strncmp(e->path, pfx, (size_t)pn) == 0) { ans = 1; break; }
+                if (!e) continue;
+                if (strcmp(e->path, ctl) == 0) continue;   /* the declaration */
+                if (strncmp(e->path, dpfx, (size_t)dn) == 0 ||
+                    strncmp(e->path, rpfx, (size_t)rn) == 0) { ans = 1; break; }
             }
         }
     }
@@ -2134,14 +2214,6 @@ static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
         return 4;
     }
     return -1;
-}
-
-/* True for a path that is a dictionary's %FILE% control (…/…DICT/%FILE%). */
-static int is_file_control(const char *path) {
-    size_t pl = strlen(path);
-    const char *suf = ".DICT/%FILE%";
-    size_t sl = strlen(suf);
-    return pl >= sl && strcmp(path + pl - sl, suf) == 0;
 }
 
 /* GITSTATUS(repo, out) — real-git short status across tracked files. */
@@ -2539,9 +2611,64 @@ static int diff_line_cb(const git_diff_delta *d, const git_diff_hunk *h,
     return 0;
 }
 
+/* hunk header callback: the "@@ -a,b +c,d @@" line a unified diff carries.
+   Passed only for the -u form; without it libgit2 still emits context, which is
+   why the compact output already looked nearly unified — what it never had was
+   any way to tell WHERE in the record the change was. */
+static int diff_hunk_cb(const git_diff_delta *d, const git_diff_hunk *h,
+                        void *payload) {
+    (void)d;
+    sbuf *s = payload;
+    char line[300];
+    int n = snprintf(line, sizeof line, "%.*s", (int)h->header_len, h->header);
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+        line[--n] = '\0';
+    sb_line(s, line);
+    return 0;
+}
+
+/* GITUDIFF(oldtext, newtext, path, out) — a unified diff of two CONTENTS, with
+   hunk headers, rendered exactly the way the record diff renders one.
+
+   The two sides arrive @AM-separated (that is what CAT and IXCAT return) and go
+   back the same way, one output line per attribute.  It exists so the BASIC
+   diff bodies — the staged diff on every platform, and the unstaged one on
+   UniData and UniVerse — render through the SAME libgit2 call the C diff uses
+   rather than growing a second, hand-written diff that would drift from it. */
+void mvx_sub_GITUDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char path[700];
+    const char *op, *np;
+    char onb[40], nnb[40];
+    int64_t ol = mv_val_chars(argv[0], onb, sizeof onb, &op);
+    int64_t nl = mv_val_chars(argv[1], nnb, sizeof nnb, &np);
+    arg_str(argv[2], path, sizeof path);
+    int64_t obl = 0, nbl = 0;
+    char *ob = xlate(op, ol, (char)0xFE, '\n', &obl);
+    char *nb = xlate(np, nl, (char)0xFE, '\n', &nbl);
+    sbuf s = {0, 0, 0};
+    git_diff_buffers(ob, (size_t)obl, path, nb, (size_t)nbl, path, NULL,
+                     NULL, NULL, diff_hunk_cb, diff_line_cb, &s);
+    free(ob); free(nb);
+    sb_out(&s, argv[3], "");
+}
+
 /* GITDIFF(repo, file, out) — unstaged record changes (working vs index)
    as a unified diff.  file "" diffs all tracked files. */
+static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified);
+
+/* The compact form (no hunk headers) and the -u form share one body; only the
+   hunk callback differs, and a second copy of this walk is the last thing this
+   file needs. */
 void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    diff_run(ctx, argc, argv, 0);
+}
+void mvx_sub_GITDIFFU(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    diff_run(ctx, argc, argv, 1);
+}
+static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], only[256];
@@ -2645,7 +2772,8 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 snprintf(hdr, sizeof hdr, "diff %s", e->path);
                 sb_line(&s, hdr);
                 git_diff_blob_to_buffer(old, e->path, buf, (size_t)bl,
-                                        e->path, NULL, NULL, NULL, NULL,
+                                        e->path, NULL, NULL, NULL,
+                                        unified ? diff_hunk_cb : NULL,
                                         diff_line_cb, &s);
             }
             free(buf);
@@ -2750,6 +2878,133 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
 }
 
+/* GITPUTDESC(repo, path, content, out) — put an edited account descriptor back
+   on disk, in whatever form this platform keeps there.
+
+   THE DESCRIPTOR IS ONE THING IN TWO SPELLINGS.  Git carries the portable
+   `.mv-account`; MVX keeps the native `.mvx` beside the account, and the engine
+   already converts in both directions — commit projects the native form down,
+   checkout rebuilds it.  So an edit that lands in only one of them is not an
+   edit to the account at all, and that is exactly what happened: `GIT ATTR
+   --set version=2` staged `.mv-account`, the next `add -A` regenerated
+   `.mv-account` FROM the untouched `.mvx`, and the edit was gone — with the
+   commit reporting "nothing to commit" as though nothing had been asked for.
+   Before it vanished it also showed in both status columns at once, staged and
+   modified, which is the same disagreement seen from the other side.
+
+   The two cases are the ones checkout already handles, and for the same reasons:
+   an open-form descriptor is CONVERTED to native, a native one is written
+   verbatim so its local permit/deny policy round-trips.
+
+   UniData and UniVerse keep no descriptor on disk — theirs live only in git — so
+   there is nothing to write there and this does nothing.  That is a build-time
+   difference, not a runtime one: those platforms would have nowhere to put it. */
+void mvx_sub_GITPUTDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    if (argc >= 4) mv_set_str(argv[3], "", 0);
+#if defined(MVXGIT_UDT) || defined(MVXGIT_GITD)
+    (void)argv;                 /* no on-disk descriptor on these platforms */
+#else
+    ensure_init();
+    char path[700];
+    arg_str(argv[1], path, sizeof path);
+    const char *cp;
+    char nb[40];
+    int64_t cl = mv_val_chars(argv[2], nb, sizeof nb, &cp);
+    size_t pl = strlen(path);
+    int is_open = pl >= 11 && strcmp(path + pl - 11, ".mv-account") == 0;
+    int is_nat  = pl >= 4  && strcmp(path + pl - 4,  ".mvx") == 0;
+    if (!is_open && !is_nat) return;      /* .udt / .uv: git-only, nothing here */
+    FILE *f = fopen(".mvx", "wb");
+    if (!f) return;
+    if (is_open) {
+        acct_desc d;
+        desc_parse(cp, (size_t)cl, &d);
+        char nat[2048];
+        int nl = desc_render_native(&d, nat, sizeof nat);
+        if (nl > 0) fwrite(nat, 1, (size_t)nl, f);
+    } else {
+        if (cl > 0) fwrite(cp, 1, (size_t)cl, f);
+    }
+    fclose(f);
+    mv_set_str(argv[3], "descriptor written", 18);
+#endif
+}
+
+/* GITIXCAT(repo, path, out) — the STAGED content of blob `path`: the index, not
+   HEAD, with attribute marks restored the way GITCAT does.  "" when the index
+   has no such path.
+
+   The attribute editor has to read what it is about to edit, and for an
+   attribute set that is the INDEX.  HEAD is only what was last committed, so a
+   second `GIT ATTR --set` before a commit read from HEAD would build on the
+   commit rather than on the first edit — and every edit but the last would
+   disappear with no sign that it had. */
+void mvx_sub_GITIXCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 3) return;
+    ensure_init();
+    char rp[4096], path[700];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[2], "open"); return; }
+    const git_index_entry *e = git_index_get_bypath(index, path, 0);
+    git_blob *blob = NULL;
+    if (e && git_blob_lookup(&blob, repo, &e->id) == 0) {
+        const char *cp = git_blob_rawcontent(blob);
+        int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
+        mv_set_str(argv[2], r, rl);
+        free(r);
+        git_blob_free(blob);
+    } else {
+        mv_set_str(argv[2], "", 0);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+}
+
+/* GITSTAGED(repo, out) — what the index holds that HEAD does not, one
+   "<status>  <path>" line per delta: the same first-column form the C status
+   already prints for its staged section.
+
+   The session platforms' status walks HEAD's paths and compares each with the
+   live record, which can see a record change or a record vanish but can never
+   see the INDEX.  Anything staged with no backing record to compare against — a
+   %FILE% control, the account descriptor — was therefore invisible there and
+   visible on MVX, for the same repository.  This is the arm that closes that. */
+void mvx_sub_GITSTAGED(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
+    git_tree *ht = head_tree(repo);
+    sbuf s = {0, 0, 0};
+    git_diff *sd = NULL;
+    if (git_diff_tree_to_index(&sd, repo, ht, index, NULL) == 0) {
+        size_t n = git_diff_num_deltas(sd);
+        for (size_t i = 0; i < n; i++) {
+            const git_diff_delta *d = git_diff_get_delta(sd, i);
+            char line[700];
+            snprintf(line, sizeof line, "%c  %s",
+                     git_diff_status_char(d->status), d->new_file.path);
+            sb_line(&s, line);
+        }
+        git_diff_free(sd);
+    }
+    if (ht) git_tree_free(ht);
+    git_index_free(index);
+    git_repository_free(repo);
+    sb_out(&s, argv[1], "");
+}
+
 /* Write one tracked subtree's records back into its MVX file, deleting
    records absent from the tree. */
 /* Map a %FILE% control's content — the open form DIR/hash, or a native
@@ -2763,6 +3018,15 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
     out[0] = '\0';
     if (!c) return;
+    /* THE CLASS IS LINE ONE.  Everything after the first newline is a
+       `key = value` registry parameter (MV_GIT_CTL_MAX), not part of the class,
+       so stop there before trimming — reading the whole blob turned an extended
+       control into an unrecognised class and the file came back as the wrong
+       kind entirely. */
+    {
+        const char *nl = memchr(c, '\n', (size_t)cl);
+        if (nl) cl = nl - c;
+    }
     while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
@@ -4022,8 +4286,52 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     const char *content;
     char nb[40];
     int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
-    char keep[128];
+    char keep[MV_GIT_CTL_MAX];
     content = mv_git_sticky_control(rp, path, content, &clen, keep, sizeof keep);
+    git_repository *repo = NULL;
+    git_index *index = NULL;
+    if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
+    git_oid boid;
+    if (git_blob_create_from_buffer(&boid, repo, content, (size_t)clen) == 0) {
+        git_index_entry e;
+        memset(&e, 0, sizeof e);
+        e.path = path;
+        e.mode = GIT_FILEMODE_BLOB;
+        e.id = boid;
+        git_index_add(index, &e);
+        git_index_write(index);
+    }
+    git_index_free(index);
+    git_repository_free(repo);
+    char out[700];
+    snprintf(out, sizeof out, "staged %s", path);
+    mv_set_str(argv[3], out, (int64_t)strlen(out));
+}
+
+/* GITSTAGECTL(repo, path, content, out) — stage a control blob VERBATIM, with
+   no stickiness.
+
+   Staging a %FILE% normally goes through mv_git_sticky_control, which puts the
+   recorded geometry back: a resize is local operational tuning and must not
+   become a commit, and must not ride out to other clones as a new default.  The
+   attribute editor is the one place that rule is meant to yield — it exists
+   precisely so that changing a shipped default is a deliberate act rather than
+   a side effect — so it needs a way in that sticky does not undo.  That is this
+   op, and it is the ONLY caller: everything else still stages through
+   GITSTAGEBLOB and stays sticky.
+
+   Straight to the index rather than into the batch, so the edit is on disk when
+   the command returns and the next GITIXCAT reads it back. */
+void mvx_sub_GITSTAGECTL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], path[700];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], path, sizeof path);
+    const char *content;
+    char nb[40];
+    int64_t clen = mv_val_chars(argv[2], nb, sizeof nb, &content);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[3], "open"); return; }
@@ -4204,6 +4512,29 @@ char *mv_git_addsub(mv_ctx *ctx, const char *repo, const char *name) {
     const char *a[] = {repo, name};
     return run_sub(mvx_sub_GITADDSUB, ctx, a, 2);
 }
+char *mv_git_ixcat(mv_ctx *ctx, const char *repo, const char *path) {
+    const char *a[] = {repo, path};
+    return run_sub(mvx_sub_GITIXCAT, ctx, a, 2);
+}
+char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
+                       int64_t *outlen) {
+    const char *a[] = {repo, path};
+    return run_sub_len(mvx_sub_GITIXCAT, ctx, a, 2, outlen);
+}
+char *mv_git_staged(mv_ctx *ctx, const char *repo) {
+    const char *a[] = {repo};
+    return run_sub(mvx_sub_GITSTAGED, ctx, a, 1);
+}
+char *mv_git_putdesc(mv_ctx *ctx, const char *repo, const char *path,
+                     const char *content) {
+    const char *a[] = {repo, path, content};
+    return run_sub(mvx_sub_GITPUTDESC, ctx, a, 3);
+}
+char *mv_git_stagectl(mv_ctx *ctx, const char *repo, const char *path,
+                      const char *content) {
+    const char *a[] = {repo, path, content};
+    return run_sub(mvx_sub_GITSTAGECTL, ctx, a, 3);
+}
 char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
                        const char *content) {
     const char *a[] = {repo, path, content};
@@ -4212,6 +4543,37 @@ char *mv_git_stageblob(mv_ctx *ctx, const char *repo, const char *path,
 
 /* See mvxgit.h: keep an already-committed %FILE% control instead of the live
    file's current geometry. */
+/* The control STAGED for `base` (the index's <base>.DICT/%FILE%) into out[cap];
+   its length, or -1 when the index has no entry for it. */
+static int staged_control(const char *repo, const char *base,
+                          char *out, size_t cap) {
+    if (cap) out[0] = '\0';
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, repo) != 0) return -1;   /* never create here */
+    git_index *ix = NULL;
+    int n = -1;
+    if (git_repository_index(&ix, r) == 0) {
+        char path[600];
+        snprintf(path, sizeof path, "%s.DICT/%%FILE%%", base);
+        const git_index_entry *e = git_index_get_bypath(ix, path, 0);
+        git_blob *b = NULL;
+        if (e && git_blob_lookup(&b, r, &e->id) == 0) {
+            const char *c = git_blob_rawcontent(b);
+            int64_t cl = (int64_t)git_blob_rawsize(b);
+            if (cl >= 0 && (size_t)cl < cap) {
+                memcpy(out, c, (size_t)cl);
+                out[cl] = '\0';
+                n = (int)cl;
+            }
+            git_blob_free(b);
+        }
+        git_index_free(ix);
+    }
+    git_repository_free(r);
+    return n;
+}
+
 const char *mv_git_sticky_control(const char *repo, const char *path,
                                   const char *content, int64_t *len,
                                   char *keep, size_t cap) {
@@ -4223,7 +4585,15 @@ const char *mv_git_sticky_control(const char *repo, const char *path,
     if (strncmp(content, "hash", 4) != 0) return content;   /* DIR has no size */
     char base[512];
     snprintf(base, sizeof base, "%.*s", (int)(plen - sl), path);
-    if (mv_git_committed_control(repo, base, keep, cap) < 0) return content;
+    /* THE INDEX FIRST, THEN HEAD.  What git knows about this file's geometry is
+       what is staged; HEAD is only the last thing committed.  Consulting HEAD
+       alone let a plain `add -A` between an attribute edit and its commit put
+       the committed geometry back over the edit — the edit would vanish before
+       it was ever committed, and status would go clean as if it had landed.
+       It also settles a file whose geometry is staged but not yet committed:
+       once git has learned it, it stops moving. */
+    if (staged_control(repo, base, keep, cap) < 0 &&
+        mv_git_committed_control(repo, base, keep, cap) < 0) return content;
     if (strncmp(keep, "hash", 4) != 0) return content;
     if (len) *len = (int64_t)strlen(keep);
     return keep;
@@ -4291,6 +4661,15 @@ char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count) {
 char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file) {
     const char *a[] = {repo, file};
     return run_sub(mvx_sub_GITDIFF, ctx, a, 2);
+}
+char *mv_git_diff_u(mv_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITDIFFU, ctx, a, 2);
+}
+char *mv_git_udiff(mv_ctx *ctx, const char *oldtext, const char *newtext,
+                   const char *path) {
+    const char *a[] = {oldtext, newtext, path};
+    return run_sub(mvx_sub_GITUDIFF, ctx, a, 3);
 }
 char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,
                    const char *id) {
