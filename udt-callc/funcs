@@ -12,6 +12,7 @@ GITFILES:string:1:string
 GITCAT:string:2:string,string
 GITIXCAT:string:2:string,string
 GITSTAGED:string:1:string
+GITUDIFF:string:4:string,string,string,string
 GITCLONE:string:4:string,string,string,string
 GITFETCH:string:2:string,string
 GITPULL:string:3:string,string,string

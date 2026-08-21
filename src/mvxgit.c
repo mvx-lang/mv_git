@@ -2611,9 +2611,64 @@ static int diff_line_cb(const git_diff_delta *d, const git_diff_hunk *h,
     return 0;
 }
 
+/* hunk header callback: the "@@ -a,b +c,d @@" line a unified diff carries.
+   Passed only for the -u form; without it libgit2 still emits context, which is
+   why the compact output already looked nearly unified — what it never had was
+   any way to tell WHERE in the record the change was. */
+static int diff_hunk_cb(const git_diff_delta *d, const git_diff_hunk *h,
+                        void *payload) {
+    (void)d;
+    sbuf *s = payload;
+    char line[300];
+    int n = snprintf(line, sizeof line, "%.*s", (int)h->header_len, h->header);
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+        line[--n] = '\0';
+    sb_line(s, line);
+    return 0;
+}
+
+/* GITUDIFF(oldtext, newtext, path, out) — a unified diff of two CONTENTS, with
+   hunk headers, rendered exactly the way the record diff renders one.
+
+   The two sides arrive @AM-separated (that is what CAT and IXCAT return) and go
+   back the same way, one output line per attribute.  It exists so the BASIC
+   diff bodies — the staged diff on every platform, and the unstaged one on
+   UniData and UniVerse — render through the SAME libgit2 call the C diff uses
+   rather than growing a second, hand-written diff that would drift from it. */
+void mvx_sub_GITUDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 4) return;
+    ensure_init();
+    char path[700];
+    const char *op, *np;
+    char onb[40], nnb[40];
+    int64_t ol = mv_val_chars(argv[0], onb, sizeof onb, &op);
+    int64_t nl = mv_val_chars(argv[1], nnb, sizeof nnb, &np);
+    arg_str(argv[2], path, sizeof path);
+    int64_t obl = 0, nbl = 0;
+    char *ob = xlate(op, ol, (char)0xFE, '\n', &obl);
+    char *nb = xlate(np, nl, (char)0xFE, '\n', &nbl);
+    sbuf s = {0, 0, 0};
+    git_diff_buffers(ob, (size_t)obl, path, nb, (size_t)nbl, path, NULL,
+                     NULL, NULL, diff_hunk_cb, diff_line_cb, &s);
+    free(ob); free(nb);
+    sb_out(&s, argv[3], "");
+}
+
 /* GITDIFF(repo, file, out) — unstaged record changes (working vs index)
    as a unified diff.  file "" diffs all tracked files. */
+static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified);
+
+/* The compact form (no hunk headers) and the -u form share one body; only the
+   hunk callback differs, and a second copy of this walk is the last thing this
+   file needs. */
 void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    diff_run(ctx, argc, argv, 0);
+}
+void mvx_sub_GITDIFFU(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    diff_run(ctx, argc, argv, 1);
+}
+static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
     if (argc < 3) return;
     ensure_init();
     char rp[4096], only[256];
@@ -2717,7 +2772,8 @@ void mvx_sub_GITDIFF(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 snprintf(hdr, sizeof hdr, "diff %s", e->path);
                 sb_line(&s, hdr);
                 git_diff_blob_to_buffer(old, e->path, buf, (size_t)bl,
-                                        e->path, NULL, NULL, NULL, NULL,
+                                        e->path, NULL, NULL, NULL,
+                                        unified ? diff_hunk_cb : NULL,
                                         diff_line_cb, &s);
             }
             free(buf);
@@ -4546,6 +4602,15 @@ char *mv_git_log(mv_ctx *ctx, const char *repo, const char *count) {
 char *mv_git_diff(mv_ctx *ctx, const char *repo, const char *file) {
     const char *a[] = {repo, file};
     return run_sub(mvx_sub_GITDIFF, ctx, a, 2);
+}
+char *mv_git_diff_u(mv_ctx *ctx, const char *repo, const char *file) {
+    const char *a[] = {repo, file};
+    return run_sub(mvx_sub_GITDIFFU, ctx, a, 2);
+}
+char *mv_git_udiff(mv_ctx *ctx, const char *oldtext, const char *newtext,
+                   const char *path) {
+    const char *a[] = {oldtext, newtext, path};
+    return run_sub(mvx_sub_GITUDIFF, ctx, a, 3);
 }
 char *mv_git_show(mv_ctx *ctx, const char *repo, const char *file,
                    const char *id) {

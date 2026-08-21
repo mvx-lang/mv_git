@@ -371,6 +371,8 @@ static opres op_cat(const args *g) {
     return ok_n(r, (long)n);
 }
 BRIDGE1(op_diff,       mv_git_diff(ctx, rp(A(g,0)), A(g,1)))
+BRIDGE1(op_diffu,      mv_git_diff_u(ctx, rp(A(g,0)), A(g,1)))
+BRIDGE1(op_udiff,      mv_git_udiff(ctx, A(g,1), A(g,2), A(g,3)))
 BRIDGE1(op_show,       mv_git_show(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 BRIDGE1(op_rm,         mv_git_rm(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 BRIDGE1(op_addsub,     mv_git_addsub(ctx, rp(A(g,0)), A(g,1)))
@@ -410,6 +412,8 @@ static const struct {
     { "FILES",       1, op_files      },
     { "CAT",         2, op_cat        },
     { "DIFF",        2, op_diff       },
+    { "DIFFU",       2, op_diffu      },
+    { "UDIFF",       4, op_udiff      },
     { "SHOW",        3, op_show       },
     { "RM",          3, op_rm         },
     { "ADDSUB",      2, op_addsub     },

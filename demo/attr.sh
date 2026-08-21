@@ -74,7 +74,12 @@ say "8. the account scope, and keys the registry does not name survive"
 run ATTR --set version=2
 blob '.mv-account'
 
-say "9. the full-screen editor — jj to 'dynamic', ENTER to cycle, s to stage"
+say "9. dynamic lives on the class line beside a modulo, so it needs one"
+run ATTR CUST --unset modulo
+run ATTR CUST --set dynamic=yes
+run ATTR CUST --set modulo=997
+
+say "10. the full-screen editor — jj to 'dynamic', ENTER to cycle, s to stage"
 printf '\033[36m$ printf "jj\\ns" | GIT ATTR CUST --edit\033[0m\n'
 printf 'jj\ns' | "$MVX" -a "$A" -c "GIT ATTR CUST --edit" 2>&1 \
   | perl -pe 's/\e\[[0-9;?]*[A-Za-z]//g'

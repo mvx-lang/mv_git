@@ -188,6 +188,22 @@ char *GITSTAGED(char *repo) {
     return emit(repo, r);
 }
 
+/* GITUDIFF(old, new, path) — a unified diff of two contents.  Answers through
+   the gitcat side channel like CAT: what comes back is content-shaped and may
+   be long, not a status message. */
+char *GITUDIFF(char *repo, char *oldtext, char *newtext, char *path) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_udiff(ctx, oldtext ? oldtext : "", newtext ? newtext : "",
+                           path ? path : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}
+
 /* GITCOMMIT(repo, msg) — flush the batched index, then commit. */
 char *GITCOMMIT(char *repo, char *msg) {
     mv_git_batch_end();                 /* write the accumulated index to disk */

@@ -98,6 +98,10 @@
             IF NOT(VOK) THEN RETURN
             AK = SK ; GOSUB GETATTR ; OLDV = AV
             AK = SK ; AV = SV ; GOSUB PUTATTR
+            IF PUTERR # "" THEN
+               PRINT "GIT ATTR: " : SK : ": " : PUTERR
+               RETURN
+            END
             GOSUB REPORT
             NCHG += 1
          NEXT SI
@@ -135,6 +139,10 @@
             IF NOT(OKED) THEN RETURN
             OLDV = DREC<SYI>
             AK = SK ; AV = SV ; GOSUB PUTATTR
+            IF PUTERR # "" THEN
+               PRINT "GIT ATTR: " : SK : ": " : PUTERR
+               RETURN
+            END
             GOSUB REPORT
             NCHG += 1
          NEXT SYI
@@ -350,6 +358,7 @@ GETATTR:
       RETURN
 *
 PUTATTR:
+      PUTERR = ""
       ISCLASS = 0
       IF SCOPE = "FILE" THEN
          IF AK = "type" OR AK = "modulo" OR AK = "dynamic" THEN ISCLASS = 1
@@ -413,7 +422,17 @@ LINEKEY:
       RETURN
 *
 *     ---- line one: the file's class ---------------------------------------
+*     AV IS CLEARED HERE, not left to the caller.  Most of the arms below answer
+*     only their own key and RETURN — a directory file has no modulo, a hash
+*     class may carry no dynamic token — so anything they do not set has to be
+*     empty on the way in or it keeps whatever the LAST call left there.
+*     GETATTR happened to clear it first, which is why reading was always right;
+*     CLASSPUT calls straight in, three times in a row, and so read each field
+*     it was NOT changing as the previous field's answer.  `--set type=DIR`
+*     followed by `--sync` wrote a class line of "hash hash DYNAMIC": the modulo
+*     was the string "DIR" left over from the type read before it.
 CLASSGET:
+      AV = ""
 *     The platform's own record says which KIND of file it is and nothing about
 *     geometry, so that is all it can answer.
       IF NATIVECTL THEN
@@ -426,6 +445,7 @@ CLASSGET:
 *     One parser for the recorded class and for the live one, so the drift check
 *     cannot decide a file has diverged because two readers disagreed.
 CLASSPARSE:
+      AV = ""
       CL = TRIM(CLIN)
       CTOK = OCONV(TRIM(FIELD(CL, " ", 1)), "MCU")
       IF CTOK = "DIR" THEN
@@ -459,6 +479,20 @@ CLASSPUT:
       IF PK = "type"    THEN CTY = PV
       IF PK = "modulo"  THEN CMO = PV
       IF PK = "dynamic" THEN CDY = PV
+*     DYNAMIC QUALIFIES A SIZED HASH FILE, and the class grammar says so:
+*     "hash <modulo> STATIC|DYNAMIC".  With no modulo there is nowhere on the
+*     line to put it, and the alternative spellings are worse — inventing a
+*     modulo would record a size nobody chose, and "hash DYNAMIC" is not a form
+*     any reader here parses, including this one.  So say it rather than write a
+*     line that silently drops the answer, which is what happened before: the
+*     value was accepted, reported as changed, and then not there.
+      IF PK = "dynamic" AND PV # "" AND CMO = "" THEN
+         IF OCONV(CTY, "MCU") # "DIR" THEN
+            PUTERR = "dynamic qualifies a sized hash file - set modulo first"
+            AK = PK ; AV = PV
+            RETURN
+         END
+      END
       IF OCONV(CTY, "MCU") = "DIR" THEN
          SRC<1> = "DIR"
       END ELSE
@@ -784,6 +818,10 @@ EDVALUE:
          END
       END
       AK = SK ; AV = SV ; GOSUB PUTATTR
+      IF PUTERR # "" THEN
+         EMSG = SK : ": " : PUTERR
+         RETURN
+      END
       NCHG += 1
       RETURN
 *

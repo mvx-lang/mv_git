@@ -94,6 +94,12 @@ char *mv_git_ixcat_len(mv_ctx *ctx, const char *repo, const char *path,
                        int64_t *outlen);
 /* What the index holds that HEAD does not: "<status>  <path>" per delta. */
 char *mv_git_staged(mv_ctx *ctx, const char *repo);
+/* The unstaged diff with hunk headers — the -u form of mv_git_diff. */
+char *mv_git_diff_u(mv_ctx *ctx, const char *repo, const char *file);
+/* A unified diff of two @AM-separated CONTENTS, so the BASIC diff bodies render
+   through the same libgit2 call the C diff does instead of hand-rolling one. */
+char *mv_git_udiff(mv_ctx *ctx, const char *oldtext, const char *newtext,
+                   const char *path);
 
 /* Render the canonical portable `.mv-account` descriptor for an account with the
    given identity and default hash backend into `out`; returns its length.  One

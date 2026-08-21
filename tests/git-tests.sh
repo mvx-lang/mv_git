@@ -349,6 +349,49 @@ t  "attr declares an absent file" "1009" "$(GITV "$A" GIT ATTR ORDERS --set modu
 GITV "$A" GIT ADD -A >/dev/null
 t  "declaration survives add -A"  "1009" "$(GITV "$A" GIT ATTR ORDERS)"
 
+# A CLASS FIELD MUST NOT LEAK INTO THE ONES IT IS NOT CHANGING.  type, modulo
+# and dynamic share one line, so setting one means re-reading the other two —
+# and those reads answer only their own key, returning early for a class that
+# has no modulo.  Anything not cleared first therefore came back as the PREVIOUS
+# read's answer: `--set type=DIR` then `--sync` wrote "hash hash DYNAMIC", with
+# the modulo holding the string "DIR" left over from the type read.
+GITV "$A" GIT ATTR CUST --set modulo=997 --set dynamic=yes >/dev/null
+GITV "$A" GIT ATTR CUST --set type=DIR >/dev/null
+case "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *modulo *//p')" in
+  *DIR*|*hash*) bad "class fields do not leak" "no modulo" "leaked the type";;
+  *)            ok "class fields do not leak";;
+esac
+# A value that DIFFERS from the committed one, so there is a delta to see:
+# staging the same bytes HEAD already has is correctly no change at all.
+GITV "$A" GIT ATTR CUST --set type=hash --set modulo=1201 --set dynamic=yes >/dev/null
+
+# WHAT DID I JUST STAGE?  status says a path changed; --staged says how.  Built
+# from ops rather than a per-platform diff, so this is the same body everywhere.
+t  "diff --staged shows the edit" "+hash 1201" "$(GITV "$A" GIT DIFF --staged)"
+t  "diff --cached is the same"    "+hash 1201" "$(GITV "$A" GIT DIFF --cached)"
+t  "diff --staged filters by file" "CUST"      "$(GITV "$A" GIT DIFF --staged CUST)"
+case "$(GITV "$A" GIT DIFF --staged CUST)" in
+  *ORDERS*) bad "diff --staged filter excludes others" "no ORDERS" "included it";;
+  *)        ok "diff --staged filter excludes others";;
+esac
+# -u is the SAME comparison told properly.  The hunk header is the part the
+# compact form has never had, and it is the part that says WHERE in the record
+# the change is — so its presence is the assertion.
+t  "diff --staged -u has hunk headers" "@@" "$(GITV "$A" GIT DIFF --staged -u)"
+GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m staged-diff >/dev/null
+t  "nothing staged after a commit" "nothing staged" "$(GITV "$A" GIT DIFF --staged)"
+# ...and on the UNSTAGED side too, which is a different body on every platform:
+# C on MVX, BASIC on the session ones.  Both render through the same libgit2
+# call, so both must produce a header.
+SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+WRITE "Ada":@AM:"Vienna" ON F, "C1"'
+t  "diff -u has hunk headers" "@@"  "$(GITV "$A" GIT DIFF CUST -u)"
+case "$(GITV "$A" GIT DIFF CUST)" in
+  *@@*) bad "diff without -u has no header" "no @@" "printed one";;
+  *)    ok "diff without -u has no header";;
+esac
+GITV "$A" GIT RESTORE CUST >/dev/null
+
 # DRIFT.  A resize is local operational tuning: it must NOT show as a diff and
 # must not ride out to other clones as a new default (540c066).  So the editor
 # is the one place the divergence becomes intent — it says the live file no
@@ -374,6 +417,11 @@ esac
 # `jj` moves to `dynamic`, ENTER cycles the enum, `s` stages.  Letters as well
 # as arrows: a piped test cannot send a decoded key, and the letters are what
 # work when the terminal sends something the platform has not decoded.
+# `dynamic` is part of the class line — "hash <modulo> STATIC|DYNAMIC" — so it
+# needs a modulo to sit beside.  Recorded first, and asserted on its own: the
+# refusal is the behaviour, not an accident of ordering.
+t  "dynamic needs a modulo" "set modulo first" "$(GITV "$A" GIT ATTR CUST --unset modulo; GITV "$A" GIT ATTR CUST --set dynamic=yes)"
+GITV "$A" GIT ATTR CUST --set modulo=997 >/dev/null
 t  "editor stages an edit" "staged" "$(GITK "$A" 'jj
 s' GIT ATTR CUST --edit)"
 t  "editor edit took"      "yes"    "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *dynamic *//p')"

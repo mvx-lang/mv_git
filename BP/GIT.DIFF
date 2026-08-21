@@ -20,9 +20,92 @@ SUBROUTINE GIT.DIFF
 * nothing is what cost an afternoon on GIT CLONE (mv_git#52).
 CALL GIT.SENT(S)
 FN = FIELD(S, " ", 3)
+* ---- --staged: the INDEX against HEAD ---------------------------------------
+*
+* What `git diff --cached` shows, and there was no way to ask for it: DIFF has
+* always compared the WORKING TREE with HEAD, so after staging anything there
+* was nothing that would show you what you had staged.  Status says a path
+* changed; this says how.
+*
+* ONE BODY FOR ALL THREE PLATFORMS, above the platform split, and no new C.  It
+* is built from ops that already exist — STAGED for the list of paths the index
+* holds that HEAD does not, CAT for HEAD's content, IXCAT for the index's — and
+* GIT.OBJ carries all three on every platform now.  The unstaged arm below still
+* splits, because reading a LIVE record is the part that differs per platform;
+* nothing here reads a record at all.
+*
+* The flag is stripped before FN is taken, so `GIT DIFF --staged CUST` filters
+* by file exactly as `GIT DIFF CUST` does.
+DSTAGED = 0
+CALL GIT.CMD.HAS("staged", DST1)
+CALL GIT.CMD.HAS("cached", DST2)
+IF DST1 OR DST2 THEN DSTAGED = 1
+* -u renders the SAME comparison as a unified diff — hunk headers and all.  It
+* is not a different diff, it is the same one told properly: without the "@@"
+* line the output shows what changed but never where in the record it was.
+* Every path renders it through the one libgit2 call (UDIFF / DIFFU) rather
+* than hand-rolling a second differ that would drift from the first.
+CALL GIT.CMD.HAS("unified", DUNI)
+IF DSTAGED THEN
+   DFN = ""
+   CALL GIT.CMD.ARG(1, DFN)
+   AM = CHAR(254) ; LF = CHAR(10)
+   REPO = "" ; PFX = ""
+   CALL GIT.REPO(REPO)
+   CALL GIT.PREFIX(PFX)
+   STG = ""
+   CALL GIT.OBJ("STAGED", 1, REPO, "", "", "", "", STG)
+   NSG = DCOUNT(STG, AM) ; NSD = 0
+   FOR SGI = 1 TO NSG
+      SGL = STG<SGI>
+      IF TRIM(SGL) # "" THEN
+*        "<status>  <path>" — the status char, two spaces, then the path.
+         SGP = SGL[4, LEN(SGL) - 3]
+         SGOK = 1
+         IF DFN # "" THEN
+*           Match the file the path belongs to, its dictionary included, so
+*           `--staged CUST` covers CUST/… and CUST.DICT/… alike.
+            SGB = PFX : DFN
+            IF SGP[1, LEN(SGB) + 1] # SGB : "/" THEN
+               IF SGP[1, LEN(SGB) + 6] # SGB : ".DICT/" THEN SGOK = 0
+            END
+         END
+         IF SGOK THEN
+            SGOLD = "" ; SGNEW = ""
+            CALL GIT.OBJ("CAT", 2, REPO, SGP, "", "", "", SGOLD)
+            CALL GIT.OBJ("IXCAT", 2, REPO, SGP, "", "", "", SGNEW)
+            PRINT "diff " : SGP
+            IF DUNI THEN
+               SGU = ""
+               CALL GIT.OBJ("UDIFF", 4, REPO, SGOLD, SGNEW, SGP, "", SGU)
+               FOR SGA = 1 TO DCOUNT(SGU, AM)
+                  PRINT SGU<SGA>
+               NEXT SGA
+            END ELSE
+               SGNA = DCOUNT(SGOLD, AM) ; SGNB = DCOUNT(SGNEW, AM)
+               SGMX = SGNA ; IF SGNB > SGMX THEN SGMX = SGNB
+               FOR SGA = 1 TO SGMX
+                  SGO = SGOLD<SGA> ; SGW = SGNEW<SGA>
+                  IF SGO # SGW THEN
+                     IF SGO # "" THEN PRINT "-" : SGO
+                     IF SGW # "" THEN PRINT "+" : SGW
+                  END
+               NEXT SGA
+            END
+            NSD += 1
+         END
+      END
+   NEXT SGI
+   IF NSD = 0 THEN PRINT "nothing staged"
+   RETURN
+END
 $IFDEF MVX
 OUT = ""
-CALL GITDIFF(".git", FN, OUT)
+IF DUNI THEN
+   CALL GITDIFFU(".git", FN, OUT)
+END ELSE
+   CALL GITDIFF(".git", FN, OUT)
+END
 FOR I = 1 TO DCOUNT(OUT, @AM)
    PRINT OUT<I>
 NEXT I
@@ -51,15 +134,23 @@ DFILE = FN
       GOSUB SAMEREC
       IF NOT(SAME) THEN
          PRINT "diff " : P
-         NAT = DCOUNT(CB, AM) ; NBT = DCOUNT(LV, AM)
-         MX = NAT ; IF NBT > MX THEN MX = NBT
-         FOR A = 1 TO MX
-            OA = CB<A> ; NW = LV<A>
-            IF OA # NW THEN
-               IF OA # "" THEN PRINT "-" : OA
-               IF NW # "" THEN PRINT "+" : NW
-            END
-         NEXT A
+         IF DUNI THEN
+            DU = ""
+            CALL GIT.OBJ("UDIFF", 4, REPO, CB, LV, P, "", DU)
+            FOR A = 1 TO DCOUNT(DU, AM)
+               PRINT DU<A>
+            NEXT A
+         END ELSE
+            NAT = DCOUNT(CB, AM) ; NBT = DCOUNT(LV, AM)
+            MX = NAT ; IF NBT > MX THEN MX = NBT
+            FOR A = 1 TO MX
+               OA = CB<A> ; NW = LV<A>
+               IF OA # NW THEN
+                  IF OA # "" THEN PRINT "-" : OA
+                  IF NW # "" THEN PRINT "+" : NW
+               END
+            NEXT A
+         END
          NDF += 1
       END
    NEXTD:
