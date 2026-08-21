@@ -148,6 +148,11 @@ UNTRACKED:
 *        form: UniVerse rejects "SELECT x TO 6" ("option 'S' requires variable
 *        name") and will not parse "LOOP WHILE READNEXT ... DO".  Both platforms
 *        accept this spelling — the same one GITUDT.CHECKOUT settled on.
+         * The list variable is an OUTPUT of SELECT, but UniData still reads it first:
+         * left unassigned it prints "UNINITIALIZED VARIABLE USED! Zero Assumed!" into
+         * the middle of the verb's own output, which reads as a fault in whatever the
+         * user just ran.
+         ULIST = ""
          SELECT RV TO ULIST
          LOOP
             READNEXT URID FROM ULIST ELSE EXIT

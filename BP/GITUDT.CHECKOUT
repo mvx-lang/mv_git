@@ -167,6 +167,11 @@ NEXTREC:
 *     A select-list VARIABLE, not the numbered list 9: UniVerse rejects
 *     `SELECT DV TO 9` ("option 'S' requires variable name"), while both
 *     platforms accept a variable, so this is the portable spelling.
+      * The list variable is an OUTPUT of SELECT, but UniData still reads it first:
+      * left unassigned it prints "UNINITIALIZED VARIABLE USED! Zero Assumed!" into
+      * the middle of the verb's own output, which reads as a fault in whatever the
+      * user just ran.
+      DLIST = ""
       SELECT DV TO DLIST
       LOOP
          READNEXT LID FROM DLIST ELSE EXIT
