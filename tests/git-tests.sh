@@ -80,7 +80,24 @@ elif [ "$PLATFORM" = uv ]; then
   # so an account gets git by receiving a copy of the package and running it
   # there.  That is exactly what a user does with the tarball, and it means each
   # test account is independently installed rather than sharing a global verb.
-  LINK() { cp -r "$GITPKG"/* "$1"/ 2>/dev/null
+  # AN ACCOUNT NEEDS THE PACKAGE'S SOURCES, NOT ITS ACCOUNT.  install.sh makes
+  # the package directory a UniVerse account, so the package carries a VOC — and
+  # `cp -r "$GITPKG"/*` dropped that straight on top of the target's, taking
+  # every file pointer the account had with it.  Its build output (BP.O) went
+  # the same way, and objects from another account are worse than none: they
+  # compile clean and run code that is not the source beside them.
+  #
+  # The damage then disguised itself.  A cloned account lost its pointer to
+  # CUST; the next checkout opens files BY NAME, so it could not open CUST and
+  # skipped every one of its records — then restored VOC/CUST later in the same
+  # pass, putting the pointer back and leaving no trace.  The PULL got the blame
+  # for years (mv_git#65), and a second pull always "fixed" it.
+  LINK() { ( cd "$GITPKG" && tar cf - \
+               --exclude=./VOC    --exclude=./D_VOC \
+               --exclude=./VOCLIB --exclude=./D_VOCLIB \
+               --exclude=./BP.O   --exclude=./D_BP.O \
+               --exclude='./&SAVEDLISTS&' --exclude='./D_&SAVEDLISTS&' . ) \
+             | ( cd "$1" && tar xf - ) 2>/dev/null
            ( cd "$1" && ./install.sh ) >/dev/null 2>&1; }
   # Seven answers, and the seventh is a FILE DESCRIPTION which UniVerse stores
   # in VOC attribute 1 as "F <description>" — leave it EMPTY or the account
