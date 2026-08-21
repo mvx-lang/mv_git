@@ -3050,8 +3050,30 @@ static void control_type(const char *c, int64_t cl, char *out, size_t cap) {
         const char *t = c + 5, *end = c + cl;
         const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
         const char *te = m2 ? m2 : end;
-        if (te - t == 3 && strncasecmp(t, "dir", 3) == 0) snprintf(out, cap, "DIR");
+        if (te - t == 3 && strncasecmp(t, "dir", 3) == 0) {
+            snprintf(out, cap, "DIR");
+            return;
+        }
     }
+}
+
+/* The backend a native control names, or "" — `FILE<VM><driver>`.  Only the
+   native form carries one: the open interchange control is deliberately
+   backend-agnostic, which is why a clone of an OPEN account has nothing to ask
+   about and a native one may. */
+static void control_driver(const char *c, int64_t cl, char *out, size_t cap) {
+    out[0] = '\0';
+    if (!c || cl < 5) return;
+    if (memcmp(c, "FILE", 4) != 0 || (unsigned char)c[4] != 0xFD) return;
+    const char *t = c + 5, *end = c + cl;
+    const char *m2 = memchr(t, 0xFD, (size_t)(end - t));
+    const char *te = m2 ? m2 : end;
+    while (te > t && (te[-1] == '\n' || te[-1] == '\r' ||
+                      te[-1] == ' ' || te[-1] == '\t')) te--;
+    size_t dl = (size_t)(te - t);
+    if (!dl || dl >= cap) return;
+    if (dl == 3 && strncasecmp(t, "dir", 3) == 0) return;   /* a kind, not a backend */
+    snprintf(out, cap, "%.*s", (int)dl, t);
 }
 
 /* The CREATE-FILE type of the file whose dictionary control lives at
@@ -3065,8 +3087,26 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
     if (git_tree_entry_bypath(&te, head, path) != 0) return;
     git_blob *b = NULL;
     if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
-        control_type(git_blob_rawcontent(b), (int64_t)git_blob_rawsize(b),
-                     out, cap);
+        const char *bc = git_blob_rawcontent(b);
+        int64_t bl = (int64_t)git_blob_rawsize(b);
+        control_type(bc, bl, out, cap);
+#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD)
+        /* THE NATIVE CONTROL NAMES THE FILE'S BACKEND, and it was being thrown
+           away: everything that was not "dir" fell through to the account's
+           default, so a clone put every file on local LMDB however the original
+           was bound.  Migration is per FILE (ARCHITECTURE 4.4) — an account may
+           deliberately keep one hot file on postgres and the rest on LMDB — and
+           that shape did not survive being cloned.
+           BIND, do not create.  A hash file here comes into existence on first
+           write, so materialising never calls CREATE-FILE for one, and by this
+           point the file's VOC pointer has been restored, which makes creating
+           over it refuse outright.  The binding is what was missing, and it is
+           also where an absent backend becomes a question (mvx#113) rather than
+           a file silently made somewhere nobody chose. */
+        char drv[64];
+        control_driver(bc, bl, drv, sizeof drv);
+        if (drv[0]) mvx_bind_driver(base, drv);
+#endif
         git_blob_free(b);
     }
     git_tree_entry_free(te);
