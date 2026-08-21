@@ -57,11 +57,12 @@
 *     Every output this program hands to a subroutine starts assigned, so the
 *     runtime has nothing to warn about before the call fills it in.
       FILE = "" ; SETS = "" ; UNSETS = "" ; DEFS = "" ; REPO = "" ; PFX = ""
-      GSRC = "" ; OBJOUT = "" ; HASSET = 0 ; HASUNSET = 0 ; HASSYNC = 0
+      GSRC = "" ; OBJOUT = "" ; HASSET = 0 ; HASUNSET = 0 ; HASSYNC = 0 ; HASEDIT = 0
       CALL GIT.CMD.ARG(1, FILE)
       CALL GIT.CMD.HAS("set", HASSET)     ; CALL GIT.CMD.VAL("set", SETS)
       CALL GIT.CMD.HAS("unset", HASUNSET) ; CALL GIT.CMD.VAL("unset", UNSETS)
       CALL GIT.CMD.HAS("sync", HASSYNC)
+      CALL GIT.CMD.HAS("edit", HASEDIT)
       IF NOT(HASSET) THEN SETS = ""
       IF NOT(HASUNSET) THEN UNSETS = ""
       IF FILE = "" THEN SCOPE = "ACCOUNT" ELSE SCOPE = "FILE"
@@ -137,6 +138,21 @@
             GOSUB REPORT
             NCHG += 1
          NEXT SYI
+      END
+*     ---- the full-screen editor --------------------------------------------
+      IF HASEDIT THEN
+         GOSUB EDITOR
+         PRINT @(-1) :
+         IF ECANCEL THEN
+            PRINT "abandoned - nothing staged"
+            RETURN
+         END
+         IF NCHG = 0 THEN
+            PRINT "nothing changed"
+            RETURN
+         END
+         GOSUB STAGE
+         RETURN
       END
 *     ---- nothing asked for: just say what is recorded ----------------------
       IF NCHG = 0 THEN
@@ -537,6 +553,242 @@ PAD:
       PADN = PADW - LEN(PADS)
       IF PADN < 1 THEN PADN = 1
       PADS = PADS : STR(" ", PADN)
+      RETURN
+*
+*
+*     ---- the full-screen editor --------------------------------------------
+*
+*     Menuconfig-shaped, over PRINT @(col,row) — which all three platforms have.
+*     NOT ncurses: udt_curses is a UniData-only add-on, so it cannot carry a
+*     feature that has to work everywhere.
+*
+*     It is the SAME machinery the switches drive — same registry, same
+*     validation, same PUTATTR, same staging — with a screen on it.  That is the
+*     order this was built in on purpose: the switches make every one of those
+*     paths testable headlessly, so the screen adds a way in rather than a
+*     second implementation to keep in step.
+*
+*     And it never commits either.  `s` stages, exactly as --set does.
+EDITOR:
+      CUR = 1 ; EDONE = 0 ; ECANCEL = 0 ; EMSG = ""
+      IF SCOPE = "ACCOUNT" THEN SUBJNAME = "account" ELSE SUBJNAME = FILE
+      IF OPENFMT THEN FMTN = "open" ELSE FMTN = "native"
+      GOSUB SCRBEGIN
+      LOOP
+         GOSUB PAINT
+         GOSUB SCRKEY
+         GOSUB EDITKEY
+         IF EDONE THEN EXIT
+      REPEAT
+      GOSUB SCREND
+      RETURN
+*
+*     ---- the screen, chosen at run time ------------------------------------
+*
+*     CURSES IF IT IS THERE, THE PICK SCREEN OTHERWISE.  udt_curses gives real
+*     ncurses — raw keys, no echo, proper refresh — but it is a UniData-only
+*     add-on, so it cannot be what this depends on: the fallback is
+*     PRINT @(col,row) and KEYIN, which all three platforms have, and which is
+*     what runs when curses is absent.
+*
+*     GIT.HAS is the probe, the same seam that picks the installed cmd over the
+*     bundled one.  And the CALLC arm is guarded on UDT rather than on "not
+*     MVX", because CALLC is a UniData statement UniVerse parses as an array
+*     reference — it has to be excluded by the PREPROCESSOR, not by a runtime
+*     branch, or it never compiles there at all (mv_git#52).
+SCRBEGIN:
+      USECURS = 0
+      $IFDEF UDT
+      CALL GIT.HAS("curses", HASCURS)
+      IF HASCURS THEN
+         USECURS = 1
+         CRC = CALLC CURSINIT("")
+         CRC = CALLC CURSCURSOR("0")
+      END
+      $ENDIF
+      RETURN
+*
+SCREND:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSCURSOR("1")
+         CRC = CALLC CURSEND("")
+      END
+      $ENDIF
+      RETURN
+*
+*     One keystroke.  Curses hands back a LOGICAL NAME (UP, ENTER, …) and so
+*     does MVX's own KEYIN; UniData and UniVerse hand back the raw character.
+*     EDITKEY reads both, so neither convention has to be normalised away.
+SCRKEY:
+      KEY = ""
+      $IFDEF UDT
+      IF USECURS THEN
+         KEY = CALLC CURSKEY("")
+         RETURN
+      END
+      $ENDIF
+      KEY = KEYIN()
+      RETURN
+*
+*     Text at a position, and clear.  The curses arm buffers, so a paint ends
+*     with a refresh; the plain arm writes straight out.
+SCRCLEAR:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSCLEAR("")
+         SROW = 0
+         RETURN
+      END
+      $ENDIF
+      PRINT @(-1) :
+      SROW = 0
+      RETURN
+*
+SCRLINE:
+      $IFDEF UDT
+      IF USECURS THEN
+         CRC = CALLC CURSMOVE(SROW : " 0")
+         CRC = CALLC CURSADDSTR(SLINE)
+         SROW += 1
+         RETURN
+      END
+      $ENDIF
+      PRINT SLINE
+      SROW += 1
+      RETURN
+*
+SCRFLUSH:
+      $IFDEF UDT
+      IF USECURS THEN CRC = CALLC CURSREFRESH("")
+      $ENDIF
+      RETURN
+*
+PAINT:
+      GOSUB SCRCLEAR
+      SLINE = "GIT ATTR - " : SUBJNAME : "   (" : FMTN : " format)" ; GOSUB SCRLINE
+      SLINE = PATH ; GOSUB SCRLINE
+      SLINE = "" ; GOSUB SCRLINE
+      FOR PI = 1 TO NDEFS
+         AK = DEFS<PI, 1> ; GOSUB GETATTR
+         SHOW = AV
+         IF SHOW = "" THEN SHOW = "-"
+         DROW = PI ; GOSUB APPLIES
+         NOTE = ""
+         IF NOT(OKPLAT) THEN NOTE = "   [" : DEFS<PI, 2> : "]"
+         IF PI = CUR THEN MARK = " > " ELSE MARK = "   "
+         PADS = AK ; PADW = 12 ; GOSUB PAD
+         SLINE = MARK : PADS : SHOW : NOTE ; GOSUB SCRLINE
+      NEXT PI
+      SLINE = "" ; GOSUB SCRLINE
+      SLINE = "j/k move   ENTER edit   d clear   s stage and quit   q abandon"
+      GOSUB SCRLINE
+      IF EMSG # "" THEN
+         SLINE = EMSG ; GOSUB SCRLINE
+         EMSG = ""
+      END
+      GOSUB SCRFLUSH
+      RETURN
+*
+*     Letters as well as arrows.  An arrow arrives as ESC [ A|B, which is three
+*     KEYINs; letters are what works when the terminal sends something else, and
+*     they are what a piped test can send.
+EDITKEY:
+      EK = OCONV(KEY, "MCL")
+      EU = OCONV(KEY, "MCU")
+      BEGIN CASE
+*     A raw escape sequence: ESC [ A|B is three keystrokes, and this is what a
+*     terminal sends where nothing has decoded it for us.
+      CASE KEY = CHAR(27)
+         GOSUB SCRKEY ; GOSUB SCRKEY
+         IF KEY = "A" THEN CUR -= 1
+         IF KEY = "B" THEN CUR += 1
+*     A decoded NAME.  Curses returns one, and so does MVX's own KEYIN, so the
+*     same three lines serve both.
+      CASE EU = "UP" ; CUR -= 1
+      CASE EU = "DOWN" ; CUR += 1
+      CASE EU = "ENTER" ; GOSUB EDVALUE
+      CASE EK = "k" ; CUR -= 1
+      CASE EK = "j" ; CUR += 1
+      CASE EK = "q" ; EDONE = 1 ; ECANCEL = 1
+      CASE EK = "s" ; EDONE = 1
+      CASE EK = "d" ; GOSUB EDCLEAR
+      CASE KEY = CHAR(13) OR KEY = CHAR(10) ; GOSUB EDVALUE
+*     Nothing left to read — a closed input, not an instruction.  Treat it as
+*     abandoning rather than as staging whatever happens to be on screen.
+      CASE EK = "" ; EDONE = 1 ; ECANCEL = 1
+      END CASE
+      IF CUR < 1 THEN CUR = NDEFS
+      IF CUR > NDEFS THEN CUR = 1
+      RETURN
+*
+*     Can the highlighted row be changed at all?  Same two answers the switches
+*     give, said on the screen instead of to stdout.
+EDROWOK:
+      EDOK = 0
+      SK = DEFS<CUR, 1> ; DROW = CUR
+      IF NATIVECTL THEN
+         EMSG = "read-only: " : FILE : "'s control here is this platform's own %FILE% record"
+         RETURN
+      END
+      GOSUB APPLIES
+      IF NOT(EDITOK) THEN
+         EMSG = "'" : SK : "' applies to " : DEFS<CUR, 2> : ", and this is a native " : PLAT : " repository"
+         RETURN
+      END
+      EDOK = 1
+      RETURN
+*
+*     An ENUM CYCLES — there is a known set, so typing one of them out is work
+*     the screen can do for you.  Everything else is typed.
+EDVALUE:
+      GOSUB EDROWOK
+      IF NOT(EDOK) THEN RETURN
+      AK = SK ; GOSUB GETATTR ; OLDV = AV
+      IF DEFS<CUR, 3> = "ENUM" THEN
+         GOSUB EDCYCLE
+      END ELSE
+*        A typed value needs the line editor, which curses raw mode does not
+*        provide — so it leaves curses for the length of the prompt and goes
+*        back in.  An ENUM never gets here, and an ENUM is most of them.
+         GOSUB SCREND
+         PRINT
+         PRINT SK : " [" : OLDV : "]: " :
+         NEWV = ""
+         INPUT NEWV
+         GOSUB SCRBEGIN
+         IF TRIM(NEWV) = "" THEN RETURN
+         SV = TRIM(NEWV)
+         GOSUB CHECKVAL
+         IF NOT(VOK) THEN
+            EMSG = "'" : SV : "' is not a valid " : DEFS<CUR, 3> : " for " : SK
+            RETURN
+         END
+      END
+      AK = SK ; AV = SV ; GOSUB PUTATTR
+      NCHG += 1
+      RETURN
+*
+EDCYCLE:
+      EVALS = DEFS<CUR, 5> ; NEV = DCOUNT(EVALS, " ")
+      POSN = 0
+      FOR CYI = 1 TO NEV
+         IF FIELD(EVALS, " ", CYI) = OLDV THEN POSN = CYI
+      NEXT CYI
+      POSN += 1
+      IF POSN > NEV THEN POSN = 1
+      SV = FIELD(EVALS, " ", POSN)
+      RETURN
+*
+*     REMOVE, not just set — a parameter that does not apply here should be able
+*     to go away rather than only take another value.
+EDCLEAR:
+      GOSUB EDROWOK
+      IF NOT(EDOK) THEN RETURN
+      AK = SK ; GOSUB GETATTR ; OLDV = AV
+      IF OLDV = "" THEN RETURN
+      AK = SK ; AV = "" ; GOSUB DELATTR
+      NCHG += 1
       RETURN
 *
 *     ---- write it back ----------------------------------------------------

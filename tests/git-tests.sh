@@ -46,6 +46,12 @@ if [ "$PLATFORM" = mvx ]; then
   CF()   { "$MVX" -a "$1" -c "CREATE-FILE $2" >/dev/null 2>&1; }
   DF()   { "$MVX" -a "$1" -c "DELETE-FILE $2" >/dev/null 2>&1; }
   GITV() { local a="$1"; shift; "$MVX" -a "$a" -c "$*" 2>&1; }
+  # GITK <acct> <keys> <sentence...> — run a sentence with KEYSTROKES on stdin,
+  # so the full-screen editor can be driven headlessly.  A prompt no automated
+  # test can reach is a prompt that rots, and this suite has already found two
+  # paths that were untested for exactly that reason.
+  GITK() { local a="$1" k="$2"; shift 2
+           printf '%s' "$k" | "$MVX" -a "$a" -c "$*" 2>&1; }
   CT()   { "$MVX" -a "$1" -c "CT $2 $3" 2>&1; }
   SEED() { local a="$1" body="$2" b="$WORK/seed.$RANDOM.b"
            printf '%s\n' "$body" > "$b"
@@ -106,6 +112,11 @@ elif [ "$PLATFORM" = uv ]; then
              ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
                | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   fi
+  # The session script IS stdin, so the editor's keystrokes simply follow the
+  # sentence that starts it.
+  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+           ( cd "$a" && printf 'GIT -M %s\n%sQUIT\n' "${s#GIT }" "$k" | "$MVX" ) 2>&1 \
+             | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
@@ -157,6 +168,11 @@ else
   # out as "GIT -M GIT STATUS".
   GITV() { local a="$1"; shift; local s="$*"
            ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
+             | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+  # The session script IS stdin, so the editor's keystrokes simply follow the
+  # sentence that starts it.
+  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+           ( cd "$a" && printf 'GIT -M %s\n%sQUIT\n' "${s#GIT }" "$k" | "$MVX" ) 2>&1 \
              | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
@@ -341,6 +357,23 @@ case "$(GITV "$A" GIT ATTR CUST)" in
   *"no longer matches"*) bad "drift gone after sync" "no drift" "still reported";;
   *)                     ok "drift gone after sync";;
 esac
+
+# THE FULL-SCREEN EDITOR, driven headlessly.  It is the same registry, the same
+# validation and the same staging the switches use, with a screen on it — which
+# is why the switches were built first — but "same machinery" is a claim, and an
+# untested screen is how it stops being true.
+#
+# `jj` moves to `dynamic`, ENTER cycles the enum, `s` stages.  Letters as well
+# as arrows: a piped test cannot send a decoded key, and the letters are what
+# work when the terminal sends something the platform has not decoded.
+t  "editor stages an edit" "staged" "$(GITK "$A" 'jj
+s' GIT ATTR CUST --edit)"
+t  "editor edit took"      "yes"    "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *dynamic *//p')"
+# ABANDON MEANS ABANDON.  `d` clears the value and `q` leaves without staging,
+# so the recorded value must be exactly what it was.
+t  "editor abandons"       "abandoned" "$(GITK "$A" 'jjdq' GIT ATTR CUST --edit)"
+t  "abandoned edit is not kept" "yes" "$(GITV "$A" GIT ATTR CUST | sed -n 's/^ *dynamic *//p')"
+GITV "$A" GIT ATTR CUST --unset dynamic >/dev/null
 
 # The account scope is the same editor with no file argument.
 GITV "$A" GIT ATTR --set version=2 >/dev/null
