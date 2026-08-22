@@ -26,6 +26,7 @@
  * engine's mark<->newline blob translation needs no change. */
 
 #include "udtgit_rt.h"
+#include "mvxgit.h"      /* mv_account_furniture() */
 
 #include <stdio.h>
 #include <stdlib.h>
