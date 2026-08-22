@@ -745,6 +745,65 @@ int mv_account_furniture(const char *name, size_t len) {
     return 0;
 }
 
+/* Filter a candidate file list down to what a wholesale add should stage.
+ *
+ * THE SINGLE SOURCE OF TRUTH for account furniture, and the reason this is a
+ * list filter rather than a per-name predicate: the BASIC verb cannot call
+ * mv_account_furniture() directly, and asking per name would be a transport
+ * round trip each time on UniVerse.  One call, one answer, one rule set.
+ *
+ * The BASIC walk in BP/GIT.ADD has to stay — mvgitd has no record backend and
+ * cannot open the account, so on UniVerse the enumeration must happen in the
+ * session.  But the walk deciding what it FINDS is a different thing from the
+ * walk deciding what is FURNITURE, and only the first has to be in BASIC.
+ * Before this, GIT.ADD carried its own copy of the `_X_`/`&X&` shapes and none
+ * of the names at all, so `GIT ADD -A` committed 944 blobs of a stock account
+ * where `udt-git add -A` committed 76 (mv_git#81).
+ *
+ * Note this touches no records: it is string matching, so it answers just as
+ * well from mvgitd, which cannot read the account, as from in-session CallC.
+ *
+ * `list` is @AM-separated `name<VM>type`; the kept entries come back whole.
+ */
+char *mv_git_filter_furniture(const char *list) {
+    size_t n = list ? strlen(list) : 0;
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    size_t o = 0, i = 0;
+    while (i < n) {
+        size_t s = i;
+        while (i < n && (unsigned char)list[i] != 0xFE) i++;
+        size_t e = i;                       /* entry is [s, e) */
+        size_t nm = s;
+        while (nm < e && (unsigned char)list[nm] != 0xFD) nm++;
+        if (e > s && !mv_account_furniture(list + s, nm - s)) {
+            if (o) out[o++] = (char)0xFE;
+            memcpy(out + o, list + s, e - s);
+            o += e - s;
+        }
+        if (i < n) i++;                     /* past the @AM */
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* --- GITFURNITURE(list, out) -------------------------------------------- */
+void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[0], nb, sizeof nb, &p);
+    char *buf = malloc((size_t)l + 1);
+    if (!buf) { mv_set_str(argv[1], "", 0); return; }
+    memcpy(buf, p, (size_t)l);
+    buf[l] = '\0';
+    char *r = mv_git_filter_furniture(buf);
+    free(buf);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;

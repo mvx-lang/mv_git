@@ -156,13 +156,25 @@ ADDALL:
             DP = VREC<2> ; DD = VREC<3> ; LOC = 1
             IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
             IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
-            L = LEN(VID)
-            IF VID[1,1]="_" AND VID[L,1]="_" THEN LOC = 0
-            IF VID[1,1]="&" AND VID[L,1]="&" THEN LOC = 0
             IF LOC THEN FILES<-1> = VID : VM : VT
          END
       END
    REPEAT
+*  ONE set of furniture rules, for the verb and the CLI alike.
+*
+*  This walk has to be here — mvgitd has no record backend, so on UniVerse the
+*  enumeration must happen in the session.  But what the walk FINDS and what
+*  counts as FURNITURE are different questions, and only the first needs BASIC.
+*  This used to test `_X_` and `&X&` inline and knew none of the names, so the
+*  verb committed the whole SQL catalogue while the CLI did not: 944 blobs
+*  against 76 for the same stock account (mv_git#81).
+*
+*  Guarded on non-empty: the engine answers "" only on failure, and an account
+*  with any file at all keeps at least VOC, so an empty answer means the op did
+*  not run and the unfiltered list is the safer thing to carry forward.
+   FURNOUT = ""
+   CALL GIT.OBJ("FURNITURE", 2, REPO, FILES, "", "", "", FURNOUT)
+   IF FURNOUT # "" THEN FILES = FURNOUT
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
