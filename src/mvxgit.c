@@ -734,6 +734,14 @@ int mv_account_furniture(const char *name, size_t len) {
        prefix is safe: an account's own dynamic views are named for their file
        (DV_ORDERS_NF_SUB, DV_STUDENT_CGA_MS_SUB) and never DV_SQL. */
     if (len > 6 && memcmp(name, "DV_SQL", 6) == 0) return 1;
+    /* And the two shapes the enumerations used to test for themselves: the work
+       files wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_, _REPORT_,
+       _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH& …).  They
+       live here now so "what is furniture" has ONE definition — the file
+       enumerations and the VOC pointer filter all ask the same question, rather
+       than each carrying its own copy and drifting (mv_git#78). */
+    if (len >= 2 && ((name[0] == '_' && name[len - 1] == '_') ||
+                     (name[0] == '&' && name[len - 1] == '&'))) return 1;
     return 0;
 }
 
@@ -858,6 +866,23 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 if (!one && (cls == 1 || (cls == 2 && voc_open))) {
                     skipped++;
                     continue;
+                }
+                /* A native commit keeps its platform's own file pointers so it
+                   can be checked out into another instance of the same
+                   platform — but that only makes sense for files that are
+                   actually in the repository.  The enumerations leave furniture
+                   out, so its pointer points at nothing, and for the standard
+                   work files newacct recreates both file and pointer on clone.
+                   VOC was carrying _HOLD_, _SCREEN_, _REPORT_, _ENCINFO_,
+                   _KEYSTORE_ and savedlists for files that are not there
+                   (mv_git#78). */
+                if (!one && cls == 2) {
+                    char fid[256];
+                    arg_str(&id, fid, sizeof fid);
+                    if (mv_account_furniture(fid, strlen(fid))) {
+                        skipped++;
+                        continue;
+                    }
                 }
                 /* Identical to what a fresh account of this flavour holds, so
                    it is the system's record and not this account's (mv_git#46).
