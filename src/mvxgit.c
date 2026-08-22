@@ -715,10 +715,25 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
  */
 int mv_account_furniture(const char *name, size_t len) {
     static const char *const sysfile[] = {
-        "__SCHEMA__MAP", "privilege", "savedlists", "voc", "UD_SQLTABLES", NULL
+        /* the SQL catalogue and its schema/view registries */
+        "__SCHEMA__MAP", "__SCHEMA__PROC", "__V__VIEW",
+        "privilege", "voc", "UD_SQLTABLES",
+        /* the standard files udt-git's own clone path restores with newacct
+           (see the comment on provision_account in udt-git.c): committing them
+           duplicates what a clone is going to recreate anyway.  `savedlists`
+           and `SAVEDLISTS` are the same file in either case of UniData's
+           making, and both were arriving. */
+        "savedlists", "SAVEDLISTS", "CTLG", "MENUFILE",
+        NULL
     };
     for (const char *const *sf = sysfile; *sf; sf++)
         if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    /* UniData's ODBC/SQL catalogue views — DV_SQLColumns, DV_SQLTables,
+       DV_SQLStatistics, DV_SQLSpecialColumns and whatever a later release adds.
+       Matched on the prefix because the set grows between versions, and the
+       prefix is safe: an account's own dynamic views are named for their file
+       (DV_ORDERS_NF_SUB, DV_STUDENT_CGA_MS_SUB) and never DV_SQL. */
+    if (len > 6 && memcmp(name, "DV_SQL", 6) == 0) return 1;
     return 0;
 }
 
