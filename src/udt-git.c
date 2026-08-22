@@ -441,7 +441,7 @@ static int do_clone(const char *repo, const char *dir) {
        materialise below failed with "the account I/O agent did not answer" and
        the clone produced an empty account.  uv-git seeds here for the same
        reason; this is that, for UniData. */
-    if (mv_agent_seed() != 0)
+    if (!mv_agent_cataloged() && mv_agent_seed() != 0)
         fprintf(stderr, "udt-git clone: could not put an agent into the new "
                         "account; it exists but will hold no records\n");
 
@@ -615,6 +615,24 @@ static void deploy_git_verb(void) {
                         " (set MVGIT_VERB to its path)\n");
         return;
     }
+    /* Already in the global catalog?  Then the account needs nothing: GIT
+       resolves there for every account on the system.  Copying the source into
+       this account's BP and cataloging it LOCAL duplicates what the install
+       already did, leaves a private compiled copy that a package upgrade will
+       not refresh, and puts two records into BP that a wholesale add then
+       commits as if they were the account's own code (mv_git#80). */
+    {
+        const char *home = getenv("UDTHOME");
+        char g[4096];
+        if (home && home[0]) {
+            snprintf(g, sizeof g, "%s/sys/CTLG/g/GIT", home);
+            if (access(g, F_OK) == 0) {
+                printf("udt-git: GIT is cataloged globally; nothing to install "
+                       "in this account\n");
+                return;
+            }
+        }
+    }
     if (access("BP", F_OK) != 0) {
         fprintf(stderr, "udt-git: no BP file here; skipping in-session verb setup\n");
         return;
@@ -744,7 +762,7 @@ int main(int argc, char **argv) {
            with no agent in it cannot be read at all — `init` succeeded and the
            very next `add` failed with "the agent did not answer".  Seed it here,
            where the account is first set up, exactly as uv-git does. */
-        if (mv_agent_seed() != 0)
+        if (!mv_agent_cataloged() && mv_agent_seed() != 0)
             fprintf(stderr, "udt-git: could not compile BP/GIT.AGENT in this "
                             "account — the CLI will not be able to reach its "
                             "records (the in-session GIT verb still works)\n");
