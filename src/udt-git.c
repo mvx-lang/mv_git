@@ -123,26 +123,34 @@ static void add_all(mv_ctx *ctx, const char *repo) {
             snprintf(dict, sizeof dict, "%s.DICT", name);
             emit(mv_git_add(ctx, repo, name, ""));   /* data records */
             emit(mv_git_add(ctx, repo, dict, ""));   /* dictionary   */
+            /* The file control: probe the live file for its class and, for
+               a hash file, its real modulo (so a clone recreates it at true
+               size, keeping a static file static) — "DIR" or
+               "hash <modulo> DYNAMIC|STATIC".  But a hash modulo is only a
+               suggested default: keep an already-committed one STICKY so this
+               account's resize does not overwrite the shipped default and
+               ripple out to other clones — only seed it for a new file.
+
+               STAGED ON EVERY ADD, native as well as open (mv_git#15).  This
+               is the geometry a checkout reads to drive CREATE.FILE, so
+               without it a clone has nothing to build the file from and gets
+               the platform default or nothing.  BP/GIT.ADD was fixed for this;
+               add_all() — which is what `udt-git add -A` actually calls, never
+               the verb — kept the old open-only gate, so every native CLI push
+               carried no geometry at all (mv_git#73). */
+            char type[MV_GIT_CTL_MAX];
+            if (!mv_fileclass(ctx, name, type, sizeof type))
+                snprintf(type, sizeof type, "hash");
+            if (strncmp(type, "hash", 4) == 0) {
+                char committed[MV_GIT_CTL_MAX];
+                if (mv_git_committed_control(repo, name, committed,
+                                             sizeof committed) >= 0 &&
+                    strncmp(committed, "hash", 4) == 0)
+                    snprintf(type, sizeof type, "%s", committed);
+            }
+            snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
+            free(mv_git_stageblob(ctx, repo, ctrl, type));
             if (open) {
-                /* open-form control: probe the live file for its class and, for
-                   a hash file, its real modulo (so a clone recreates it at true
-                   size, keeping a static file static) — "DIR" or
-                   "hash <modulo> DYNAMIC|STATIC".  But a hash modulo is only a
-                   suggested default: keep an already-committed one STICKY so this
-                   account's resize does not overwrite the shipped default and
-                   ripple out to other clones — only seed it for a new file. */
-                char type[MV_GIT_CTL_MAX];
-                if (!mv_fileclass(ctx, name, type, sizeof type))
-                    snprintf(type, sizeof type, "hash");
-                if (strncmp(type, "hash", 4) == 0) {
-                    char committed[MV_GIT_CTL_MAX];
-                    if (mv_git_committed_control(repo, name, committed,
-                                                 sizeof committed) >= 0 &&
-                        strncmp(committed, "hash", 4) == 0)
-                        snprintf(type, sizeof type, "%s", committed);
-                }
-                snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
-                free(mv_git_stageblob(ctx, repo, ctrl, type));
                 /* %INDEXES%: the file's alternate-key index names, so secondary
                    indexes travel (#10).  Fold @AM to newlines like every record
                    blob; stage only when the file actually has indexes. */
@@ -179,7 +187,7 @@ static void add_all(mv_ctx *ctx, const char *repo) {
         snprintf(desc, sizeof desc,
                  "# UniData account descriptor\nname = %s\nversion = 1\n", base);
         free(mv_git_stageblob(ctx, repo, ".udt", desc));
-        printf(".udt account marker written (native)\n");
+        printf(".udt account marker + %%FILE%% controls written (native)\n");
     }
 }
 
