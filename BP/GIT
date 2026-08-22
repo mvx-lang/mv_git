@@ -72,6 +72,7 @@ CALL @CF("ADD", "A", "all", 0, "", "stage every changed record")
 CALL @CF("ADD", "o", "open", 0, "", "open (portable) format")
 CALL @CA("RM", "unstage a record (file id)", "GIT.RM")
 CALL @CA("IGNORE", "keep records out of history (pattern)", "GIT.IGNORE")
+CALL @CA("VERSION", "engine, libgit2 and its transports", "GIT.VERSION")
 CALL @CA("STATUS", "show staged / changed records", "GIT.STATUS")
 CALL @CA("COMMIT", "commit staged records (-m msg)", "GIT.COMMIT")
 CALL @CF("COMMIT", "m", "message", 1, "", "commit message")
@@ -102,19 +103,7 @@ CALL @CA("TAG", "list or manage tags (name {commit} | -a name -m msg | -d name)"
 CALL @CF("TAG", "a", "annotate", 1, "", "create an annotated tag (name)")
 CALL @CF("TAG", "m", "message", 1, "", "annotation message")
 CALL @CF("TAG", "d", "delete", 1, "", "delete a tag (name)")
-* --version is a SWITCH on the verb, not a command of its own: `GIT --VERSION`,
-* the way `mvx-git --version` and `udt-git --version` spell it.  Checked before
-* the dispatcher because it answers for the verb as a whole rather than for any
-* one command, and it must work in an account with no repository.
-GSENT = OCONV(TRIM(@SENTENCE), "MCU")
-GWANTV = 0
-IF INDEX(GSENT, "--VERSION", 1) > 0 THEN GWANTV = 1
-IF INDEX(GSENT, " -V", 1) > 0 THEN GWANTV = 1
-IF GWANTV THEN
-   CALL GIT.VERSION("")
-END ELSE
-   CALL @CR
-END
+CALL @CR
 * The closing fence.  Its ABSENCE is meaningful to the caller: it means the verb
 * did not finish — a handler that STOPped, or a session that never reached us —
 * so an empty result cannot be mistaken for a clean run.
