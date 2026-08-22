@@ -97,13 +97,22 @@ CALL GIT.REPO(REPO)
 *  beside their source, and the %FILE% / %INDEXES% controls are synthesised
 *  rather than stored.
 UNTRACKED:
+*  The same furniture ids `add` uses, from the same place — or status reports
+*  `?? VOC/_HOLD_` for records add will never stage, and the account can never
+*  read clean (mv_git#78).
+   UFURN = ""
+   CALL GIT.FURNIDS(REPO, UFURN)
    UFILES = ""
    NP2 = DCOUNT(PATHS, AM)
    FOR U = 1 TO NP2
       UP = PATHS<U> ; USL = INDEX(UP, "/", 1)
       IF USL > 0 THEN
          UFN = UP[1, USL-1]
-         IF INDEX(AM : UFILES : AM, AM : UFN : AM, 1) = 0 THEN UFILES<-1> = UFN
+         UFDROP = 0
+         IF UFURN # "" THEN LOCATE(UFN, UFURN; UFNP) THEN UFDROP = 1
+         IF NOT(UFDROP) THEN
+            IF INDEX(AM : UFILES : AM, AM : UFN : AM, 1) = 0 THEN UFILES<-1> = UFN
+         END
       END
    NEXT U
 *  The account's own GIT IGNORE list, read through the same seam GIT.IGNORE
@@ -182,6 +191,9 @@ UNTRACKED:
                NEXT G
                IF URID[1,1] = "_" THEN
                   READ UOBJ FROM RV, URID[2, LEN(URID)] THEN UDROP = 1
+               END
+               IF NOT(UDROP) AND UISVOC AND UFURN # "" THEN
+                  LOCATE(URID, UFURN; UFPOS) THEN UDROP = 1
                END
                IF NOT(UDROP) AND USTK AND UISVOC THEN
                   READ USREC FROM USTKF, URID THEN UDROP = 1

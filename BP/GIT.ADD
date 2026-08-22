@@ -140,7 +140,7 @@ CALL GIT.REPO(REPO)
 *  select before opening any file), then stage each file's data + dictionary (+
 *  open-form controls when -o).
 ADDALL:
-   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0 ; ALLF = ""
+   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
    SELECT VOCF
    LOOP WHILE READNEXT VID DO
@@ -156,48 +156,27 @@ ADDALL:
             DP = VREC<2> ; DD = VREC<3> ; LOC = 1
             IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
             IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
-*           EVERY file-type id is a furniture candidate, local or not: VOC can
-*           point at furniture that is not a local file (_ENCINFO_, _KEYSTORE_),
-*           and those pointers must go too.  The local ones become the files to
-*           stage; ALLF is what the furniture question gets asked about.
-            ALLF<-1> = VID : VM : VT
             IF LOC THEN FILES<-1> = VID : VM : VT
          END
       END
    REPEAT
-*  ONE set of furniture rules, for the verb and the CLI alike.
-*
-*  This walk has to be here — mvgitd has no record backend, so on UniVerse the
-*  enumeration must happen in the session.  But what the walk FINDS and what
-*  counts as FURNITURE are different questions, and only the first needs BASIC.
-*  This used to test `_X_` and `&X&` inline and knew none of the names, so the
-*  verb committed the whole SQL catalogue while the CLI did not: 944 blobs
-*  against 76 for the same stock account (mv_git#81).
-*
-*  Guarded on non-empty: the engine answers "" only on failure, and an account
-*  with any file at all keeps at least VOC, so an empty answer means the op did
-*  not run and the unfiltered list is the safer thing to carry forward.
-   FURNOUT = ""
+*  ONE set of furniture rules, for the verb and the CLI alike, and one place
+*  that asks for them — GIT.FURNIDS, which `status` calls too.  This walk has to
+*  be here (mvgitd has no record backend, so on UniVerse the enumeration must
+*  happen in the session), but what the walk FINDS and what counts as FURNITURE
+*  are different questions and only the first needs BASIC.  GIT.ADD used to test
+*  `_X_` and `&X&` inline and know none of the names, so the verb committed the
+*  whole SQL catalogue while the CLI did not: 944 blobs against 76 for the same
+*  stock account (mv_git#81).
    FURNIDS = ""
-   CALL GIT.OBJ("FURNITURE", 2, REPO, FILES, "", "", "", FURNOUT)
-   IF FURNOUT # "" THEN FILES = FURNOUT
-*  VOC's pointers to furniture have to go with the files.  A native commit keeps
-*  the platform's own file pointers so it can be checked out into another
-*  instance of the same platform, which is right for files that ARE committed
-*  and wrong for these: the pointer names a file the filter excluded, so a
-*  checkout finds nothing to point at (mv_git#78, which fixed the CLI and missed
-*  the verb).  Asked of ALLF, not of FILES, because VOC points at furniture that
-*  is not a local file too — and derived by subtraction, so the pointers cannot
-*  disagree with the rules the files themselves were chosen by.
-   ALLOUT = ""
-   IF ALLF # "" THEN
-      CALL GIT.OBJ("FURNITURE", 2, REPO, ALLF, "", "", "", ALLOUT)
-      NRAW = DCOUNT(ALLF, AM)
+   CALL GIT.FURNIDS(REPO, FURNIDS)
+   IF FURNIDS # "" THEN
+      KEPT = ""
+      NRAW = DCOUNT(FILES, AM)
       FOR RK = 1 TO NRAW
-         LOCATE(ALLF<RK>, ALLOUT; FPOS) ELSE
-            FURNIDS<-1> = FIELD(ALLF<RK>, VM, 1)
-         END
+         LOCATE(FIELD(FILES<RK>, VM, 1), FURNIDS; FPOS) ELSE KEPT<-1> = FILES<RK>
       NEXT RK
+      FILES = KEPT
    END
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
