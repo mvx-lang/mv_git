@@ -842,9 +842,43 @@ char *mv_git_stage_desc(mv_ctx *ctx, const char *repo, const char *prefix,
         snprintf(desc, sizeof desc,
                  "# UniData account descriptor\nname = %s\nversion = 1\n", base);
         snprintf(path, sizeof path, "%s.udt", pfx);
+#elif defined(MVXGIT_GITD)
+        /* UniVerse, synthesised exactly as UniData's is — a commit should not
+           depend on whether someone happened to write a `.uv` into the account
+           first.  The FLAVOUR is the one thing that cannot be regenerated: it
+           is fixed when an account is created and readable nowhere else, so an
+           existing descriptor is read for it and it is carried forward.  A
+           clone that does not know the flavour comes back looking right and
+           behaving differently. */
+        {
+            char fl[128];
+            fl[0] = '\0';
+            FILE *u = fopen(".uv", "rb");
+            if (u) {
+                char line[512];
+                while (fgets(line, sizeof line, u)) {
+                    char *v = strstr(line, "flavour");
+                    if (!v) v = strstr(line, "flavor");
+                    if (!v) continue;
+                    v = strchr(v, '=');
+                    if (!v) continue;
+                    v++;
+                    while (*v == ' ' || *v == '\t') v++;
+                    snprintf(fl, sizeof fl, "%s", v);
+                    char *nl = strpbrk(fl, "\r\n");
+                    if (nl) *nl = '\0';
+                    break;
+                }
+                fclose(u);
+            }
+            snprintf(desc, sizeof desc,
+                     "# UV account descriptor\nname = %s\nversion = 1\n%s%s%s",
+                     base, fl[0] ? "flavour = " : "", fl, fl[0] ? "\n" : "");
+        }
+        snprintf(path, sizeof path, "%s.uv", pfx);
 #else
         (void)desc; (void)path;
-        return NULL;            /* .uv / .mvx are real files; they travel as such */
+        return NULL;            /* MVX writes a real .mvx; it travels as a file */
 #endif
     }
     return mv_git_stageblob(ctx, repo, path, desc);
