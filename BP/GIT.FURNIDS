@@ -25,17 +25,11 @@
       OPEN "VOC" TO FVOC ELSE
          RETURN
       END
-*     THE PORTABLE SELECT FORM, for the reason GIT.STATUS records at its own
-*     select: a bare `SELECT x` with `LOOP WHILE READNEXT ... DO` does not parse
-*     everywhere.  Select to a named list and read from it by name.
-*     Assigned first: the list variable is an OUTPUT of SELECT, but it is read
-*     before it is written, and an unassigned one is a fault message in the
-*     middle of the verb's output.  Same spelling as GIT.STATUS and
-*     GITUDT.CHECKOUT, which is the one all three platforms accept.
-      FLIST = ""
-      SELECT FVOC TO FLIST
-      LOOP
-         READNEXT FVID FROM FLIST ELSE EXIT
+*     GIT.ADD's spelling, which is the one this walk mirrors and which all
+*     three compilers take.  The earlier failure here was the bare `ELSE RETURN`
+*     above, not the loop.
+      SELECT FVOC
+      LOOP WHILE READNEXT FVID DO
          READ FVREC FROM FVOC, FVID THEN
 *           Attribute 1 is the type, but UniVerse appends any description given
 *           at CREATE.FILE time — so take the first token, as the add walk does.
