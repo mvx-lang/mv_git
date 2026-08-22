@@ -658,8 +658,34 @@ int main(int argc, char **argv) {
         account = argv[i + 1];
         i += 2;
     }
-    if (i >= argc) {
-        fprintf(stderr, "usage: udt-git [-a account] <command> [args]\n");
+    if (i >= argc || !strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+        /* The bare one-liner said nothing about what this can do, which is how
+           `remote` and `push` stayed missing without anyone noticing
+           (mv_git#75).  Listing them is the cheapest way to keep the two CLIs
+           and the in-session verb visibly in step. */
+        fprintf(stderr,
+            "usage: udt-git [-a account] <command> [args]\n"
+            "commands:\n"
+            "  init         create the record repository\n"
+            "  clone        clone a repo into a dir (url dir {ref})\n"
+            "  add          stage records (-A | file {id})\n"
+            "  rm           unstage a record (file id)\n"
+            "  status       show staged / changed records\n"
+            "  commit       commit staged records (-m msg)\n"
+            "  log          commit history\n"
+            "  diff         record changes ({file}); --staged for the index\n"
+            "  show         committed content of a record (file id)\n"
+            "  restore      restore records from HEAD (file)\n"
+            "  branch       list or create a branch (name)\n"
+            "  checkout     switch branch, update records (name)\n"
+            "  merge        merge a branch into this one (name)\n"
+            "  cherry-pick  apply one commit (commit)\n"
+            "  remote       list or configure remotes"
+                            " ({add|set-url|remove} name {url})\n"
+            "  fetch        fetch a remote ({remote})\n"
+            "  pull         fetch + merge, re-materialising"
+                            " ({remote} {branch})\n"
+            "  push         push to a remote ({remote} {refspec})\n");
         return 2;
     }
     /* The session-layer diagnostic, before any account handling: it is what
@@ -708,6 +734,7 @@ int main(int argc, char **argv) {
     const char *repo = ".git";
     const char *p0 = arg(argc, argv, i);
     const char *p1 = arg(argc, argv, i + 1);
+    const char *p2 = arg(argc, argv, i + 2);   /* remote add <name> <url> */
     int rc = 0;
 
     if (!strcmp(sub, "init")) {
@@ -731,6 +758,19 @@ int main(int argc, char **argv) {
             add_all(ctx, repo);
         else
             emit(mv_git_add(ctx, repo, p0, p1));
+    } else if (!strcmp(sub, "remote")) {
+        /* remote {add|set-url|remove} <name> {url} — bare `remote` lists.
+           These four were in uv-git and the in-session verb but never here, so
+           a UniData account could not be pointed at a remote or pushed from the
+           shell at all: you had to write [remote "origin"] into .git/config by
+           hand and push from inside a udt session (mv_git#75). */
+        emit(mv_git_remote(ctx, repo, p0, p1, p2));
+    } else if (!strcmp(sub, "push")) {
+        emit(mv_git_push(ctx, repo, p0, p1));
+    } else if (!strcmp(sub, "fetch")) {
+        emit(mv_git_fetch(ctx, repo, p0));
+    } else if (!strcmp(sub, "pull")) {
+        emit(mv_git_pull(ctx, repo, p0, p1));
     } else if (!strcmp(sub, "rm")) {
         emit(mv_git_rm(ctx, repo, p0, p1));
     } else if (!strcmp(sub, "status")) {
