@@ -822,8 +822,8 @@ char *mv_git_filter_furniture(const char *list) {
  * MVX a real `.mvx`, so on those the descriptor is an ordinary file the walk
  * already stages, and writing a second copy here would fight with it.
  */
-char *mv_git_stage_desc(mv_ctx *ctx, const char *repo, const char *prefix,
-                        int open) {
+int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
+                    const char *prefix, int open) {
     const char *pfx = prefix ? prefix : "";
     char base[512] = "account";
     const char *acct = getenv("MVXACCOUNT");
@@ -833,15 +833,14 @@ char *mv_git_stage_desc(mv_ctx *ctx, const char *repo, const char *prefix,
         const char *slash = strrchr(acct, '/');
         snprintf(base, sizeof base, "%s", (slash && slash[1]) ? slash + 1 : acct);
     }
-    char path[700], desc[2048];
     if (open) {
-        mv_git_desc_open(base, "1", NULL, "lmdb", desc, sizeof desc);
-        snprintf(path, sizeof path, "%s.mv-account", pfx);
+        mv_git_desc_open(base, "1", NULL, "lmdb", desc, dcap);
+        snprintf(path, pcap, "%s.mv-account", pfx);
     } else {
 #if defined(MVXGIT_UDT)
-        snprintf(desc, sizeof desc,
+        snprintf(desc, dcap,
                  "# UniData account descriptor\nname = %s\nversion = 1\n", base);
-        snprintf(path, sizeof path, "%s.udt", pfx);
+        snprintf(path, pcap, "%s.udt", pfx);
 #elif defined(MVXGIT_GITD)
         /* UniVerse, synthesised exactly as UniData's is — a commit should not
            depend on whether someone happened to write a `.uv` into the account
@@ -871,17 +870,17 @@ char *mv_git_stage_desc(mv_ctx *ctx, const char *repo, const char *prefix,
                 }
                 fclose(u);
             }
-            snprintf(desc, sizeof desc,
+            snprintf(desc, dcap,
                      "# UV account descriptor\nname = %s\nversion = 1\n%s%s%s",
                      base, fl[0] ? "flavour = " : "", fl, fl[0] ? "\n" : "");
         }
-        snprintf(path, sizeof path, "%s.uv", pfx);
+        snprintf(path, pcap, "%s.uv", pfx);
 #else
-        (void)desc; (void)path;
-        return NULL;            /* MVX writes a real .mvx; it travels as a file */
+        (void)desc; (void)path; (void)pcap; (void)dcap;
+        return 0;               /* MVX writes a real .mvx; it travels as a file */
 #endif
     }
-    return mv_git_stageblob(ctx, repo, path, desc);
+    return 1;
 }
 
 /* --- GITSTAGEDESC(prefix, open, out) ------------------------------------ */
@@ -892,7 +891,13 @@ void mvx_sub_GITSTAGEDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], pfx, sizeof pfx);
     arg_str(argv[2], op, sizeof op);
-    char *r = mv_git_stage_desc(ctx, rp, pfx, op[0] == '1');
+    char path[700], desc[2048];
+    if (!mv_git_desc_for(path, sizeof path, desc, sizeof desc, pfx,
+                         op[0] == '1')) {
+        mv_set_str(argv[3], "", 0);
+        return;
+    }
+    char *r = mv_git_stageblob(ctx, rp, path, desc);
     mv_set_str(argv[3], r ? r : "", r ? (int64_t)strlen(r) : 0);
     free(r);
 }

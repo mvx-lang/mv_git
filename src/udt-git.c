@@ -172,7 +172,11 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     /* The descriptor comes from the engine, not from here: the in-session verb
        stages it through the same call, so a commit does not depend on which of
        the two made it (mv_git#81). */
-    free(mv_git_stage_desc(ctx, repo, "", open));
+    {
+        char dpath[700], ddesc[2048];
+        if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc, "", open))
+            free(mv_git_stageblob(ctx, repo, dpath, ddesc));
+    }
     printf(open ? ".mv-account + %%FILE%% controls written (open format)\n"
                 : ".udt account marker + %%FILE%% controls written (native)\n");
 }

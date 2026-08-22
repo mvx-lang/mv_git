@@ -362,7 +362,15 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 /* String matching only — mvgitd cannot read the account, and does not need to
    in order to say what is furniture (mv_git#81). */
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
-BRIDGE1(op_stagedesc,  mv_git_stage_desc(ctx, rp(A(g,0)), A(g,1), A(g,2)[0] == '1'))
+static opres op_stagedesc(const args *g) {
+    char path[700], desc[2048];
+    if (mv_git_desc_for(path, sizeof path, desc, sizeof desc,
+                        A(g,1), A(g,2)[0] == '1')) {
+        mv_git_batch_begin(rp(A(g,0)));
+        mv_git_batch_add(path, desc, (int64_t)strlen(desc), 0);
+    }
+    return ok(NULL);
+}
 BRIDGE1(op_staged,     mv_git_staged(ctx, rp(A(g,0))))
 BRIDGE1(op_putdesc,    mv_git_putdesc(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 /* CAT returns committed record content, which is arbitrary bytes and may
