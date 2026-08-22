@@ -593,34 +593,12 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         if (act >= 2 && ((id[0] == '_' && id[act - 1] == '_') ||
                          (id[0] == '&' && id[act - 1] == '&')))
             continue;
-        /* …and UniData's SQL catalogue, which follows no naming convention at
-           all: __SCHEMA__MAP opens with two underscores but does not close with
-           one, and the rest are plain names.  Every account is born with them,
-           UniData maintains their contents rather than anyone writing them, and
-           a clone gets its own — so they are furniture, and `savedlists` and
-           `voc` were committing as empty trees.
-
-           MATCHED CASE-SENSITIVELY, and that is the whole point of the lower
-           four: the lowercase `voc` is UniData's alias file and is furniture,
-           while the account's own `VOC` is precisely what a commit exists to
-           carry.  A case-blind compare here would drop the account's VOC.
-
-           This is the enumeration, which is the wholesale path — so, exactly as
-           with compiled objects (mv_git#9), these stay out of `add -A` and
-           `ADD <file> *` while naming one explicitly still stages it
-           (mv_git#72). */
-        {
-            static const char *const sysfile[] = {
-                "__SCHEMA__MAP", "privilege", "savedlists", "voc",
-                "UD_SQLTABLES", NULL
-            };
-            int furniture = 0;
-            for (const char *const *sf = sysfile; *sf && !furniture; sf++)
-                if ((size_t)act == strlen(*sf) &&
-                    memcmp(id, *sf, (size_t)act) == 0)
-                    furniture = 1;
-            if (furniture) continue;
-        }
+        /* …and UniData's own SQL catalogue, which follows no naming convention
+           at all — see mv_account_furniture() (mv_git#72).  This is the
+           enumeration, i.e. the wholesale path, so exactly as with compiled
+           objects (mv_git#9) these stay out of `add -A` and `ADD <file> *`
+           while naming one explicitly still stages it. */
+        if (mv_account_furniture(id, (size_t)act)) continue;
         if (len + (size_t)act + 1 > cap) {
             while (len + (size_t)act + 1 > cap) cap *= 2;
             buf = realloc(buf, cap);
