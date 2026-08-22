@@ -1,0 +1,25 @@
+*  GIT.VERSION — what is actually running.
+*  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+*  The build's version, libgit2's, and which of libgit2's optional transports
+*  were compiled in.  SSH is the one that matters: whether an ssh remote can be
+*  reached is a property of the libgit2 this was LINKED against, not of mv_git,
+*  and with no way to ask, an ssh remote that could never work looks like a
+*  credentials problem (mv_git#21).
+*
+*  ANSWERED BY WHATEVER IS RUNNING THE ENGINE.  On UniVerse that is mvgitd, a
+*  separate binary from this verb which can drift from it — so the version that
+*  comes back is the one actually doing the work, not the one asking.
+      SUBROUTINE GIT.VERSION(ARGS)
+      $INCLUDE BP.INC PLATFORM.H
+      REPO = ""
+      CALL GIT.REPO(REPO)
+      VOUT = ""
+      CALL GIT.OBJ("VERSION", 1, REPO, "", "", "", "", VOUT)
+      IF VOUT = "" THEN
+         CRT "GIT: the engine did not answer VERSION"
+      END ELSE
+         CALL GIT.ECHO(VOUT)
+      END
+      RETURN
+      END

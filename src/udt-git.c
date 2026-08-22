@@ -766,6 +766,12 @@ int main(int argc, char **argv) {
             add_all(ctx, repo);
         else
             emit(mv_git_add(ctx, repo, p0, p1));
+    } else if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
+        char self[128];
+        snprintf(self, sizeof self, "udt-git %s", UDTGIT_VERSION);
+        char *v = mv_git_versions(self);
+        fputs(v ? v : "", stdout);
+        free(v);
     } else if (!strcmp(sub, "remote")) {
         /* remote {add|set-url|remove} <name> {url} — bare `remote` lists.
            These four were in uv-git and the in-session verb but never here, so

@@ -1,53 +1,39 @@
-*  GIT.FURNIDS(REPO, IDS) — the account's furniture file ids, @AM-separated.
+*  GIT.FURNIDS(REPO, CANDS, IDS) — which of CANDS are account furniture.
 *  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
 *
 *  ONE PLACE THAT ASKS THE QUESTION, for the same reason GIT.FILECLASS exists:
 *  `add` and `status` have to agree exactly, or the account never reads clean.
 *  When add dropped VOC's pointers to furniture (mv_git#78) and status did not
-*  know to, every one of them came back as `?? VOC/_HOLD_` — untracked forever,
-*  because the thing reporting them was the thing that would never stage them.
+*  know to, every one came back as `?? VOC/_HOLD_` — untracked forever, because
+*  the thing reporting them was the thing that would never stage them.
+*
+*  THE CALLER SUPPLIES THE CANDIDATES.  This used to walk VOC itself, which
+*  meant walking it twice on every add and put a select in a program that did
+*  not need one — and the MVX compiler rejected the loop, which is how the
+*  duplication announced itself.  `add` already has the list; `status` builds
+*  one with the select spelling it already uses.  CANDS is @AM-separated, each
+*  entry either a bare id or `id<VM>type`.
 *
 *  The rules themselves are NOT here.  They live in mv_account_furniture() in
-*  the engine, one table per MV system, and this reaches them through the
-*  FURNITURE op — which matches strings and reads no records, so mvgitd can
-*  answer it on UniVerse just as in-session CallC does on UniData (mv_git#81).
-*
-*  Every file-type VOC id is a candidate, local or not: VOC points at furniture
-*  that has no file in the account (_ENCINFO_, _KEYSTORE_), and those pointers
-*  are furniture too.  What comes back is what the filter REMOVED, by
-*  subtraction, so a caller cannot end up with a different answer than the one
-*  the files themselves were chosen by.
-      SUBROUTINE GIT.FURNIDS(REPO, IDS)
+*  the engine, one table per MV system, reached through the FURNITURE op — which
+*  matches strings and reads no records, so mvgitd can answer it on UniVerse
+*  just as in-session CallC does on UniData (mv_git#81).
+      SUBROUTINE GIT.FURNIDS(REPO, CANDS, IDS)
       $INCLUDE BP.INC PLATFORM.H
       AM = CHAR(254) ; VM = CHAR(253)
       IDS = ""
-      ALLF = ""
-      OPEN "VOC" TO FVOC ELSE
-         RETURN
-      END
-*     GIT.ADD's spelling, which is the one this walk mirrors and which all
-*     three compilers take.  The earlier failure here was the bare `ELSE RETURN`
-*     above, not the loop.
-      SELECT FVOC
-      LOOP WHILE READNEXT FVID DO
-         READ FVREC FROM FVOC, FVID THEN
-*           Attribute 1 is the type, but UniVerse appends any description given
-*           at CREATE.FILE time — so take the first token, as the add walk does.
-            FVT = TRIM(FIELD(FVREC<1>, " ", 1))
-            IF FVT = "F" OR FVT = "DIR" THEN ALLF<-1> = FVID : VM : FVT
-         END
-      REPEAT
-      CLEARSELECT
-      IF ALLF = "" THEN RETURN
+      IF CANDS = "" THEN RETURN
       FOUT = ""
-      CALL GIT.OBJ("FURNITURE", 2, REPO, ALLF, "", "", "", FOUT)
+      CALL GIT.OBJ("FURNITURE", 2, REPO, CANDS, "", "", "", FOUT)
 *     The engine answers "" only on failure, and any account keeps at least VOC,
 *     so an empty answer means the op did not run — report no furniture rather
-*     than declare the whole account furniture.
+*     than declare every candidate furniture.
       IF FOUT = "" THEN RETURN
-      NALL = DCOUNT(ALLF, AM)
-      FOR FK = 1 TO NALL
-         LOCATE(ALLF<FK>, FOUT; FPOS) ELSE IDS<-1> = FIELD(ALLF<FK>, VM, 1)
+      NC = DCOUNT(CANDS, AM)
+      FOR FK = 1 TO NC
+         LOCATE(CANDS<FK>, FOUT; FPOS) ELSE
+            IDS<-1> = FIELD(CANDS<FK>, VM, 1)
+         END
       NEXT FK
       RETURN
       END
