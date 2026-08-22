@@ -78,6 +78,34 @@ static int agent_compiled(void) {
     return access(is_udt() ? "BP/_GIT.AGENT" : "BP.O/GIT.AGENT", F_OK) == 0;
 }
 
+/* Is the agent in UniData's GLOBAL catalog?
+ *
+ * When the package is installed, `GIT.AGENT` is cataloged in $UDTHOME/sys/CTLG
+ * along with the rest of the verbs — and the agent reads its arguments from the
+ * END of @SENTENCE precisely so it runs either way (see BP/GIT.AGENT).  So
+ * there is nothing an account needs in order to reach it, and seeding a private
+ * copy into every account is pure duplication: it put GIT, GIT.AGENT,
+ * BP.INC/PLATFORM.H and a VOC pointer into accounts that had none of them, and
+ * a wholesale add then committed all four as if they were the account's own
+ * code (mv_git#80).
+ *
+ * It also made upgrades per-account: every account that ever ran `init` kept
+ * its own compiled copy, so a package upgrade left stale objects behind in all
+ * of them.  The catalog makes an upgrade a single act.
+ *
+ * Seeding remains for the case it was written for — an account where nothing is
+ * installed — but that is now the exception rather than the default path.
+ */
+int mv_agent_cataloged(void) {
+    if (!is_udt()) return 0;
+    const char *home = getenv("UDTHOME");
+    if (!home || !home[0]) return 0;
+    char p[4096];
+    /* UniData splits the catalog by first letter: sys/CTLG/g/GIT.AGENT. */
+    snprintf(p, sizeof p, "%s/sys/CTLG/g/GIT.AGENT", home);
+    return access(p, F_OK) == 0;
+}
+
 int mv_agent_seed(void) {
     char cmd[512];
 

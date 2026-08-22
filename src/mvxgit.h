@@ -134,6 +134,7 @@ void mv_git_forget_account(void);
    missing file means no subtraction — every record is the account's own. */
 int mv_account_furniture(const char *name, size_t len);
 char *mv_git_filter_furniture(const char *list);
+int mv_agent_cataloged(void);
 void mv_git_set_stock(const char *path);
 
 /* The baseline as ids alone (mark- or newline-separated), supplied by BASIC

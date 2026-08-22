@@ -17,6 +17,7 @@
 #define _DEFAULT_SOURCE          /* realpath */
 
 #include "mvsession.h"
+#include "mvxgit.h"   /* mv_agent_cataloged() */
 #include "gitproto.h"
 
 #include <dirent.h>
@@ -361,7 +362,17 @@ static int spawn(mv_session *s, char *err, size_t errcap) {
         snprintf(err, errcap, "cannot write %s: %s", runp, strerror(errno));
         return -1;
     }
-    fprintf(rf, "RUN BP GIT.AGENT %s %s %s %d\nQUIT\n", reqp, rspp, s->token, g_idle);
+    /* Prefer the cataloged verb where the package is installed: then nothing
+       has to exist in the account for the CLI to reach the agent, and `init`
+       stops seeding a private copy into every account it touches (mv_git#80).
+       `RUN BP GIT.AGENT` remains for a bare account, and the agent takes its
+       arguments from the END of @SENTENCE so both forms parse identically. */
+    if (mv_agent_cataloged())
+        fprintf(rf, "GIT.AGENT %s %s %s %d\nQUIT\n",
+                reqp, rspp, s->token, g_idle);
+    else
+        fprintf(rf, "RUN BP GIT.AGENT %s %s %s %d\nQUIT\n",
+                reqp, rspp, s->token, g_idle);
     fclose(rf);
 
     /* Open both ends read/write so neither open blocks waiting for a peer, and
