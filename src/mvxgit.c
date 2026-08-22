@@ -731,6 +731,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        `ADD BP` and `ADD -A` do, and only naming an object stages one. */
     if (strcmp(only, "*") == 0) only[0] = '\0';
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
+    /* The record path needs the account's stock baseline as much as the
+       working-tree sweep does.  `add -A` reaches records through the verb
+       calling GITADD per file and never GITADDALL, so setting it only there
+       left stock_match() a no-op for every wholesale add: the baseline was
+       learned, announced, and then ignored, and the commit carried the
+       system's own VOC (mv_git#70). */
+    stock_ensure_udt(ctx, rp);
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
        sentences, menus, phrases (portable PROCs that must run on the other
