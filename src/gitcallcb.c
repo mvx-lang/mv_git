@@ -246,6 +246,16 @@ char *GITBRANCH(char *repo, char *name) {
 
 /* --- checkout side (git -> UniData account) -------------------------------- */
 
+/* GITSTAGEDESC(repo, prefix, open) — stage the account descriptor.  Shared with
+   the CLI so a commit does not depend on which of the two made it (mv_git#81). */
+char *GITSTAGEDESC(char *repo, char *prefix, char *open) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_stage_desc(ctx, rp(repo), prefix ? prefix : "",
+                                open && open[0] == '1');
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITFURNITURE(repo, list) — the account-furniture rules, answered for the file
    list the BASIC walk produced.  The verb has to walk VOC itself (mvgitd cannot
    open the account), but it must not carry its own idea of what furniture is:

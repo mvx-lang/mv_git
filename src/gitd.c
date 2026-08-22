@@ -362,6 +362,7 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 /* String matching only — mvgitd cannot read the account, and does not need to
    in order to say what is furniture (mv_git#81). */
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
+BRIDGE1(op_stagedesc,  mv_git_stage_desc(ctx, rp(A(g,0)), A(g,1), A(g,2)[0] == '1'))
 BRIDGE1(op_staged,     mv_git_staged(ctx, rp(A(g,0))))
 BRIDGE1(op_putdesc,    mv_git_putdesc(ctx, rp(A(g,0)), A(g,1), A(g,2)))
 /* CAT returns committed record content, which is arbitrary bytes and may
@@ -416,6 +417,7 @@ static const struct {
     { "BRANCH",      2, op_branch     },
     { "FILES",       1, op_files      },
     { "FURNITURE",   2, op_furniture  },
+    { "STAGEDESC",   3, op_stagedesc  },
     { "CAT",         2, op_cat        },
     { "DIFF",        2, op_diff       },
     { "DIFFU",       2, op_diffu      },

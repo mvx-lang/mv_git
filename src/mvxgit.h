@@ -135,6 +135,8 @@ void mv_git_forget_account(void);
 int mv_account_furniture(const char *name, size_t len);
 char *mv_git_filter_furniture(const char *list);
 int mv_agent_cataloged(void);
+char *mv_git_stage_desc(mv_ctx *ctx, const char *repo, const char *prefix,
+                        int open);
 void mv_git_set_stock(const char *path);
 
 /* The baseline as ids alone (mark- or newline-separated), supplied by BASIC

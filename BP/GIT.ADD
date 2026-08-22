@@ -206,11 +206,16 @@ ADDALL:
       END
       NFILES += 1
    NEXT K
-   IF OPENFMT THEN
-      NM = FIELD(@PATH, "/", DCOUNT(@PATH, "/"))
-      DESC = "# MV account descriptor":LF:"name = ":NM:LF:"version = 1":LF:"hash = lmdb":LF
-      CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:".mv-account", DESC, "", "", OBJOUT)
-   END
+*  The account descriptor, open or native, from the same place the CLI gets it.
+*  It must not matter whether a commit was made with `udt-git` or with `GIT` —
+*  the same account has to produce the same commit either way.  This used to
+*  write one only under OPENFMT, so a native commit made with the verb carried
+*  no descriptor at all and could not be cloned back as an account (mv_git#81).
+   DFMT = "0"
+   IF OPENFMT THEN DFMT = "1"
+   DESCOUT = ""
+   CALL GIT.OBJ("STAGEDESC", 3, REPO, PFX, DFMT, "", "", DESCOUT)
+   IF DESCOUT # "" THEN CALL GIT.ECHO(DESCOUT)
    RETURN
 *  One copy of this rule now, in GIT.FILECLASS — the drift check has to ask the
 *  question exactly the way `add` asks it.
