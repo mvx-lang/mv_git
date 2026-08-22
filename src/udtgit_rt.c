@@ -589,11 +589,6 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         if (!udt_field_local(rec, f2s, f2e) ||
             !udt_field_local(rec, f3s, f3e))
             continue;
-        /* skip UniData work/system files: _HOLD_ / _PH_ / _EDAMAP_ … (name
-           wrapped in underscores) and &SAVEDLISTS& / &PH& … (wrapped in &). */
-        if (act >= 2 && ((id[0] == '_' && id[act - 1] == '_') ||
-                         (id[0] == '&' && id[act - 1] == '&')))
-            continue;
         /* …and UniData's own SQL catalogue, which follows no naming convention
            at all — see mv_account_furniture() (mv_git#72).  This is the
            enumeration, i.e. the wholesale path, so exactly as with compiled
