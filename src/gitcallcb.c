@@ -246,6 +246,14 @@ char *GITBRANCH(char *repo, char *name) {
 
 /* --- checkout side (git -> UniData account) -------------------------------- */
 
+/* GITFURNITURE(repo, list) — the account-furniture rules, answered for the file
+   list the BASIC walk produced.  The verb has to walk VOC itself (mvgitd cannot
+   open the account), but it must not carry its own idea of what furniture is:
+   that lives in mv_account_furniture() and nowhere else (mv_git#81). */
+char *GITFURNITURE(char *repo, char *list) {
+    return emit(repo, mv_git_filter_furniture(list ? list : ""));
+}
+
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
    (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
 char *GITFILES(char *repo) {

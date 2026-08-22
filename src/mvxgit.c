@@ -714,6 +714,18 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
  * has its own file enumeration.  One list, or they drift.
  */
 int mv_account_furniture(const char *name, size_t len) {
+    /* EACH MV SYSTEM DECORATES A NEW ACCOUNT DIFFERENTLY, so each brings its own
+       list.  UniData's names have no business being tested on UniVerse: a
+       UniVerse site may legitimately own a file called MENUFILE or CTLG, and
+       dropping it because UniData creates one by that name would lose their
+       data.  What a stock account holds is a property of the platform, and this
+       is where that knowledge lives (mv_git#81).
+
+       Checked UDT first: udt-git is compiled with BOTH -DMVXGIT_UDT and
+       -DMVXGIT_GITD, so testing GITD first would give a UniData build the
+       UniVerse list. */
+#if defined(MVXGIT_UDT)
+    /* Rocket UniData.  Measured from a stock account made with `newacct`. */
     static const char *const sysfile[] = {
         /* the SQL catalogue and its schema/view registries */
         "__SCHEMA__MAP", "__SCHEMA__PROC", "__V__VIEW",
@@ -726,23 +738,92 @@ int mv_account_furniture(const char *name, size_t len) {
         "savedlists", "SAVEDLISTS", "CTLG", "MENUFILE",
         NULL
     };
-    for (const char *const *sf = sysfile; *sf; sf++)
-        if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
     /* UniData's ODBC/SQL catalogue views — DV_SQLColumns, DV_SQLTables,
        DV_SQLStatistics, DV_SQLSpecialColumns and whatever a later release adds.
        Matched on the prefix because the set grows between versions, and the
        prefix is safe: an account's own dynamic views are named for their file
        (DV_ORDERS_NF_SUB, DV_STUDENT_CGA_MS_SUB) and never DV_SQL. */
     if (len > 6 && memcmp(name, "DV_SQL", 6) == 0) return 1;
-    /* And the two shapes the enumerations used to test for themselves: the work
-       files wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_, _REPORT_,
-       _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH& …).  They
-       live here now so "what is furniture" has ONE definition — the file
-       enumerations and the VOC pointer filter all ask the same question, rather
-       than each carrying its own copy and drifting (mv_git#78). */
+#elif defined(MVXGIT_GITD)
+    /* Rocket UniVerse.  A stock account is far leaner than UniData's — measured
+       on a PICK-flavour account, it holds VOC, VOCLIB and &SAVEDLISTS& and
+       nothing else.  The shapes below catch &SAVEDLISTS&, so only VOCLIB needs
+       naming; VOC is what a commit exists to carry. */
+    static const char *const sysfile[] = { "VOCLIB", NULL };
+#else
+    /* MVX.  An account is what mkaccount.sh makes and holds no vendor
+       furniture, so there is nothing to name — the shapes below still apply. */
+    static const char *const sysfile[] = { NULL };
+#endif
+    for (const char *const *sf = sysfile; *sf; sf++)
+        if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    /* The work-file shapes are common to the family rather than to any one
+       platform: names wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_,
+       _REPORT_, _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH&,
+       &COMO& …).  They live here so the file enumerations and the VOC pointer
+       filter all ask one question rather than each carrying a copy (mv_git#78). */
     if (len >= 2 && ((name[0] == '_' && name[len - 1] == '_') ||
                      (name[0] == '&' && name[len - 1] == '&'))) return 1;
     return 0;
+}
+
+/* Filter a candidate file list down to what a wholesale add should stage.
+ *
+ * THE SINGLE SOURCE OF TRUTH for account furniture, and the reason this is a
+ * list filter rather than a per-name predicate: the BASIC verb cannot call
+ * mv_account_furniture() directly, and asking per name would be a transport
+ * round trip each time on UniVerse.  One call, one answer, one rule set.
+ *
+ * The BASIC walk in BP/GIT.ADD has to stay — mvgitd has no record backend and
+ * cannot open the account, so on UniVerse the enumeration must happen in the
+ * session.  But the walk deciding what it FINDS is a different thing from the
+ * walk deciding what is FURNITURE, and only the first has to be in BASIC.
+ * Before this, GIT.ADD carried its own copy of the `_X_`/`&X&` shapes and none
+ * of the names at all, so `GIT ADD -A` committed 944 blobs of a stock account
+ * where `udt-git add -A` committed 76 (mv_git#81).
+ *
+ * Note this touches no records: it is string matching, so it answers just as
+ * well from mvgitd, which cannot read the account, as from in-session CallC.
+ *
+ * `list` is @AM-separated `name<VM>type`; the kept entries come back whole.
+ */
+char *mv_git_filter_furniture(const char *list) {
+    size_t n = list ? strlen(list) : 0;
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    size_t o = 0, i = 0;
+    while (i < n) {
+        size_t s = i;
+        while (i < n && (unsigned char)list[i] != 0xFE) i++;
+        size_t e = i;                       /* entry is [s, e) */
+        size_t nm = s;
+        while (nm < e && (unsigned char)list[nm] != 0xFD) nm++;
+        if (e > s && !mv_account_furniture(list + s, nm - s)) {
+            if (o) out[o++] = (char)0xFE;
+            memcpy(out + o, list + s, e - s);
+            o += e - s;
+        }
+        if (i < n) i++;                     /* past the @AM */
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* --- GITFURNITURE(list, out) -------------------------------------------- */
+void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[0], nb, sizeof nb, &p);
+    char *buf = malloc((size_t)l + 1);
+    if (!buf) { mv_set_str(argv[1], "", 0); return; }
+    memcpy(buf, p, (size_t)l);
+    buf[l] = '\0';
+    char *r = mv_git_filter_furniture(buf);
+    free(buf);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
 }
 
 /* --- GITINIT(repo, out) ------------------------------------------------ */

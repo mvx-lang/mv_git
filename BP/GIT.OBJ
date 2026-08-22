@@ -63,6 +63,7 @@
       CASE OP = "UDIFF"    ; CALL GITUDIFF(A2, A3, A4, OUT)
       CASE OP = "PUTDESC"  ; CALL GITPUTDESC(A1, A2, A3, OUT)
       CASE OP = "FILES"    ; CALL GITFILES(A1, OUT)
+      CASE OP = "FURNITURE" ; CALL GITFURNITURE(A2, OUT)
 *     Staging ops produce no output, here as everywhere else.
       CASE OP = "STAGECTL"
          SOUT = ""
@@ -177,6 +178,7 @@
       CASE OP = "LOG"        ; R = CALLC GITLOG(REPO, A2)
       CASE OP = "BRANCH"     ; R = CALLC GITBRANCH(REPO, A2)
       CASE OP = "FILES"      ; R = CALLC GITFILES(REPO)
+      CASE OP = "FURNITURE"  ; R = CALLC GITFURNITURE(REPO, A2)
       CASE OP = "CAT"        ; R = CALLC GITCAT(REPO, A2) ; ISCAT = 1
 *     IXCAT answers through the same side channel as CAT, and for the same
 *     reason: what comes back is blob content, not a message.
