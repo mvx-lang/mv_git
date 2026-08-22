@@ -140,7 +140,7 @@ CALL GIT.REPO(REPO)
 *  select before opening any file), then stage each file's data + dictionary (+
 *  open-form controls when -o).
 ADDALL:
-   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0
+   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0 ; ALLF = ""
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
    SELECT VOCF
    LOOP WHILE READNEXT VID DO
@@ -156,6 +156,11 @@ ADDALL:
             DP = VREC<2> ; DD = VREC<3> ; LOC = 1
             IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
             IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
+*           EVERY file-type id is a furniture candidate, local or not: VOC can
+*           point at furniture that is not a local file (_ENCINFO_, _KEYSTORE_),
+*           and those pointers must go too.  The local ones become the files to
+*           stage; ALLF is what the furniture question gets asked about.
+            ALLF<-1> = VID : VM : VT
             IF LOC THEN FILES<-1> = VID : VM : VT
          END
       END
@@ -175,23 +180,24 @@ ADDALL:
    FURNOUT = ""
    FURNIDS = ""
    CALL GIT.OBJ("FURNITURE", 2, REPO, FILES, "", "", "", FURNOUT)
-   IF FURNOUT # "" THEN
-*     What the filter REMOVED is the furniture, and VOC's pointers to those
-*     files have to go with them.  A native commit keeps the platform's own file
-*     pointers so it can be checked out into another instance of the same
-*     platform, which is right for files that ARE committed and wrong for these:
-*     the pointer names a file the filter just excluded, so a checkout finds
-*     nothing to point at (mv_git#78, which fixed the CLI and missed the verb).
-*     Derived by subtraction rather than asked for separately, so it cannot
-*     disagree with the list the files themselves were chosen from.
-      NRAW = DCOUNT(FILES, AM)
+   IF FURNOUT # "" THEN FILES = FURNOUT
+*  VOC's pointers to furniture have to go with the files.  A native commit keeps
+*  the platform's own file pointers so it can be checked out into another
+*  instance of the same platform, which is right for files that ARE committed
+*  and wrong for these: the pointer names a file the filter excluded, so a
+*  checkout finds nothing to point at (mv_git#78, which fixed the CLI and missed
+*  the verb).  Asked of ALLF, not of FILES, because VOC points at furniture that
+*  is not a local file too — and derived by subtraction, so the pointers cannot
+*  disagree with the rules the files themselves were chosen by.
+   ALLOUT = ""
+   IF ALLF # "" THEN
+      CALL GIT.OBJ("FURNITURE", 2, REPO, ALLF, "", "", "", ALLOUT)
+      NRAW = DCOUNT(ALLF, AM)
       FOR RK = 1 TO NRAW
-         RID0 = FIELD(FILES<RK>, VM, 1)
-         LOCATE(RID0 : VM : FIELD(FILES<RK>, VM, 2), FURNOUT; FPOS) ELSE
-            FURNIDS<-1> = RID0
+         LOCATE(ALLF<RK>, ALLOUT; FPOS) ELSE
+            FURNIDS<-1> = FIELD(ALLF<RK>, VM, 1)
          END
       NEXT RK
-      FILES = FURNOUT
    END
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
