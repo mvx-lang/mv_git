@@ -31,7 +31,9 @@
       IF FOUT = "" THEN RETURN
       NC = DCOUNT(CANDS, AM)
       FOR FK = 1 TO NC
-         LOCATE(CANDS<FK>, FOUT; FPOS) ELSE IDS<-1> = FIELD(CANDS<FK>, VM, 1)
+         LOCATE(CANDS<FK>, FOUT; FPOS) ELSE
+            IDS<-1> = FIELD(CANDS<FK>, VM, 1)
+         END
       NEXT FK
       RETURN
       END
