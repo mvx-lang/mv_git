@@ -714,6 +714,18 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
  * has its own file enumeration.  One list, or they drift.
  */
 int mv_account_furniture(const char *name, size_t len) {
+    /* EACH MV SYSTEM DECORATES A NEW ACCOUNT DIFFERENTLY, so each brings its own
+       list.  UniData's names have no business being tested on UniVerse: a
+       UniVerse site may legitimately own a file called MENUFILE or CTLG, and
+       dropping it because UniData creates one by that name would lose their
+       data.  What a stock account holds is a property of the platform, and this
+       is where that knowledge lives (mv_git#81).
+
+       Checked UDT first: udt-git is compiled with BOTH -DMVXGIT_UDT and
+       -DMVXGIT_GITD, so testing GITD first would give a UniData build the
+       UniVerse list. */
+#if defined(MVXGIT_UDT)
+    /* Rocket UniData.  Measured from a stock account made with `newacct`. */
     static const char *const sysfile[] = {
         /* the SQL catalogue and its schema/view registries */
         "__SCHEMA__MAP", "__SCHEMA__PROC", "__V__VIEW",
@@ -726,20 +738,30 @@ int mv_account_furniture(const char *name, size_t len) {
         "savedlists", "SAVEDLISTS", "CTLG", "MENUFILE",
         NULL
     };
-    for (const char *const *sf = sysfile; *sf; sf++)
-        if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
     /* UniData's ODBC/SQL catalogue views — DV_SQLColumns, DV_SQLTables,
        DV_SQLStatistics, DV_SQLSpecialColumns and whatever a later release adds.
        Matched on the prefix because the set grows between versions, and the
        prefix is safe: an account's own dynamic views are named for their file
        (DV_ORDERS_NF_SUB, DV_STUDENT_CGA_MS_SUB) and never DV_SQL. */
     if (len > 6 && memcmp(name, "DV_SQL", 6) == 0) return 1;
-    /* And the two shapes the enumerations used to test for themselves: the work
-       files wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_, _REPORT_,
-       _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH& …).  They
-       live here now so "what is furniture" has ONE definition — the file
-       enumerations and the VOC pointer filter all ask the same question, rather
-       than each carrying its own copy and drifting (mv_git#78). */
+#elif defined(MVXGIT_GITD)
+    /* Rocket UniVerse.  A stock account is far leaner than UniData's — measured
+       on a PICK-flavour account, it holds VOC, VOCLIB and &SAVEDLISTS& and
+       nothing else.  The shapes below catch &SAVEDLISTS&, so only VOCLIB needs
+       naming; VOC is what a commit exists to carry. */
+    static const char *const sysfile[] = { "VOCLIB", NULL };
+#else
+    /* MVX.  An account is what mkaccount.sh makes and holds no vendor
+       furniture, so there is nothing to name — the shapes below still apply. */
+    static const char *const sysfile[] = { NULL };
+#endif
+    for (const char *const *sf = sysfile; *sf; sf++)
+        if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    /* The work-file shapes are common to the family rather than to any one
+       platform: names wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_,
+       _REPORT_, _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH&,
+       &COMO& …).  They live here so the file enumerations and the VOC pointer
+       filter all ask one question rather than each carrying a copy (mv_git#78). */
     if (len >= 2 && ((name[0] == '_' && name[len - 1] == '_') ||
                      (name[0] == '&' && name[len - 1] == '&'))) return 1;
     return 0;
