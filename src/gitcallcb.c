@@ -262,6 +262,11 @@ char *GITSTAGEDESC(char *repo, char *prefix, char *open) {
     return emit(repo, NULL);
 }
 
+/* GITVERSION(repo) — what this account's engine actually is. */
+char *GITVERSION(char *repo) {
+    return emit(repo, mv_git_versions("mv_git (in-session, UniData CallC)"));
+}
+
 /* GITFURNITURE(repo, list) — the account-furniture rules, answered for the file
    list the BASIC walk produced.  The verb has to walk VOC itself (mvgitd cannot
    open the account), but it must not carry its own idea of what furniture is:

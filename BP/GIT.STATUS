@@ -101,7 +101,21 @@ UNTRACKED:
 *  `?? VOC/_HOLD_` for records add will never stage, and the account can never
 *  read clean (mv_git#78).
    UFURN = ""
-   CALL GIT.FURNIDS(REPO, UFURN)
+   UCAND = ""
+   OPEN "VOC" TO UVOCF THEN
+*     The same spelling as the select below, which is the one all three
+*     compilers take — a bare SELECT with LOOP WHILE READNEXT does not.
+      UVLIST = ""
+      SELECT UVOCF TO UVLIST
+      LOOP
+         READNEXT UVID FROM UVLIST ELSE EXIT
+         READ UVREC FROM UVOCF, UVID THEN
+            UVT = TRIM(FIELD(UVREC<1>, " ", 1))
+            IF UVT = "F" OR UVT = "DIR" THEN UCAND<-1> = UVID : VM : UVT
+         END
+      REPEAT
+   END
+   CALL GIT.FURNIDS(REPO, UCAND, UFURN)
    UFILES = ""
    NP2 = DCOUNT(PATHS, AM)
    FOR U = 1 TO NP2

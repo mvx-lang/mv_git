@@ -362,6 +362,8 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 /* String matching only — mvgitd cannot read the account, and does not need to
    in order to say what is furniture (mv_git#81). */
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
+/* Answered by mvgitd itself, so the version is the one doing the work. */
+BRIDGE1(op_version,    mv_git_versions("mvgitd"))
 static opres op_stagedesc(const args *g) {
     char path[700], desc[2048];
     if (mv_git_desc_for(path, sizeof path, desc, sizeof desc,
@@ -425,6 +427,7 @@ static const struct {
     { "BRANCH",      2, op_branch     },
     { "FILES",       1, op_files      },
     { "FURNITURE",   2, op_furniture  },
+    { "VERSION",     1, op_version    },
     { "STAGEDESC",   3, op_stagedesc  },
     { "CAT",         2, op_cat        },
     { "DIFF",        2, op_diff       },

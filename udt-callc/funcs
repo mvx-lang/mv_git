@@ -10,6 +10,7 @@ GITLOG:string:2:string,string
 GITBRANCH:string:2:string,string
 GITFILES:string:1:string
 GITFURNITURE:string:2:string,string
+GITVERSION:string:1:string
 GITSTAGEDESC:string:3:string,string,string
 GITCAT:string:2:string,string
 GITIXCAT:string:2:string,string

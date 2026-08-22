@@ -808,6 +808,12 @@ static int run_account(int argc, char **argv, int i) {
             }
         }
     }
+    else if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
+        char *v = mv_git_versions("uv-git");
+        fputs(v ? v : "", stdout);
+        free(v);
+        out = NULL;
+    }
     else if (!strcmp(sub, "status"))   out = mv_git_status(ctx, repo);
     else if (!strcmp(sub, "log"))      out = mv_git_log(ctx, repo, *a0 ? a0 : "20");
     else if (!strcmp(sub, "branch"))   out = mv_git_branch(ctx, repo, a0);

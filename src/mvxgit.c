@@ -902,6 +902,34 @@ void mvx_sub_GITSTAGEDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(r);
 }
 
+/* What is actually running: the build's own version, libgit2's, and which of
+ * libgit2's optional transports were compiled in.
+ *
+ * SSH is the one that matters in practice.  Whether a remote can be reached
+ * over ssh is a property of the libgit2 this binary was LINKED against, not of
+ * mv_git, and there was no way to ask from inside the tool — so an ssh remote
+ * that could never work looked like a credentials problem (mv_git#21).
+ *
+ * On UniVerse this answers from inside mvgitd, because that is where the engine
+ * runs: the daemon is a separate binary from the verb and the two can drift, so
+ * the version you get back is the one actually doing the work.
+ */
+char *mv_git_versions(const char *self) {
+    int maj = 0, min = 0, rev = 0;
+    git_libgit2_version(&maj, &min, &rev);
+    int f = git_libgit2_features();
+    char buf[512];
+    snprintf(buf, sizeof buf,
+             "%s\nlibgit2 %d.%d.%d\n"
+             "  https   %s\n  ssh     %s\n  threads %s\n",
+             self && self[0] ? self : "mv_git",
+             maj, min, rev,
+             (f & GIT_FEATURE_HTTPS)   ? "yes" : "no",
+             (f & GIT_FEATURE_SSH)     ? "yes" : "no",
+             (f & GIT_FEATURE_THREADS) ? "yes" : "no");
+    return strdup(buf);
+}
+
 /* --- GITFURNITURE(list, out) -------------------------------------------- */
 void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
