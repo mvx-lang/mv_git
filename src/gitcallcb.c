@@ -246,6 +246,22 @@ char *GITBRANCH(char *repo, char *name) {
 
 /* --- checkout side (git -> UniData account) -------------------------------- */
 
+/* GITSTAGEDESC(repo, prefix, open) — stage the account descriptor.  Shared with
+   the CLI so a commit does not depend on which of the two made it (mv_git#81). */
+char *GITSTAGEDESC(char *repo, char *prefix, char *open) {
+    char path[700], desc[2048];
+    if (mv_git_desc_for(path, sizeof path, desc, sizeof desc,
+                        prefix ? prefix : "", open && open[0] == '1')) {
+        /* Through the BATCH, like every other in-session staging op: a plain
+           mv_git_stageblob() here writes an index the batch flush at commit
+           then overwrites, so the descriptor reported as staged never reached
+           the tree. */
+        mv_git_batch_begin(rp(repo));
+        mv_git_batch_add(path, desc, (int64_t)strlen(desc), 0);
+    }
+    return emit(repo, NULL);
+}
+
 /* GITFURNITURE(repo, list) — the account-furniture rules, answered for the file
    list the BASIC walk produced.  The verb has to walk VOC itself (mvgitd cannot
    open the account), but it must not carry its own idea of what furniture is:

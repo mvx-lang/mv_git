@@ -809,6 +809,99 @@ char *mv_git_filter_furniture(const char *list) {
     return out;
 }
 
+/* Stage the account descriptor a commit should carry.
+ *
+ * ONE implementation, because it must not matter whether a commit was made with
+ * the CLI or the in-session verb — the same account has to produce the same
+ * commit either way.  add_all() in udt-git.c wrote `.udt` and BP/GIT.ADD wrote a
+ * descriptor only under OPENFMT, so a native commit made with the verb had none
+ * at all and could not be cloned back as an account (mv_git#81).
+ *
+ * The open descriptor is synthesised everywhere.  The NATIVE one only needs
+ * synthesising on UniData: UniVerse writes a real `.uv` into the account and
+ * MVX a real `.mvx`, so on those the descriptor is an ordinary file the walk
+ * already stages, and writing a second copy here would fight with it.
+ */
+int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
+                    const char *prefix, int open) {
+    const char *pfx = prefix ? prefix : "";
+    char base[512] = "account";
+    const char *acct = getenv("MVXACCOUNT");
+    char cwd[4096];
+    if (!(acct && acct[0]) && getcwd(cwd, sizeof cwd)) acct = cwd;
+    if (acct && acct[0]) {
+        const char *slash = strrchr(acct, '/');
+        snprintf(base, sizeof base, "%s", (slash && slash[1]) ? slash + 1 : acct);
+    }
+    if (open) {
+        mv_git_desc_open(base, "1", NULL, "lmdb", desc, dcap);
+        snprintf(path, pcap, "%s.mv-account", pfx);
+    } else {
+#if defined(MVXGIT_UDT)
+        snprintf(desc, dcap,
+                 "# UniData account descriptor\nname = %s\nversion = 1\n", base);
+        snprintf(path, pcap, "%s.udt", pfx);
+#elif defined(MVXGIT_GITD)
+        /* UniVerse, synthesised exactly as UniData's is — a commit should not
+           depend on whether someone happened to write a `.uv` into the account
+           first.  The FLAVOUR is the one thing that cannot be regenerated: it
+           is fixed when an account is created and readable nowhere else, so an
+           existing descriptor is read for it and it is carried forward.  A
+           clone that does not know the flavour comes back looking right and
+           behaving differently. */
+        {
+            char fl[128];
+            fl[0] = '\0';
+            FILE *u = fopen(".uv", "rb");
+            if (u) {
+                char line[512];
+                while (fgets(line, sizeof line, u)) {
+                    char *v = strstr(line, "flavour");
+                    if (!v) v = strstr(line, "flavor");
+                    if (!v) continue;
+                    v = strchr(v, '=');
+                    if (!v) continue;
+                    v++;
+                    while (*v == ' ' || *v == '\t') v++;
+                    snprintf(fl, sizeof fl, "%s", v);
+                    char *nl = strpbrk(fl, "\r\n");
+                    if (nl) *nl = '\0';
+                    break;
+                }
+                fclose(u);
+            }
+            snprintf(desc, dcap,
+                     "# UV account descriptor\nname = %s\nversion = 1\n%s%s%s",
+                     base, fl[0] ? "flavour = " : "", fl, fl[0] ? "\n" : "");
+        }
+        snprintf(path, pcap, "%s.uv", pfx);
+#else
+        (void)desc; (void)path; (void)pcap; (void)dcap;
+        return 0;               /* MVX writes a real .mvx; it travels as a file */
+#endif
+    }
+    return 1;
+}
+
+/* --- GITSTAGEDESC(prefix, open, out) ------------------------------------ */
+void mvx_sub_GITSTAGEDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 4) return;
+    ensure_init();
+    char rp[4096], pfx[600], op[16];
+    arg_str(argv[0], rp, sizeof rp);
+    arg_str(argv[1], pfx, sizeof pfx);
+    arg_str(argv[2], op, sizeof op);
+    char path[700], desc[2048];
+    if (!mv_git_desc_for(path, sizeof path, desc, sizeof desc, pfx,
+                         op[0] == '1')) {
+        mv_set_str(argv[3], "", 0);
+        return;
+    }
+    char *r = mv_git_stageblob(ctx, rp, path, desc);
+    mv_set_str(argv[3], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
 /* --- GITFURNITURE(list, out) -------------------------------------------- */
 void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;

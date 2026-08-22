@@ -169,26 +169,16 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     }
     mv_clear(&fl);
 
-    const char *acctpath = getenv("MVXACCOUNT");
-    const char *base = acctpath ? acctpath : "account";
-    const char *slash = strrchr(base, '/');
-    if (slash && slash[1]) base = slash + 1;
-    char desc[512];
-    if (open) {
-        /* the portable account descriptor (UniData has no .mvx on disk) — the
-           canonical open schema, identical to what mvx-git converts .mvx into */
-        mv_git_desc_open(base, "1", NULL, "lmdb", desc, sizeof desc);
-        free(mv_git_stageblob(ctx, repo, ".mv-account", desc));
-        printf(".mv-account + %%FILE%% controls written (open format)\n");
-    } else {
-        /* native UniData account marker: UniData has no on-disk descriptor, so
-           record that this is a UniData account (and carry account-specific
-           info) for a checkout back into another UniData instance. */
-        snprintf(desc, sizeof desc,
-                 "# UniData account descriptor\nname = %s\nversion = 1\n", base);
-        free(mv_git_stageblob(ctx, repo, ".udt", desc));
-        printf(".udt account marker + %%FILE%% controls written (native)\n");
+    /* The descriptor comes from the engine, not from here: the in-session verb
+       stages it through the same call, so a commit does not depend on which of
+       the two made it (mv_git#81). */
+    {
+        char dpath[700], ddesc[2048];
+        if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc, "", open))
+            free(mv_git_stageblob(ctx, repo, dpath, ddesc));
     }
+    printf(open ? ".mv-account + %%FILE%% controls written (open format)\n"
+                : ".udt account marker + %%FILE%% controls written (native)\n");
 }
 
 /* Fork/exec argv[0] with argv, wait, and return its exit status (127 on
