@@ -132,6 +132,7 @@ void mv_git_forget_account(void);
    the driver's job; applying it is platform-neutral and lives here, which also
    makes it available to both the CLI and the in-session verb.  NULL or a
    missing file means no subtraction — every record is the account's own. */
+int mv_account_furniture(const char *name, size_t len);
 void mv_git_set_stock(const char *path);
 
 /* The baseline as ids alone (mark- or newline-separated), supplied by BASIC

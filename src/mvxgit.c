@@ -693,6 +693,35 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
 #define stock_ensure_udt(ctx, rp) ((void)0)
 #endif
 
+/* --- account furniture ---------------------------------------------------
+ *
+ * UniData's own SQL catalogue and work files.  Every account is born with them,
+ * UniData maintains their contents rather than anyone writing them, and a clone
+ * gets its own — so they are furniture, and a wholesale add must leave them out
+ * (mv_git#72).  `savedlists` and `voc` were committing as empty trees.
+ *
+ * They follow NONE of the naming shapes the enumerations already skip:
+ * __SCHEMA__MAP opens with two underscores but does not close with one, and the
+ * rest are plain names.  So they have to be named.
+ *
+ * MATCHED CASE-SENSITIVELY, and that is the whole point of the lowercase ones:
+ * `voc` is UniData's alias file and is furniture, while the account's own `VOC`
+ * is precisely what a commit exists to carry.  A case-blind compare would drop
+ * it.
+ *
+ * Lives here because mvxgit.c is linked into BOTH udt backends — the CallC
+ * record layer (udtgit_rt.c) and the agent transport (agent_rt.c) — and each
+ * has its own file enumeration.  One list, or they drift.
+ */
+int mv_account_furniture(const char *name, size_t len) {
+    static const char *const sysfile[] = {
+        "__SCHEMA__MAP", "privilege", "savedlists", "voc", "UD_SQLTABLES", NULL
+    };
+    for (const char *const *sf = sysfile; *sf; sf++)
+        if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    return 0;
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -731,6 +760,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        `ADD BP` and `ADD -A` do, and only naming an object stages one. */
     if (strcmp(only, "*") == 0) only[0] = '\0';
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
+    /* The record path needs the account's stock baseline as much as the
+       working-tree sweep does.  `add -A` reaches records through the verb
+       calling GITADD per file and never GITADDALL, so setting it only there
+       left stock_match() a no-op for every wholesale add: the baseline was
+       learned, announced, and then ignored, and the commit carried the
+       system's own VOC (mv_git#70). */
+    stock_ensure_udt(ctx, rp);
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
        sentences, menus, phrases (portable PROCs that must run on the other

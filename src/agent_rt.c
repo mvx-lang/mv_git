@@ -41,6 +41,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "gitd_rt.h"
+#include "mvxgit.h"      /* mv_account_furniture() */
 #include "mvsession.h"
 
 #include <stdarg.h>
@@ -242,6 +243,27 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         free(body);
         return;
     }
+    /* Drop UniData's account furniture before the list reaches anyone.  The
+       agent enumerates the account's VOC and has no view on what a commit
+       should leave out; the CallC backend filters in its own enumeration, and
+       this is the same gate for the agent transport, which is what the CLI
+       actually uses (mv_git#72).  Filtered in place — the list is
+       name<VM>class, @AM-separated, and it only ever shrinks. */
+    long out = 0;
+    for (long i = 0; i < blen; ) {
+        long s = i;
+        while (i < blen && (unsigned char)body[i] != 0xFE) i++;
+        long e = i;                                  /* entry is [s, e) */
+        long n = s;
+        while (n < e && (unsigned char)body[n] != 0xFD) n++;
+        if (!mv_account_furniture(body + s, (size_t)(n - s))) {
+            if (out) body[out++] = (char)0xFE;
+            memmove(body + out, body + s, (size_t)(e - s));
+            out += e - s;
+        }
+        if (i < blen) i++;                           /* past the @AM */
+    }
+    blen = out;
     mv_set_str(dst, body ? body : "", blen);
     free(body);
 }

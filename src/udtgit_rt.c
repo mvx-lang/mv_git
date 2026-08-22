@@ -26,6 +26,7 @@
  * engine's mark<->newline blob translation needs no change. */
 
 #include "udtgit_rt.h"
+#include "mvxgit.h"      /* mv_account_furniture() */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -593,6 +594,12 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         if (act >= 2 && ((id[0] == '_' && id[act - 1] == '_') ||
                          (id[0] == '&' && id[act - 1] == '&')))
             continue;
+        /* …and UniData's own SQL catalogue, which follows no naming convention
+           at all — see mv_account_furniture() (mv_git#72).  This is the
+           enumeration, i.e. the wholesale path, so exactly as with compiled
+           objects (mv_git#9) these stay out of `add -A` and `ADD <file> *`
+           while naming one explicitly still stages it. */
+        if (mv_account_furniture(id, (size_t)act)) continue;
         if (len + (size_t)act + 1 > cap) {
             while (len + (size_t)act + 1 > cap) cap *= 2;
             buf = realloc(buf, cap);
