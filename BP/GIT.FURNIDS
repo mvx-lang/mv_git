@@ -22,9 +22,15 @@
       AM = CHAR(254) ; VM = CHAR(253)
       IDS = ""
       ALLF = ""
-      OPEN "VOC" TO FVOC ELSE RETURN
-      SELECT FVOC
-      LOOP WHILE READNEXT FVID DO
+      OPEN "VOC" TO FVOC ELSE
+         RETURN
+      END
+*     THE PORTABLE SELECT FORM, for the reason GIT.STATUS records at its own
+*     select: a bare `SELECT x` with `LOOP WHILE READNEXT ... DO` does not parse
+*     everywhere.  Select to a named list and read from it by name.
+      SELECT FVOC TO FLIST
+      LOOP
+         READNEXT FVID FROM FLIST ELSE EXIT
          READ FVREC FROM FVOC, FVID THEN
 *           Attribute 1 is the type, but UniVerse appends any description given
 *           at CREATE.FILE time — so take the first token, as the add walk does.
