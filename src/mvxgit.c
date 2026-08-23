@@ -521,6 +521,11 @@ static void load_ignores(void) {
 static char g_prefix[256];
 void mv_git_forget_account(void);
 
+/* The prefix in force, for callers that build a path of their own — udt-git's
+   descriptor staging, which must land under the account rather than at the
+   repository root (mv_git#44). */
+const char *mv_git_prefix(void) { return g_prefix; }
+
 void mv_git_set_prefix(const char *p) {
     /* The prefix changes exactly when the ACCOUNT changes, so this is also the
        point at which anything cached about the account stops being true.  The
