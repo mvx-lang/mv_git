@@ -536,6 +536,57 @@ void mv_git_set_prefix(const char *p) {
 }
 
 /* The git path of a record: `<prefix><file>/<id>`. */
+/* --- the record-key dictionary item (mv_git#96) ---------------------------
+ *
+ * Every flavour keeps ONE dictionary item describing the record key, and the
+ * NAME of it is a platform convention: `@ID` on MVX, UniData and UniVerse, and
+ * D3 is understood to use `ID`.  The item is generated, not authored — both U2
+ * platforms announce it as they create the file ("Added \"@ID\", the default
+ * record for RetrieVe") — and what they generate differs: UniData writes
+ * `D / 0 / <file> / 10L`, UniVerse `D Default record ID for RetrieVe / 0 /
+ * <file> / 30L`, MVX none at all.
+ *
+ * So it travels under ONE canonical name and is written back under the local
+ * one.  A rename, strictly one-for-one: the point is that an account must never
+ * end up holding both an `@ID` and an `ID` saying the same thing, which is two
+ * copies of one fact to keep in step.  Because the destination's CREATE.FILE
+ * has already made the item under its own name, the checkout writes THAT record
+ * rather than adding a second beside it.
+ *
+ * $MVGIT_ID_ITEM overrides the local name.  That is not a knob for users: it is
+ * how the rename gets tested at all, since every platform to hand agrees on
+ * `@ID` and an untested translation is one that rots before D3 arrives. */
+#define MV_ID_CANON "@ID"
+
+const char *mv_git_id_item(void) {
+    const char *env = getenv("MVGIT_ID_ITEM");
+    if (env && env[0]) return env;
+#if defined(MVXGIT_D3)
+    return "ID";
+#else
+    return "@ID";               /* MVX, UniData, UniVerse */
+#endif
+}
+
+/* The canonical name a dictionary record is committed under. */
+static const char *id_item_to_canon(const char *id) {
+    return strcmp(id, mv_git_id_item()) == 0 ? MV_ID_CANON : id;
+}
+
+/* The local name a committed dictionary record is written back under. */
+static const char *id_item_to_local(const char *name) {
+    return strcmp(name, MV_ID_CANON) == 0 ? mv_git_id_item() : name;
+}
+
+/* The rename above has to be undone wherever a committed PATH is read back as a
+   record id, or the record is looked up under a name the account does not have —
+   the reconcile below removed the freshly staged entry for exactly that reason
+   (mv_git#96). */
+static int dict_of_open_account(const char *fn) {
+    size_t l = strlen(fn);
+    return l > 5 && strcmp(fn + l - 5, ".DICT") == 0 && mv_openaccount();
+}
+
 static void record_path(char *out, size_t cap, const char *fn, const char *id) {
     snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
 }
@@ -1561,7 +1612,18 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 git_index_entry e;
                 memset(&e, 0, sizeof e);
                 char path[600];
-                record_path(path, sizeof path, fn, idb);
+                /* The record-key item travels under its canonical name so the
+                   next platform can write it back under its own (mv_git#96).
+                   Open interchange only: a native commit is for this platform,
+                   and renaming there would only make it unrecognisable to it. */
+                const char *pid = idb;
+                {
+                    size_t fl2 = strlen(fn);
+                    if (fl2 > 5 && strcmp(fn + fl2 - 5, ".DICT") == 0 &&
+                        mv_openaccount())
+                        pid = id_item_to_canon(idb);
+                }
+                record_path(path, sizeof path, fn, pid);
                 e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
                 e.id = boid;
@@ -1598,6 +1660,10 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 snprintf(rid, sizeof rid, "%s", e->path + pl);
                 /* synthesised, never a record — see stage_file_control */
                 if (strcmp(rid, "%FILE%") == 0) continue;
+                if (dict_of_open_account(fn)) {
+                    const char *lid = id_item_to_local(rid);
+                    snprintf(rid, sizeof rid, "%s", lid);
+                }
                 mv_set_str(&id2, rid, (int64_t)strlen(rid));
                 if (!mv_read(ctx, &rec2, &fv2, &id2, 0)) {
                     git_index_remove_bypath(index, path);
@@ -2990,7 +3056,11 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     int64_t ocl = mv_val_chars(&rec, onb, sizeof onb, &ocp);
                     if (record_is_object(ctx, &fvar, idb, ocp, ocl)) continue;
                 }
-                record_path(path, sizeof path, fn, idb);
+                /* a live record's committed path — the record-key item is committed
+                   under its canonical name, so status must look for it there or
+                   report it untracked for ever (mv_git#96). */
+                record_path(path, sizeof path, fn,
+                            dict_of_open_account(fn) ? id_item_to_canon(idb) : idb);
                 /* An id that cannot be a git path was never staged either
                    (mv_git#42) — reporting it as untracked would be reporting
                    something no commit can ever fix. */
@@ -3085,7 +3155,12 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         int isrec = 0, gone = 0;
         if (open_named(ctx, top, &fvar)) {
             isrec = 1;                      /* a real MV file; the entry is a record */
-            mv_set_str(&id, recid, (int64_t)strlen(recid));
+            /* the committed name back to the local one, or the record-key item
+               reads as deleted on every platform that spells it differently
+               (mv_git#96) */
+            const char *lrec = dict_of_open_account(top)
+                             ? id_item_to_local(recid) : recid;
+            mv_set_str(&id, lrec, (int64_t)strlen(lrec));
             gone = !mv_read(ctx, &rec, &fvar, &id, 0);
         }
         mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
@@ -3922,13 +3997,18 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             }
         }
 #endif
-        mv_set_str(&id, name, (int64_t)strlen(name));
+        /* …and back the other way: the local name, so the account holds ONE
+           record-key item — the one CREATE.FILE already made — rather than the
+           committed name beside it (mv_git#96). */
+        const char *wname = name;
+        if (is_dict && mv_openaccount()) wname = id_item_to_local(name);
+        mv_set_str(&id, wname, (int64_t)strlen(wname));
         mv_write(ctx, &rec, &fvar, &id, 0, 0);
         (*nw)++;
         if (ns == cap) { cap = cap ? cap * 2 : 64;
             seen = realloc(seen, cap * sizeof *seen);
             if (!seen) mv_fatal("out of memory in checkout"); }
-        snprintf(seen[ns++], 256, "%s", name);
+        snprintf(seen[ns++], 256, "%s", wname);
         git_blob_free(blob);
     }
     /* Reconcile: drop records the commit no longer has — but only on a branch
