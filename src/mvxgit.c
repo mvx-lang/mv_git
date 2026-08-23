@@ -1159,7 +1159,7 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
         snprintf(base, sizeof base, "%s", (slash && slash[1]) ? slash + 1 : acct);
     }
     if (open) {
-        mv_git_desc_open(base, "1", NULL, "lmdb", desc, dcap);
+        mv_git_desc_open(base, "1", NULL, NULL, desc, dcap);
         snprintf(path, pcap, "%s.mv-account", pfx);
     } else {
 #if defined(MVXGIT_UDT)
@@ -1765,7 +1765,7 @@ static long guess_modulo(git_index *index, const char *base) {
  * The on-disk native descriptor `.mvx` and the portable git-side `.mv-account`
  * share one `key = value` grammar but hold different subsets.  `.mv-account` is
  * the portable superset: identity (name/version/description) plus the open-form
- * markers `openaccount` and the default `hash` backend.
+ * marker `openaccount`.
  *
  * Security policy (`permit`/`deny`, #80) has TWO layers (mvx_perm.c):
  *   - the account's `.mvx` is the VENDOR declaration (source #1) — the shell
@@ -1783,7 +1783,9 @@ typedef struct {
     char name[128];
     char version[32];
     char description[256];
-    char hash[32];        /* default hash backend; empty -> "lmdb" on open form */
+    char hash[32];        /* a deliberately-set default backend; normally empty,
+                             and then never written to the portable form — see
+                             desc_render_open */
     int  openaccount;     /* open-form version; 0 if the source carried none */
     char flavour[32];     /* VOC flavour, UniVerse only (mv_git#15).  A UniVerse
                              account is created with a flavour — PICK, IN2,
@@ -1858,12 +1860,22 @@ static void desc_parse(const char *buf, size_t len, acct_desc *d) {
 static int desc_render_open(const acct_desc *d, char *out, size_t cap) {
     const char *name = d->name[0]    ? d->name    : "account";
     const char *ver  = d->version[0] ? d->version : "1";
-    const char *hash = d->hash[0]    ? d->hash    : "lmdb";
     int oa = d->openaccount > 0 ? d->openaccount : 1;
     int n = snprintf(out, cap,
         "# .mv-account - open (portable) account descriptor\n"
-        "name = %s\nversion = %s\nopenaccount = %d\nhash = %s\n",
-        name, ver, oa, hash);
+        "name = %s\nversion = %s\nopenaccount = %d\n",
+        name, ver, oa);
+    /* `hash` names a BACKEND — lmdb — and a backend name has no business in the
+       portable descriptor: the format exists so an account does not depend on
+       one, and nothing on the checkout path reads this.  What a clone actually
+       needs is the file's CLASS, and that travels per file in
+       <file>.DICT/%FILE% as DIR or hash.  It used to be written unconditionally,
+       defaulted to "lmdb", so every open account claimed an MVX backend — a
+       UniData account committed by udt-git said `hash = lmdb` too.  Emitted now
+       only when something deliberately set it, the same rule `flavour` below
+       already follows: a field nobody chose is a field nobody should inherit. */
+    if (n > 0 && (size_t)n < cap && d->hash[0])
+        n += snprintf(out + n, cap - (size_t)n, "hash = %s\n", d->hash);
     if (n > 0 && (size_t)n < cap && d->description[0])
         n += snprintf(out + n, cap - (size_t)n, "description = %s\n",
                       d->description);
