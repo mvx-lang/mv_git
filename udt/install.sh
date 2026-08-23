@@ -101,6 +101,19 @@ else
     || die "newacct failed — run it by hand in $HERE to see the prompt"
 fi
 
+# 2b) REGISTER THE ACCOUNT UNDER A NAME OF YOUR CHOOSING.
+#     newacct names an account after where it was unpacked, so two installs in
+#     two places get two names and nobody gets to say what they are.  A site
+#     running more than one — the current mv_git and the one it is trying —
+#     needs to choose.  $MVGIT_ACCT does that; unset, newacct's own name stands
+#     and nothing here runs.
+if [ -n "${MVGIT_ACCT:-}" ]; then
+  say "registering this account as '$MVGIT_ACCT'"
+  ( cd "$HERE" && printf 'BASIC BP GIT.REGACCT\nRUN BP GIT.REGACCT %s %s %s %s\nQUIT\n' \
+      "$MVGIT_ACCT" "$HERE" "$OWNER" "$GROUP" \
+      | LANG="$LANG_OK" TERM=dumb "$UDT" ) 2>&1 | grep -E 'registered|refusing|cannot' || true
+fi
+
 # 3) rebuild libu2callc.so so the GIT* CallC functions resolve (writes $UDTHOME).
 #    CONVERGENCE INVARIANT: stage the fragment under the PACKAGE name mvx-lang/git
 #    (-> $UDTHOME/callc.d/mvx-lang_git), exactly as MVPKG does (MVPKG.ONE passes
@@ -177,5 +190,18 @@ install: done.
   * udt-git CLI:        $(command -v udt-git 2>/dev/null || echo /usr/local/bin/udt-git)
   * in-session verb:    GIT (global) — works in every account
   * CallC library:      $UDTHOME/bin/libu2callc.so
-Next, per account:  udt-git -a <account> init   (then add / commit / status / log)
+Next, per account, either:
+
+  udt-git -a <account> init                  # from the shell
+
+or, from inside the account itself:
+
+  ED VOC GIT.BP
+  001: DIR
+  002: $HERE/BP
+  003: $HERE/D_BP
+
+  RUN GIT.BP GIT.SETUP                       # catalogs GIT here
+
+then:  GIT INIT   (and add / commit / status / log)
 EOF

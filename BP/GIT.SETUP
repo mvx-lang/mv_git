@@ -1,0 +1,124 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.
+*
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+*
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.SETUP
+*  * @version 1.0
+*  */
+* GIT.SETUP — wire THIS account to an installed mv_git.
+*
+* Put a Q-pointer in VOC at the mv_git account's BP file, then run this:
+*
+*   ED VOC GIT.BP
+*   001: Q
+*   002: <the mv_git account>
+*   003: BP
+*
+*   RUN GIT.BP GIT.SETUP
+*
+* It creates LOCAL catalog entries for every GIT program, so `GIT` and its
+* handlers resolve HERE.  The Q-pointer name is read from the sentence, so it
+* need not be GIT.BP — that is only the conventional default.
+*
+* THE SAME SHAPE AS MVPKG.ACCTSETUP, deliberately.  A site that installs
+* packages already knows this dance, and mv_git being the one package with its
+* own arrangement helps nobody.
+*
+* On MVX this does nothing but say so: programs resolve through the global
+* catalog or a linked package, and cataloging them again per account would
+* leave a private copy that no upgrade refreshes — the same reason udt-git
+* declines when GIT is already global (mv_git#80).
+$INCLUDE BP.INC PLATFORM.H
+      AM = CHAR(254)
+      BPFILE = ""
+$IFDEF MVX
+      S = SENTENCE()
+$ELSE
+      S = @SENTENCE
+$ENDIF
+      IF OCONV(FIELD(S, " ", 1), "MCU") = "RUN" THEN BPFILE = FIELD(S, " ", 2)
+      IF BPFILE = "" THEN BPFILE = "GIT.BP"
+*
+      OPEN "VOC" TO VOCF ELSE
+         PRINT "cannot open VOC"
+         STOP
+      END
+      READ QREC FROM VOCF, BPFILE ELSE
+         PRINT
+         PRINT BPFILE : " is not in VOC."
+         PRINT
+         PRINT "Point it at the mv_git account's BP first, e.g.:"
+         PRINT "   ED VOC " : BPFILE
+         PRINT "   001: Q"
+         PRINT "   002: <the mv_git account>"
+         PRINT "   003: BP"
+         PRINT
+         STOP
+      END
+*     Q, DIR or F.  Which one is not a preference — it is what the platform's
+*     RUN will resolve: UniData's RUN wants a DIR pointer for a directory file
+*     ("GIT.BP is not Directory type" for an F, "not a desired record" for a Q),
+*     while a Q-pointer is the portable spelling elsewhere.  Whatever got the
+*     program running is by definition good enough to catalog through.
+      PTYPE = OCONV(TRIM(QREC<1>), "MCU")
+      IF PTYPE # "Q" AND PTYPE # "DIR" AND PTYPE # "F" THEN
+         PRINT BPFILE : " is type '" : QREC<1> : "' in VOC — expected Q, DIR or F."
+         STOP
+      END
+      PKGACC = TRIM(QREC<2>)
+      IF PKGACC = "" THEN
+         PRINT BPFILE : " names nothing in attribute 2."
+         STOP
+      END
+      PRINT
+      PRINT "mv_git BP: " : PKGACC
+      PRINT
+$IFDEF MVX
+      PRINT "MVX: nothing to catalog — GIT resolves through the global"
+      PRINT "catalog or a linked package.  Try: GIT STATUS"
+$ELSE
+      OPEN BPFILE TO PKGBP ELSE
+         PRINT "cannot open " : BPFILE : " — check the account name in the Q-pointer."
+         STOP
+      END
+      PRINT "cataloging:"
+      N = 0
+      IDS = ""
+*     Collect first, catalog second: EXECUTE while a select list is open is
+*     asking the next command to inherit what is left of it (mv_git#58).
+      SELECT PKGBP TO GLIST
+      LOOP
+         READNEXT ID FROM GLIST ELSE EXIT
+         SKIP = 0
+*        Not programs: compiled objects the compiler leaves beside the source,
+*        include headers, and the generated include DIRECTORY.
+         IF ID[1, 1] = "_" THEN SKIP = 1
+         IF ID[LEN(ID) - 1, 2] = ".H" THEN SKIP = 1
+         IF ID = "BP.INC" THEN SKIP = 1
+         IF NOT(SKIP) THEN IDS<-1> = ID
+      REPEAT
+      NI = DCOUNT(IDS, AM)
+      FOR I = 1 TO NI
+         ID = IDS<I>
+*        FORCE, because CATALOG asks "has been cataloged, do you want to
+*        overwrite(Y/N)?" when the entry exists — and in a driven session
+*        nobody answers it: the prompt takes the next command as its keystroke
+*        (mv_git#58).  Re-running setup after an upgrade is the normal case,
+*        not the exception.
+         EXECUTE "CATALOG " : BPFILE : " " : ID : " LOCAL FORCE"
+         PRINT "  " : ID
+         N += 1
+      NEXT I
+      PRINT
+      PRINT N : " program(s) cataloged."
+$ENDIF
+      PRINT
+      PRINT "Done.  This account can now:  GIT INIT"
+      PRINT
+      END

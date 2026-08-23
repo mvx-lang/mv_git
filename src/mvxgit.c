@@ -100,6 +100,56 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
     free(s->d);
 }
 
+/* Attribute `n` (1-based) of a record whose attributes are separated by `sep`
+   (0xFE in a live record, '\n' in a blob).  Empty string when absent. */
+static void attr_of(const char *rec, int64_t len, char sep, int n,
+                    char *out, size_t cap) {
+    out[0] = '\0';
+    const char *s = rec, *e = rec + len;
+    for (int i = 1; s <= e; i++) {
+        const char *m = memchr(s, sep, (size_t)(e - s));
+        const char *fe = m ? m : e;
+        if (i == n) {
+            size_t l = (size_t)(fe - s);
+            if (l >= cap) l = cap - 1;
+            memcpy(out, s, l);
+            out[l] = '\0';
+            return;
+        }
+        if (!m) return;
+        s = m + 1;
+    }
+}
+
+/* Rebuild `rec` with attribute `n` set to `val`, padding with empty attributes
+   when the record is shorter than that.  Used for the single/multi flag, which
+   is derived on both sides of the crossing (mv_git#93). */
+static char *rec_set_attr(const char *rec, int64_t len, char sep, int n,
+                          const char *val, int64_t *outlen) {
+    const char *att[40];
+    int64_t alen[40];
+    int na = 0;
+    const char *s2 = rec, *e2 = rec + len;
+    while (na < 40) {
+        const char *m = memchr(s2, sep, (size_t)(e2 - s2));
+        att[na] = s2;
+        alen[na] = (m ? m : e2) - s2;
+        na++;
+        if (!m) break;
+        s2 = m + 1;
+    }
+    int slots = na < n ? n : na;
+    if (slots > 40) return NULL;
+    sbuf sb = {0};
+    for (int i = 0; i < slots; i++) {
+        if (i) sb_put(&sb, &sep, 1);
+        if (i == n - 1) sb_put(&sb, val, strlen(val));
+        else if (i < na) sb_put(&sb, att[i], (size_t)alen[i]);
+    }
+    *outlen = (int64_t)sb.len;
+    return sb.d;
+}
+
 #ifdef MVXGIT_GITD
 /* UniData D-item <-> open-dict attribute remap (mvx#25 open-dict interchange).
    A UniData dictionary D/I item is  TYP LOC CONV NAME FORMAT SM ASSOC — single/
@@ -176,27 +226,6 @@ typedef struct {
     git_tree       *tree;    /* checkout: the commit's root tree */
     git_index      *index;   /* commit: the staged index */
 } dictsrc;
-
-/* Attribute `n` (1-based) of a record whose attributes are separated by `sep`
-   (0xFE in a live record, '\n' in a blob).  Empty string when absent. */
-static void attr_of(const char *rec, int64_t len, char sep, int n,
-                    char *out, size_t cap) {
-    out[0] = '\0';
-    const char *s = rec, *e = rec + len;
-    for (int i = 1; s <= e; i++) {
-        const char *m = memchr(s, sep, (size_t)(e - s));
-        const char *fe = m ? m : e;
-        if (i == n) {
-            size_t l = (size_t)(fe - s);
-            if (l >= cap) l = cap - 1;
-            memcpy(out, s, l);
-            out[l] = '\0';
-            return;
-        }
-        if (!m) return;
-        s = m + 1;
-    }
-}
 
 /* Read `<file>.DICT/<item>` through whichever backing this source has.  The
    blob is the open form (newline-separated), which is also what the callers
@@ -471,6 +500,48 @@ static int rec_is_itype(const char *rec, int64_t len, char sep) {
     return ty[0] == 'I' || ty[0] == 'i';
 }
 #endif
+
+/* Project a live dictionary record into the canonical open form: the SM/assoc
+   remap, the derived single/multi flag, and the trailing-empty trim.
+ *
+ * ONE IMPLEMENTATION, because `add` and `status` have to agree about what a
+ * record looks like in git or the account never reads clean — which is #87
+ * exactly, and this is the same fault one level down: add staged the projected
+ * form while status hashed the raw record, so every associated dictionary item
+ * on a cloned UniData account reported modified for ever.
+ *
+ * The I-type expression is NOT translated here: it needs the repository to
+ * resolve names through, and both callers do that part themselves.
+ * Returns a malloc'd buffer + *outlen, or NULL when nothing changed. */
+static char *open_dict_project(const char *rec, int64_t len, int64_t *outlen) {
+    char *cur = NULL;
+    const char *p = rec;
+    int64_t l = len;
+#ifdef MVXGIT_UDT
+    {
+        int64_t dl;
+        char *sw = dict_item_swap(p, l, &dl);
+        if (sw) { cur = sw; p = cur; l = dl; }
+    }
+#endif
+    char asc[128], sm[8];
+    attr_of(p, l, (char)0xFE, 6, asc, sizeof asc);
+    attr_of(p, l, (char)0xFE, 7, sm, sizeof sm);
+    if (asc[0] && !sm[0]) {
+        int64_t nl;
+        char *withm = rec_set_attr(p, l, (char)0xFE, 7, "M", &nl);
+        if (withm) { free(cur); cur = withm; p = cur; l = nl; }
+    }
+    while (l > 0 && (unsigned char)p[l - 1] == 0xFE) l--;
+    if (!cur) {                       /* trim only: hand back a copy */
+        if (l == len) return NULL;
+        cur = malloc((size_t)l + 1);
+        if (!cur) return NULL;
+        memcpy(cur, rec, (size_t)l);
+    }
+    *outlen = l;
+    return cur;
+}
 
 /* --- ignore rules ------------------------------------------------------
    The account's GITIGNORE record (a file in the account root, one glob
@@ -1152,6 +1223,19 @@ int mv_account_furniture(const char *name, size_t len) {
        filter all ask one question rather than each carrying a copy (mv_git#78). */
     if (len >= 2 && ((name[0] == '_' && name[len - 1] == '_') ||
                      (name[0] == '&' && name[len - 1] == '&'))) return 1;
+    /* THE VOC'S OWN DICTIONARY IS THE PLATFORM'S, not the account's.  Every
+       account is born with it — F1..F27, @ID, TYPE, the rest — nobody writes
+       those, and a clone gets its own from whatever created the account.  Left
+       in, a freshly cloned UniData account reported fifty-odd of them untracked
+       on the first status and there was nothing anyone could do about it: add
+       would not stage them and status would not stop mentioning them
+       (mv_git#95).  The VOC ITSELF still travels — its pointers are the
+       account's own — this is only its dictionary. */
+    {
+        static const char *const dicts[] = { "VOC.DICT", "MD.DICT", NULL };
+        for (const char *const *d = dicts; *d; d++)
+            if (len == strlen(*d) && memcmp(name, *d, len) == 0) return 1;
+    }
     /* A file's DICTIONARY is furniture whenever the file is.  UniVerse keeps it
        beside the data as `D_<name>`, so `VOCLIB` was skipped and `D_VOCLIB`
        staged — the dictionary of a file that is not being committed at all
@@ -1587,7 +1671,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 #ifdef MVXGIT_GITD
             if (dict_open) {
                 int64_t dl;
-                dtmp = dict_item_swap(cp, clen, &dl);
+                dtmp = open_dict_project(cp, clen, &dl);   /* shared with status */
                 if (dtmp) { sc = dtmp; sl = dl; }
                 /* The I-type expression goes back to the canonical spelling it
                    was committed in (mv_git#90).  An item nobody touched must
@@ -1641,8 +1725,6 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                remap; this makes that rule canonical.
                Dictionaries only — a trailing empty attribute in a DATA record
                is the user's, and nobody else's business. */
-            if (dict_of_open_account(fn))
-                while (sl > 0 && (unsigned char)sc[sl - 1] == 0xFE) sl--;
             int64_t bl;
             char *blob = xlate(sc, sl, (char)0xFE, '\n', &bl);
             free(dtmp);
@@ -3051,6 +3133,14 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     }
     for (size_t f = 0; f < files.c; f++) {
         const char *fn = files.n[f];
+        /* Furniture is not ours to report.  The file set comes from the index,
+           so a tracked `%FILE%` control drags its whole file into the walk —
+           which is how the VOC's own dictionary, fifty-odd items every account
+           is born with and nobody writes, was reported untracked on every
+           cloned UniData account with nothing anyone could do about it: `add`
+           would not stage them and status would not stop naming them
+           (mv_git#95). */
+        if (mv_account_furniture(fn, strlen(fn))) continue;
         if (!is_mv_file(fn) && !backend_has_file(ctx, fn))
             continue;                     /* plain path — git diffs it, below */
         mv_value fvar, id, rec;
@@ -3141,6 +3231,13 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                             continue;   /* same class — clean */
                     }
                     record_oid(ofb, ofl, &woid);   /* class change / untracked */
+                } else if (dict_of_open_account(fn)) {
+                    /* Hash what `add` WOULD stage, not the raw record: the two
+                       must agree or the account never reads clean (mv_git#95). */
+                    int64_t pl2;
+                    char *proj = open_dict_project(cp, clen, &pl2);
+                    record_oid(proj ? proj : cp, proj ? pl2 : clen, &woid);
+                    free(proj);
                 } else {
                     record_oid(cp, clen, &woid);
                 }
@@ -4032,30 +4129,20 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
                associated at the same time (mv_git#93). */
             rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
             {
+                /* the same derivation on the way in, for a repository written
+                   before export carried it (mv_git#93) */
                 char sm[8], asc[128];
                 attr_of(rp, rlen, (char)0xFE, 6, sm, sizeof sm);
                 attr_of(rp, rlen, (char)0xFE, 7, asc, sizeof asc);
                 if (!sm[0] && asc[0]) {
-                    const char *m = "M";
-                    char *att[16];
-                    (void)att;
-                    /* rebuild with attribute 6 = M */
-                    sbuf nb2 = {0};
-                    int a = 1;
-                    const char *p2 = rp, *e2 = rp + rlen;
-                    while (a <= 7) {
-                        const char *mk = memchr(p2, (char)0xFE, (size_t)(e2 - p2));
-                        const char *fe = mk ? mk : e2;
-                        if (a > 1) { char am = (char)0xFE; sb_put(&nb2, &am, 1); }
-                        if (a == 6) sb_put(&nb2, m, 1);
-                        else sb_put(&nb2, p2, (size_t)(fe - p2));
-                        if (!mk) break;
-                        p2 = mk + 1;
-                        a++;
-                    }
-                    if (nb2.d) { mv_set_str(&rec, nb2.d, (int64_t)nb2.len); free(nb2.d); }
+                    int64_t nl4;
+                    char *nr4 = rec_set_attr(rp, rlen, (char)0xFE, 6, "M", &nl4);
+                    if (nr4) { mv_set_str(&rec, nr4, nl4); free(nr4); }
                 }
             }
+            /* And the I-type expression into this platform's own spelling — the
+               key by name rather than by attribute number, quoted, and a chain
+               flattened into one nested TRANS (mv_git#90). */
             rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
             if (rec_is_itype(rp, rlen, (char)0xFE)) {
                 char spec[512];
@@ -4063,9 +4150,9 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
                 dictsrc ds = { repo, head, NULL };
                 char *nat = ispec_to_udt(&ds, base, spec, (int64_t)strlen(spec));
                 if (nat) {
-                    int64_t nl;
-                    char *nr = rec_set_attr2(rp, rlen, (char)0xFE, nat, &nl);
-                    if (nr) { mv_set_str(&rec, nr, nl); free(nr); }
+                    int64_t nl5;
+                    char *nr5 = rec_set_attr2(rp, rlen, (char)0xFE, nat, &nl5);
+                    if (nr5) { mv_set_str(&rec, nr5, nl5); free(nr5); }
                     free(nat);
                 }
             }
