@@ -10,7 +10,12 @@
 *  ANSWERED BY WHATEVER IS RUNNING THE ENGINE.  On UniVerse that is mvgitd, a
 *  separate binary from this verb which can drift from it — so the version that
 *  comes back is the one actually doing the work, not the one asking.
-      SUBROUTINE GIT.VERSION(ARGS)
+*  NO ARGUMENT.  The framework dispatches every handler as `CALL @H` — no
+*  arguments at all — so a handler that declares one is not callable by the
+*  thing that calls it: `GIT VERSION` answered "0 argument(s) passed,
+*  subroutine takes 1" (mv_git#85).  The sentence is reached the same way every
+*  other handler reaches it, through the cmd framework, not through a parameter.
+      SUBROUTINE GIT.VERSION
       $INCLUDE BP.INC PLATFORM.H
       REPO = ""
       CALL GIT.REPO(REPO)

@@ -112,11 +112,12 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
    through unchanged (returns NULL).  On MVX this is absent — its D-items already
    ARE the open form.  Returns a malloc'd buffer + *outlen, or NULL.
 
-   UniData only for now: UniVerse has the same layout but has never had the
-   remap, and turning it on here would rewrite every dictionary in an existing
-   uv repository — mv_git#93.  The I-spec translation below is every foreign
-   platform's, which is why the two are guarded separately. */
-#ifdef MVXGIT_UDT
+   Both U2 platforms, confirmed against UniVerse's OWN display rather than
+   assumed from UniData: writing `M` at 6 and `PHONE_ITEMS` at 7 lists as
+   "M PHONE_ITEMS", and writing them the other way round lists as "S M" — the
+   association ignored and the depth defaulted (mv_git#93).  The first commit
+   from a UniVerse account after this carries a one-off correction, the same
+   shape #94 has. */
 static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     const char *att[32];
     int64_t alen[32];
@@ -144,7 +145,6 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
     return sb.d;
 }
-#endif  /* MVXGIT_UDT — the remap only */
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
  * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
@@ -1337,6 +1337,32 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(r);
 }
 
+/* --- GITVERSION(repo, out) ---------------------------------------------- *
+ *
+ * What is actually running: this build, the libgit2 it was linked against, and
+ * which of libgit2's optional transports that libgit2 has.  The transports are
+ * the point — whether an ssh remote can work is a property of the library, not
+ * of mv_git, and there was no way to ask from inside the tool (mv_git#21).
+ *
+ * MVX had no such primitive at all, so `GIT VERSION` here called a subroutine
+ * that did not exist and the verb failed with "not cataloged" (mv_git#85).  The
+ * UniData CallC side has had GITVERSION since the verb was written; this is the
+ * MVX half of the same op.  `repo` is unused — the answer is about the engine,
+ * not the repository — and is taken for the shape every other op has. */
+void mvx_sub_GITVERSION(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char *v = mv_git_versions("mvx-git");
+    if (!v) { mv_set_str(argv[1], "", 0); return; }
+    /* the verb prints this through GIT.ECHO, which splits on attribute marks */
+    for (char *p = v; *p; p++) if (*p == '\n') *p = (char)0xFE;
+    size_t n = strlen(v);
+    while (n && (unsigned char)v[n - 1] == 0xFE) v[--n] = '\0';
+    mv_set_str(argv[1], v, (int64_t)n);
+    free(v);
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -1555,11 +1581,9 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             char *itmp = NULL;
 #ifdef MVXGIT_GITD
             if (dict_open) {
-#ifdef MVXGIT_UDT
                 int64_t dl;
                 dtmp = dict_item_swap(cp, clen, &dl);
                 if (dtmp) { sc = dtmp; sl = dl; }
-#endif
                 /* The I-type expression goes back to the canonical spelling it
                    was committed in (mv_git#90).  An item nobody touched must
                    produce NO diff, and the flattened chain a checkout writes
@@ -1602,6 +1626,18 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 }
             }
 #endif
+            /* A DICTIONARY ITEM CARRIES NO TRAILING EMPTY ATTRIBUTES.
+               Attribute 6 empty means "no association", which is the same fact
+               as the attribute not being there — but the two platforms wrote it
+               differently, so every dictionary item differed by one byte
+               between a commit made on MVX and one made on UniData
+               (mv_git#94): a cross-platform commit rewrote every item it had
+               not changed.  UniData already trimmed, as part of the SM/assoc
+               remap; this makes that rule canonical.
+               Dictionaries only — a trailing empty attribute in a DATA record
+               is the user's, and nobody else's business. */
+            if (dict_of_open_account(fn))
+                while (sl > 0 && (unsigned char)sc[sl - 1] == 0xFE) sl--;
             int64_t bl;
             char *blob = xlate(sc, sl, (char)0xFE, '\n', &bl);
             free(dtmp);
@@ -1617,12 +1653,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    Open interchange only: a native commit is for this platform,
                    and renaming there would only make it unrecognisable to it. */
                 const char *pid = idb;
-                {
-                    size_t fl2 = strlen(fn);
-                    if (fl2 > 5 && strcmp(fn + fl2 - 5, ".DICT") == 0 &&
-                        mv_openaccount())
-                        pid = id_item_to_canon(idb);
-                }
+                if (dict_of_open_account(fn)) pid = id_item_to_canon(idb);
                 record_path(path, sizeof path, fn, pid);
                 e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
@@ -1661,8 +1692,15 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 /* synthesised, never a record — see stage_file_control */
                 if (strcmp(rid, "%FILE%") == 0) continue;
                 if (dict_of_open_account(fn)) {
+                    /* Copy ONLY when the name actually changes: id_item_to_local
+                       returns its argument unchanged when there is nothing to
+                       rename, and `snprintf(rid, …, rid)` is an overlapping copy
+                       — undefined, and glibc duly emptied it, so every
+                       dictionary entry failed to read and was dropped from the
+                       index.  macOS happened to tolerate it, which is why it
+                       took a UniData run to find. */
                     const char *lid = id_item_to_local(rid);
-                    snprintf(rid, sizeof rid, "%s", lid);
+                    if (lid != rid) snprintf(rid, sizeof rid, "%s", lid);
                 }
                 mv_set_str(&id2, rid, (int64_t)strlen(rid));
                 if (!mv_read(ctx, &rec2, &fv2, &id2, 0)) {
@@ -3977,11 +4015,42 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             char rnb[40];
             const char *rp;
             int64_t rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
-#ifdef MVXGIT_UDT
             int64_t dl;
             char *dn = dict_item_swap(rp, rlen, &dl);
             if (dn) { mv_set_str(&rec, dn, dl); free(dn); }
-#endif
+            /* DERIVE THE DEPTH.  The canonical form has no single/multi field —
+               MVX has none, and open-dict calls 7–8 derived and advisory — so a
+               U2 checkout left attribute 6 empty and both platforms defaulted it
+               to S.  An item IN an association is multivalued by definition, so
+               that is a fact to compute rather than one to carry: without it
+               UniVerse lists `S PHONE_ITEMS`, an item that is single-valued and
+               associated at the same time (mv_git#93). */
+            rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
+            {
+                char sm[8], asc[128];
+                attr_of(rp, rlen, (char)0xFE, 6, sm, sizeof sm);
+                attr_of(rp, rlen, (char)0xFE, 7, asc, sizeof asc);
+                if (!sm[0] && asc[0]) {
+                    const char *m = "M";
+                    char *att[16];
+                    (void)att;
+                    /* rebuild with attribute 6 = M */
+                    sbuf nb2 = {0};
+                    int a = 1;
+                    const char *p2 = rp, *e2 = rp + rlen;
+                    while (a <= 7) {
+                        const char *mk = memchr(p2, (char)0xFE, (size_t)(e2 - p2));
+                        const char *fe = mk ? mk : e2;
+                        if (a > 1) { char am = (char)0xFE; sb_put(&nb2, &am, 1); }
+                        if (a == 6) sb_put(&nb2, m, 1);
+                        else sb_put(&nb2, p2, (size_t)(fe - p2));
+                        if (!mk) break;
+                        p2 = mk + 1;
+                        a++;
+                    }
+                    if (nb2.d) { mv_set_str(&rec, nb2.d, (int64_t)nb2.len); free(nb2.d); }
+                }
+            }
             rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
             if (rec_is_itype(rp, rlen, (char)0xFE)) {
                 char spec[512];

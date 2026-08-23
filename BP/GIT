@@ -83,6 +83,32 @@ $IFDEF UDT
 IF GMACH THEN EXECUTE "TERM ,0"
 $ENDIF
 IF GMACH THEN PRINT "<<<GIT-BEGIN>>>"
+* --- `--version` as a switch ------------------------------------------------
+* `GIT VERSION` is a command and always has been; this is the spelling people
+* type first, and git itself accepts.
+*
+* IT ANSWERS HERE AND STOPS, rather than rewriting the sentence for the
+* framework: the framework parses the sentence ITSELF, so a verb that edits its
+* own copy changes nothing the framework sees.  The first attempt at this
+* (mv_git#85) did worse than nothing — it assigned the uppercased sentence to
+* GSENT, which is the COMMON the handlers read, so `GIT COMMIT -m one` came back
+* "unknown option 'M'".  The switch never even fired.  Answering and returning
+* touches no shared state at all.
+*
+* The sentence comes from GIT.SENT — already read above — and NOT from
+* @SENTENCE: how a sentence is reached differs per platform and between `GIT`
+* and `GIT -M`, which is why that subroutine exists.
+VSW = FIELD(TRIM(MSENT), " ", 2)
+IF GMACH THEN VSW = FIELD(TRIM(GSENT), " ", 2)
+IF OCONV(VSW, "MCU") = "--VERSION" THEN
+*  Called by NAME, the way the framework calls every handler: a literal
+*  `CALL GIT.VERSION` resolves to the symbol GITVERSION on MVX and does not
+*  find it.  One dispatch mechanism, not two.
+   VH = "GIT.VERSION"
+   CALL @VH
+   IF GMACH THEN PRINT "<<<GIT-END>>>"
+   STOP
+END
 $IFNDEF MVX
 * Off MVX the git objects live outside this session — CallC on UniData, the
 * background process on UniVerse — and both fail silently when absent, so probe
