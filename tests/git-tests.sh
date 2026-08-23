@@ -549,9 +549,9 @@ fi
 # ordinary files.  uv-git has walked such a repository for some time; mvx-git
 # fell through to plain git, which cannot see records and staged the backend
 # store as a blob — the one thing the format says must never be committed.
-# udt-git has no walk yet, so this is mvx/uv.
+# All three walk now (mv_git#44).
 case "$PLATFORM" in
-mvx|uv)
+mvx|uv|udt)
   say "-- several accounts in one repository --"
   MR="$WORK/multi"; mkdir -p "$MR"
   ( cd "$MR" && git init -q . && printf '# repo\n' > README.md )

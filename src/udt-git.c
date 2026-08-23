@@ -36,6 +36,7 @@
 #include <strings.h>      /* strncasecmp */
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <unistd.h>
 
 /* This package's registry name, and its version (stamped in at build time from
@@ -148,7 +149,11 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                     strncmp(committed, "hash", 4) == 0)
                     snprintf(type, sizeof type, "%s", committed);
             }
-            snprintf(ctrl, sizeof ctrl, "%s.DICT/%%FILE%%", name);
+            /* Under the account's prefix: these paths are built here rather
+               than through record_path, so they were the one thing an account
+               inside a larger repository still staged at the root (mv_git#44). */
+            snprintf(ctrl, sizeof ctrl, "%s%s.DICT/%%FILE%%",
+                     mv_git_prefix(), name);
             free(mv_git_stageblob(ctx, repo, ctrl, type));
             if (open) {
                 /* %INDEXES%: the file's alternate-key index names, so secondary
@@ -159,7 +164,8 @@ static void add_all(mv_ctx *ctx, const char *repo) {
                     for (char *q = ix; *q; q++)
                         if ((unsigned char)*q == 0xFE) *q = '\n';
                     char ixc[320];
-                    snprintf(ixc, sizeof ixc, "%s.DICT/%%INDEXES%%", name);
+                    snprintf(ixc, sizeof ixc, "%s%s.DICT/%%INDEXES%%",
+                             mv_git_prefix(), name);
                     free(mv_git_stageblob(ctx, repo, ixc, ix));
                 }
             }
@@ -174,7 +180,12 @@ static void add_all(mv_ctx *ctx, const char *repo) {
        the two made it (mv_git#81). */
     {
         char dpath[700], ddesc[2048];
-        if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc, "", open))
+        /* Under the account's own prefix, or an account inside a larger
+           repository would write its descriptor and its %FILE% controls at the
+           repository ROOT — one account's `.udt` claiming to describe the whole
+           repo, and the next one overwriting it (mv_git#44). */
+        if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc,
+                            mv_git_prefix(), open))
             free(mv_git_stageblob(ctx, repo, dpath, ddesc));
     }
     printf(open ? ".mv-account + %%FILE%% controls written (open format)\n"
@@ -389,6 +400,125 @@ static int ask_open_account(const char *dir) {
     char buf[16];
     if (!fgets(buf, sizeof buf, stdin)) return 1;
     return !(buf[0] == 'n' || buf[0] == 'N');
+}
+
+static int runcmd(const char *const cmd[]);
+
+/* --- a repository of several accounts (mv_git#44) --------------------------
+ *
+ * Standing at the root of a repository that holds accounts rather than being
+ * one: a record operation belongs to each account in turn, because git alone
+ * cannot see records and would stage what it can see.
+ *
+ * ONE PROCESS PER ACCOUNT, unlike uv-git's in-process loop.  A UniData session
+ * binds to its account with LOGTO and does not move; a fresh `udt-git -a <acct>`
+ * gets a fresh session and hands the licence back when it exits, which is also
+ * the honest way to report a failure — the account that failed is the one whose
+ * process returned non-zero.  Each child then takes the nested-account path
+ * above and prefixes its own records. */
+static int subdir_is_account(const char *root, const char *name) {
+    char p[4096];
+    struct stat sb;
+    snprintf(p, sizeof p, "%s/%s", root, name);
+    if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) return 0;
+    static const char *marks[] = { ".udt", ".mvx", ".uv", ".mv-account", NULL };
+    for (int i = 0; marks[i]; i++) {
+        char m[4200];
+        snprintf(m, sizeof m, "%s/%s", p, marks[i]);
+        if (stat(m, &sb) == 0) return 1;
+    }
+    /* An account provisioned by newacct before descriptors existed still has a
+       VOC; accept that rather than refuse to walk an older repository. */
+    snprintf(p, sizeof p, "%s/%s/VOC", root, name);
+    return stat(p, &sb) == 0;
+}
+
+static int needs_accounts(const char *sub) {
+    static const char *rec[] = { "add", "status", "checkout", "restore",
+                                 "merge", "cherry-pick", "rm", "diff", NULL };
+    for (int i = 0; rec[i]; i++) if (!strcmp(sub, rec[i])) return 1;
+    return 0;
+}
+
+/* Returns -1 when this is not a repository root holding accounts, so the caller
+   carries on with the single-account path. */
+static int run_accounts(int argc, char **argv, int subidx) {
+    char root[4096];
+    struct stat sb;
+    if (!getcwd(root, sizeof root)) return -1;
+    char gitdir[4200];
+    snprintf(gitdir, sizeof gitdir, "%s/.git", root);
+    if (stat(gitdir, &sb) != 0) return -1;
+
+    char *names[64];
+    int n = 0;
+    DIR *d = opendir(root);
+    struct dirent *e;
+    while (d && (e = readdir(d)) && n < 64) {
+        if (e->d_name[0] == '.') continue;
+        if (subdir_is_account(root, e->d_name)) names[n++] = strdup(e->d_name);
+    }
+    if (d) closedir(d);
+    if (n == 0) return -1;
+    for (int i = 1; i < n; i++)
+        for (int k = i; k > 0 && strcmp(names[k - 1], names[k]) > 0; k--) {
+            char *t = names[k - 1]; names[k - 1] = names[k]; names[k] = t;
+        }
+
+    /* The repository's own files — README, docs, whatever sits beside the
+       accounts — belong to the repository rather than to any account, so they
+       are staged once from here.  Through PLAIN GIT, not the engine: they are
+       ordinary files, and standing at the root there is no account for a
+       session to bind to — asking the engine here got "the account I/O agent
+       did not answer", which is true and beside the point. */
+    if (!strcmp(argv[subidx], "add")) {
+        const char **ga = malloc((size_t)(n + 4) * sizeof *ga);
+        if (ga) {
+            int gi = 0;
+            ga[gi++] = "git"; ga[gi++] = "add"; ga[gi++] = "-A";
+            int any = 0;
+            DIR *rd = opendir(root);
+            struct dirent *re;
+            char **keep = malloc(64 * sizeof *keep);
+            int nk = 0;
+            while (rd && keep && (re = readdir(rd)) && nk < 60) {
+                if (re->d_name[0] == '.') continue;
+                int isacct = 0;
+                for (int k = 0; k < n; k++)
+                    if (!strcmp(re->d_name, names[k])) { isacct = 1; break; }
+                if (!isacct) keep[nk++] = strdup(re->d_name);
+            }
+            if (rd) closedir(rd);
+            for (int k = 0; k < nk; k++) { ga[gi++] = keep[k]; any = 1; }
+            ga[gi] = NULL;
+            if (any) runcmd(ga);
+            for (int k = 0; k < nk; k++) free(keep[k]);
+            free(keep);
+            free(ga);
+        }
+    }
+
+    int rc = 0;
+    for (int k = 0; k < n; k++) {
+        if (n > 1) printf("== %s\n", names[k]);
+        fflush(stdout);
+        char **av = malloc((size_t)(argc + 3) * sizeof *av);
+        if (!av) { perror("udt-git"); return 1; }
+        int ai = 0;
+        av[ai++] = argv[0];
+        av[ai++] = "-a";
+        av[ai++] = names[k];
+        for (int j = subidx; j < argc; j++) av[ai++] = argv[j];
+        av[ai] = NULL;
+        pid_t pid = fork();
+        if (pid == 0) { execv("/proc/self/exe", av); execvp(av[0], av); _exit(127); }
+        int st = 0;
+        if (pid > 0) waitpid(pid, &st, 0);
+        if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) rc = 1;
+        free(av);
+    }
+    for (int k = 0; k < n; k++) free(names[k]);
+    return rc;
 }
 
 /* udt-git clone <repo> [<dir>] — provision a UniData account from a record-git
@@ -769,6 +899,12 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "clone"))
         return do_clone(arg(argc, argv, i), arg(argc, argv, i + 1));
 
+    /* A repository holding accounts, with no -a naming one: visit each. */
+    if (!strcmp(account, ".") && needs_accounts(sub)) {
+        int rc = run_accounts(argc, argv, i - 1);
+        if (rc >= 0) return rc;
+    }
+
     if (chdir(account) != 0) {
         fprintf(stderr, "udt-git: cannot enter account %s\n", account);
         return 1;
@@ -789,7 +925,39 @@ int main(int argc, char **argv) {
         setenv("MVX_OPENACCOUNT", "1", 1);
 
     mv_ctx *ctx = mv_ctx_create();
-    const char *repo = ".git";
+    /* THE REPOSITORY MAY BE ABOVE THE ACCOUNT (mv_git#44).  An account can sit
+       inside a larger repository beside other accounts and ordinary files —
+       one repo, one index, one commit — and then its records must commit under
+       its own directory rather than at the root, or two accounts would both
+       claim `CUST/C1`.  uv-git has worked this way for some time and mvx-git
+       now does; this is the same rule here.  An account that owns its .git is
+       unaffected: prefix empty, repo ".git", exactly as before. */
+    char repobuf[4096] = ".git";
+    {
+        struct stat gs;
+        if (stat(".git", &gs) != 0) {
+            char cur[4096];
+            if (getcwd(cur, sizeof cur)) {
+                char acctdir[4096];
+                snprintf(acctdir, sizeof acctdir, "%s", cur);
+                for (;;) {
+                    char *slash = strrchr(cur, '/');
+                    if (!slash || slash == cur) break;
+                    *slash = '\0';
+                    char probe[4200];
+                    snprintf(probe, sizeof probe, "%s/.git", cur);
+                    if (stat(probe, &gs) == 0) {
+                        snprintf(repobuf, sizeof repobuf, "%s", probe);
+                        char pfx[4096];
+                        snprintf(pfx, sizeof pfx, "%s/", acctdir + strlen(cur) + 1);
+                        mv_git_set_prefix(pfx);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    const char *repo = repobuf;
     const char *p0 = arg(argc, argv, i);
     const char *p1 = arg(argc, argv, i + 1);
     const char *p2 = arg(argc, argv, i + 2);   /* remote add <name> <url> */
