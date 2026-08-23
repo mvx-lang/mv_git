@@ -372,6 +372,36 @@ static int make_account(const char *code) {
     return -1;
 }
 
+/* UniVerse keeps a file's dictionary on disk beside it as `D_<name>`, and the
+   plain-file half of `add` would stage those directories verbatim — `D_VOC`,
+   `D_BP`, `D_VOCLIB` — even though their CONTENT already travels, as the
+   `<name>.DICT/<id>` records the dictionary walk stages (mv_git#95).  So they
+   are excluded once, at init, the same way adopt excludes what UniVerse created
+   when a directory became an account: in `.git/info/exclude`, because this is a
+   property of this checkout on this system rather than of the project.
+
+   A glob rather than the names present today: CREATE.FILE makes a `D_` for
+   every file, so tomorrow's file would otherwise arrive unexcluded and nobody
+   would notice until it was committed. */
+static void exclude_dicts(const char *gitdir, const char *prefix) {
+    char path[4096], dir[4096];
+    snprintf(dir, sizeof dir, "%s/info", gitdir);
+    mkdir(dir, 0777);
+    snprintf(path, sizeof path, "%s/info/exclude", gitdir);
+    char have[65536] = "";
+    FILE *r = fopen(path, "rb");
+    if (r) { size_t n = fread(have, 1, sizeof have - 1, r); have[n] = '\0'; fclose(r); }
+    char line[4200];
+    snprintf(line, sizeof line, "/%sD_*\n", prefix);
+    if (strstr(have, line)) return;
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fputs("\n# uv-git: on-disk dictionaries.  Their content travels as the\n"
+          "# <file>.DICT/<id> records, so the D_ halves are binaries, not content.\n", f);
+    fputs(line, f);
+    fclose(f);
+}
+
 /* Where we are in the repository: `gitdir` receives the real git directory
    (which is where info/exclude lives) and `prefix` the account's path beneath
    the working tree, "" at the root and "acctA/" below it.  Exclusion patterns
@@ -830,14 +860,53 @@ static int run_account(int argc, char **argv, int i) {
                 else if (!strncmp(argv[k], "--flavor=", 9)) fl = argv[k] + 9;
             }
             int fi = fl ? flavour_index(fl) : -1;
+            /* ASK, rather than leave it blank and carry on.  The flavour is not
+               only a courtesy to the next clone: the stock-VOC baseline is built
+               per flavour, and apply_stock() declines to guess — so an account
+               whose descriptor names none subtracts NOTHING, and the first
+               `add -A` commits the several hundred VOC records UniVerse gave it
+               (mv_git#95).  Measured on a stock PICK account: 122 of them.
+               Unlike adopt, there is someone here who knows: they are standing
+               in the account they created. */
+            if (fi < 0 && !fl && isatty(STDIN_FILENO)) {
+                char line[64];
+                fprintf(stderr,
+                    "\nWhich VOC flavour was this account created with?\n"
+                    "UniVerse cannot be asked afterwards, and without it a commit "
+                    "carries the\naccount's stock VOC as though you had written "
+                    "it.\n\n");
+                for (int k = 0; k < NFLAVOURS; k++)
+                    fprintf(stderr, "    %-8s %s\n",
+                            uv_flavours[k].name, uv_flavours[k].shown);
+                fprintf(stderr, "\n");
+                while (fi < 0) {
+                    if (!ask("Flavour [PICK]: ", line, sizeof line)) break;
+                    if (!line[0]) { fi = flavour_index("PICK"); break; }
+                    fi = flavour_index(line);
+                    if (fi < 0) fprintf(stderr, "  not a flavour: %s\n", line);
+                }
+            }
             FILE *f = fopen(".uv", "wb");
             if (f) {
                 fprintf(f, "# UV account descriptor\nname = %s\nversion = 1\n", nm);
                 if (fi >= 0) fprintf(f, "flavour = %s\n", uv_flavours[fi].name);
                 fclose(f);
-                fprintf(stderr, "uv-git: wrote .uv%s\n", fi >= 0 ? "" :
-                        " — it names no flavour; add `flavour = <name>` or pass "
-                        "--flavour so a clone need not ask");
+                if (fi >= 0)
+                    fprintf(stderr, "uv-git: wrote .uv (flavour %s)\n",
+                            uv_flavours[fi].name);
+                else
+                    fprintf(stderr,
+                        "uv-git: wrote .uv — it names NO FLAVOUR, so the stock "
+                        "VOC baseline cannot be\n"
+                        "        built and a commit will carry this account's "
+                        "stock VOC records.\n"
+                        "        Add `flavour = <name>` to .uv, or re-run with "
+                        "--flavour=<name>.\n");
+            }
+            {
+                char gd2[4096], pfx2[4096];
+                if (repo_place(gd2, sizeof gd2, pfx2, sizeof pfx2) == 0)
+                    exclude_dicts(gd2, pfx2);
             }
         }
     }

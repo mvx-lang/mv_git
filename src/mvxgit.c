@@ -1096,6 +1096,13 @@ int mv_account_furniture(const char *name, size_t len) {
        filter all ask one question rather than each carrying a copy (mv_git#78). */
     if (len >= 2 && ((name[0] == '_' && name[len - 1] == '_') ||
                      (name[0] == '&' && name[len - 1] == '&'))) return 1;
+    /* A file's DICTIONARY is furniture whenever the file is.  UniVerse keeps it
+       beside the data as `D_<name>`, so `VOCLIB` was skipped and `D_VOCLIB`
+       staged — the dictionary of a file that is not being committed at all
+       (mv_git#95).  One level: the remainder of a `D_` name is a file name, not
+       another dictionary. */
+    if (len > 2 && name[0] == 'D' && name[1] == '_' &&
+        mv_account_furniture(name + 2, len - 2)) return 1;
     return 0;
 }
 
