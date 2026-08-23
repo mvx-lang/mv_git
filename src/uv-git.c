@@ -172,6 +172,39 @@ static int ask(const char *prompt, char *buf, size_t cap) {
     return 1;
 }
 
+/* A cloned OPEN account carries `.mv-account` in HEAD, but `git clone` does not
+   copy the local `mvx.openaccount` flag — without it this account is not an open
+   account here, and a commit from it would write the native form.  Asked rather
+   than assumed, the same question, flags and env the other two CLIs use
+   (mv_git#88): the flag lands in the cloner's own config and decides how every
+   later commit is written. */
+static int g_open_flag;                 /* 1 = --open-account, -1 = --no-, 0 = ask */
+
+static int clone_open_account(const char *dir) {
+    if (g_open_flag) return g_open_flag > 0;
+    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+    if (env && env[0])
+        return !(env[0] == '0' || !strcasecmp(env, "no") ||
+                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr,
+                "uv-git: '%s' was committed in the open account format — "
+                "checking it out as an open account.\n"
+                "        (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
+                "native checkout instead)\n", dir);
+        return 1;
+    }
+    char line[16];
+    fprintf(stderr,
+            "\n'%s' was committed in the open account format: its dictionaries "
+            "and file\ncontrols are in the portable shape that moves between MV "
+            "platforms.  Keeping\nit open is what lets this account travel back "
+            "the same way.\n\n", dir);
+    if (!ask("Make it an open account? [Y/n] ", line, sizeof line)) return 1;
+    return !(line[0] == 'n' || line[0] == 'N');
+}
+
+
 /* The descriptor present in this directory, if any: the portable form first,
    then the native ones.  `platform_out` receives the bare marker name. */
 static const char *find_descriptor(void) {
@@ -1264,12 +1297,21 @@ static char *head_blob(const char *gitdir, const char *path, size_t *len) {
 }
 
 static int clone_cmd(int argc, char **argv, int i) {
-    const char *url = (i + 1 < argc) ? argv[i + 1] : NULL;
-    const char *dir = (i + 2 < argc) ? argv[i + 2] : NULL;
+    /* the positionals are the first two NON-flag arguments: uv-git's own flags
+       may follow them (they are stripped from what git sees). */
+    const char *url = NULL, *dir = NULL;
+    for (int k = i + 1; k < argc; k++) {
+        if (argv[k][0] == '-') continue;
+        if (!url) url = argv[k];
+        else if (!dir) dir = argv[k];
+    }
     const char *want_flavour = NULL;
     for (int k = i + 1; k < argc; k++) {
         if (!strncmp(argv[k], "--flavour=", 10))    want_flavour = argv[k] + 10;
         else if (!strncmp(argv[k], "--flavor=", 9)) want_flavour = argv[k] + 9;
+        /* the open-account answer, given up front instead of being asked */
+        else if (!strcmp(argv[k], "--open-account"))    g_open_flag =  1;
+        else if (!strcmp(argv[k], "--no-open-account")) g_open_flag = -1;
     }
     if (!url) {
         fprintf(stderr, "usage: uv-git clone <url> [directory]\n");
@@ -1462,6 +1504,37 @@ static int clone_cmd(int argc, char **argv, int i) {
         fprintf(stderr, "uv-git clone: could not put an agent into the new "
                         "account; the account exists but holds no records yet\n");
         return 1;
+    }
+
+    /* An open-form repository stays open here only if the flag is written; a
+       clone does not inherit it from the remote (mv_git#88). */
+    {
+        FILE *d = fopen(".mv-account", "rb");
+        int is_open = d != NULL;
+        if (d) fclose(d);
+        if (!is_open) {
+            char cur[4096];
+            FILE *r = fopen(".uv", "rb");
+            size_t cl = 0;
+            if (r) { cl = fread(cur, 1, sizeof cur - 1, r); fclose(r); }
+            cur[cl] = '\0';
+            char v[16];
+            is_open = mv_git_desc_field(cur, cl, "openaccount", v, sizeof v) &&
+                      v[0] && v[0] != '0';
+        }
+        if (is_open && clone_open_account(dir)) {
+            git_repository *gr = NULL;
+            if (git_repository_open_ext(&gr, ".", 0, NULL) == 0) {
+                git_config *cfg = NULL;
+                if (git_repository_config(&cfg, gr) == 0) {
+                    git_config_set_bool(cfg, "mvx.openaccount", 1);
+                    /* the engine reads the env, not the config */
+                    setenv("MVX_OPENACCOUNT", "1", 1);
+                    git_config_free(cfg);
+                }
+                git_repository_free(gr);
+            }
+        }
     }
 
     /* Records, straight from the git objects into the account's files. */

@@ -100,7 +100,7 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
     free(s->d);
 }
 
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_GITD
 /* UniData D-item <-> open-dict attribute remap (mvx#25 open-dict interchange).
    A UniData dictionary D/I item is  TYP LOC CONV NAME FORMAT SM ASSOC — single/
    multi at attribute 6, association at 7; the canonical open form is mvx-shaped,
@@ -110,7 +110,13 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
    no-association item does not grow an attribute across a round trip.  Only D/I
    items are remapped; every other record (PH, %FILE%, %INDEXES%, …) passes
    through unchanged (returns NULL).  On MVX this is absent — its D-items already
-   ARE the open form.  Returns a malloc'd buffer + *outlen, or NULL. */
+   ARE the open form.  Returns a malloc'd buffer + *outlen, or NULL.
+
+   UniData only for now: UniVerse has the same layout but has never had the
+   remap, and turning it on here would rewrite every dictionary in an existing
+   uv repository — mv_git#93.  The I-spec translation below is every foreign
+   platform's, which is why the two are guarded separately. */
+#ifdef MVXGIT_UDT
 static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     const char *att[32];
     int64_t alen[32];
@@ -138,6 +144,7 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
     return sb.d;
 }
+#endif  /* MVXGIT_UDT — the remap only */
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
  * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
@@ -1330,9 +1337,11 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
     int voc_open = is_voc && mv_openaccount();
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_GITD
     /* An open-account dictionary commits its D/I items in the canonical (mvx-
-       shaped) open form: UniData's SM/assoc attribute order is remapped here. */
+       shaped) open form: UniData's SM/assoc attribute order is remapped, and on
+       every foreign platform an I-type's expression goes back to the canonical
+       spelling it was committed in. */
     size_t fnlen = strlen(fn);
     int dict_open = fnlen > 5 && strcmp(fn + fnlen - 5, ".DICT") == 0 &&
                     mv_openaccount();
@@ -1486,11 +1495,13 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             int64_t sl = clen;
             char *dtmp = NULL;
             char *itmp = NULL;
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_GITD
             if (dict_open) {
+#ifdef MVXGIT_UDT
                 int64_t dl;
                 dtmp = dict_item_swap(cp, clen, &dl);
                 if (dtmp) { sc = dtmp; sl = dl; }
+#endif
                 /* The I-type expression goes back to the canonical spelling it
                    was committed in (mv_git#90).  An item nobody touched must
                    produce NO diff, and the flattened chain a checkout writes
@@ -3402,7 +3413,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
                    marks->newlines, so diff that same form. */
                 clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
                 char *dtmp2 = NULL;
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_GITD
                 /* ...and `add` also puts an open-account I-type expression back
                    into its canonical spelling (mv_git#90), so diff has to do the
                    same or every translated item reads as changed for ever. */
@@ -3874,18 +3885,21 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         if (is_dir && rl > 0 && (unsigned char)r[rl - 1] == 0xFE) rl--;
         mv_set_str(&rec, r, rl);
         free(r);
-#ifdef MVXGIT_UDT
-        /* open-form dictionary D/I item -> native UniData order (SM/assoc),
-           and an I item's expression into UniData's own spelling (mv_git#90):
-           committed verbatim it reads the numeric key as a literal and the
-           column comes out empty. */
+#ifdef MVXGIT_GITD
+        /* open-form dictionary D/I item -> native order (UniData's SM/assoc),
+           and an I item's expression into the platform's own spelling
+           (mv_git#90): committed verbatim it reads the numeric key as a literal
+           and the column comes out empty — on UniData silently, on UniVerse as
+           an I-descriptor that will not compile. */
         if (is_dict && mv_openaccount()) {
             char rnb[40];
             const char *rp;
             int64_t rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
+#ifdef MVXGIT_UDT
             int64_t dl;
             char *dn = dict_item_swap(rp, rlen, &dl);
             if (dn) { mv_set_str(&rec, dn, dl); free(dn); }
+#endif
             rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
             if (rec_is_itype(rp, rlen, (char)0xFE)) {
                 char spec[512];
