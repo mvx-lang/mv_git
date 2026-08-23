@@ -519,7 +519,39 @@ static void setup_textconv(void) {
     if (!have) { FILE *w = fopen(".gitattributes", "a"); if (w) { fputs("* diff=mvxrec\n", w); fclose(w); } }
 }
 
-static int engine_run(const char *acct, const char *sub,
+/* The repository this account belongs to, when it does not own one.
+ *
+ * An account may sit inside a larger repository beside other accounts and
+ * ordinary files — one repo, one index, one commit.  uv-git has walked such a
+ * repository for some time; mvx-git did not, and the comment here used to say a
+ * nested account "falls through to plain git", which it did — staging
+ * `mvxdata.lmdb/data.mdb`, the backend store, as a blob.  The one thing the
+ * format says must never be committed (mv_git#44).
+ *
+ * Fills `gitdir` with the repository's .git and `prefix` with the account's
+ * path beneath it ("acctA/"), which is what keeps two accounts' records apart
+ * in one index.  Returns 0 when there is no enclosing repository. */
+static int repo_above(const char *acct, char *gitdir, size_t gcap,
+                      char *prefix, size_t pcap) {
+    char cur[PATH_MAX];
+    snprintf(cur, sizeof cur, "%s", acct);
+    for (;;) {
+        char *slash = strrchr(cur, '/');
+        if (!slash || slash == cur) return 0;
+        *slash = '\0';
+        char probe[PATH_MAX + 8];
+        snprintf(probe, sizeof probe, "%s/.git", cur);
+        struct stat sb;
+        if (stat(probe, &sb) == 0) {
+            snprintf(gitdir, gcap, "%s", probe);
+            size_t rl = strlen(cur);
+            snprintf(prefix, pcap, "%s/", acct + rl + 1);
+            return 1;
+        }
+    }
+}
+
+static int engine_run(const char *acct, const char *gitdir, const char *sub,
                       int argc, char **argv, int subidx) {
     setenv("MVXACCOUNT", acct, 1);
     if (chdir(acct) != 0) {
@@ -527,7 +559,9 @@ static int engine_run(const char *acct, const char *sub,
         return 1;
     }
     mv_ctx *ctx = mv_ctx_create();
-    const char *repo = ".git";
+    /* ".git" for an account that owns its repository; the enclosing repo's
+       path when the account sits inside a larger one (mv_git#44). */
+    const char *repo = (gitdir && gitdir[0]) ? gitdir : ".git";
     const char *p0 = positional(argc, argv, subidx, 0);
     const char *p1 = positional(argc, argv, subidx, 1);
     char *out = NULL;
@@ -603,6 +637,86 @@ static int engine_run(const char *acct, const char *sub,
     return 0;
 }
 
+/* --- a repository of several accounts (mv_git#44) --------------------------
+ *
+ * Standing at the root of a repository that holds accounts rather than being
+ * one: `add` and the other record operations have to visit each account in
+ * turn, because git alone cannot see records — and left to git, `add -A` staged
+ * `mvxdata.lmdb/data.mdb`, the backend store, as an ordinary blob.
+ *
+ * uv-git has worked this way for some time; this is the same walk, and the same
+ * rule about which operations need it.  Repository-level operations (commit,
+ * log, branch, tag …) run once, where they are: one repo, one index, one
+ * commit. */
+static int subdir_is_account(const char *root, const char *name) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/%s", root, name);
+    struct stat sb;
+    if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) return 0;
+    return is_account(p);
+}
+
+static int needs_accounts(const char *sub) {
+    static const char *rec[] = { "add", "status", "checkout", "restore",
+                                 "merge", "cherry-pick", "rm", "diff", NULL };
+    for (int i = 0; rec[i]; i++) if (!strcmp(sub, rec[i])) return 1;
+    return 0;
+}
+
+/* Run `sub` in every account below the current directory.  Returns -1 when
+   there are none, so the caller can carry on to plain git. */
+static int run_accounts(const char *sub, int argc, char **argv, int subidx) {
+    char root[PATH_MAX];
+    if (!getcwd(root, sizeof root)) return -1;
+    char gitdir[PATH_MAX + 8];
+    snprintf(gitdir, sizeof gitdir, "%s/.git", root);
+    struct stat sb;
+    if (stat(gitdir, &sb) != 0) return -1;          /* not a repository root */
+
+    char *names[64];
+    int n = 0;
+    DIR *d = opendir(root);
+    struct dirent *e;
+    while (d && (e = readdir(d)) && n < 64) {
+        if (e->d_name[0] == '.') continue;
+        if (subdir_is_account(root, e->d_name)) names[n++] = strdup(e->d_name);
+    }
+    if (d) closedir(d);
+    if (n == 0) return -1;
+    for (int i = 1; i < n; i++)                     /* a handful of names */
+        for (int k = i; k > 0 && strcmp(names[k - 1], names[k]) > 0; k--) {
+            char *t = names[k - 1]; names[k - 1] = names[k]; names[k] = t;
+        }
+
+    /* The repository's own files — README, docs, whatever sits beside the
+       accounts — belong to the repository, not to any account, so they are
+       staged once from here with no prefix.  Each account then stages only what
+       is under its own directory. */
+    if (!strcmp(sub, "add")) {
+        mv_git_set_prefix("");
+        mv_ctx *rctx = mv_ctx_create();
+        char *o = mv_git_adddisk(rctx, gitdir);
+        free(o);
+        mv_ctx_destroy(rctx);
+    }
+
+    int rc = 0;
+    for (int k = 0; k < n; k++) {
+        if (n > 1) printf("== %s\n", names[k]);
+        char acct[PATH_MAX];
+        snprintf(acct, sizeof acct, "%s/%s", root, names[k]);
+        char prefix[PATH_MAX];
+        snprintf(prefix, sizeof prefix, "%s/", names[k]);
+        apply_open_env(acct);
+        mv_git_set_prefix(prefix);
+        if (engine_run(acct, gitdir, sub, argc, argv, subidx) != 0) rc = 1;
+        if (chdir(root) != 0) { perror("mvx-git"); return 1; }
+    }
+    mv_git_set_prefix("");
+    for (int k = 0; k < n; k++) free(names[k]);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     /* --open-account / --no-open-account are mvx-git-only clone flags (git
        never sees them): check the clone out with the open account format turned
@@ -639,13 +753,31 @@ int main(int argc, char **argv) {
     /* Record-git path: an engine command in an MVX account (a .mvx marks it)
      * that has its own .git — or `init`, which creates one — drives the engine
      * on that .git: records straight to/from git objects, no export copy, no
-     * convert.  A subdirectory account (no .git of its own) is tracked by the
-     * enclosing repo, so it falls through to plain git below. */
+     * convert.  An account with no .git of its own belongs to an enclosing
+     * repository: the engine runs on that one, prefixed (see repo_above). */
     char acct[PATH_MAX];
-    if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct) &&
-        (has_own_git(acct) || !strcmp(sub, "init"))) {
-        apply_open_env(acct);          /* mvx.openaccount -> $MVX_OPENACCOUNT */
-        return engine_run(acct, sub, argc, argv, subidx);
+    if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct)) {
+        char gitdir[PATH_MAX + 8] = "", prefix[PATH_MAX] = "";
+        if (has_own_git(acct) || !strcmp(sub, "init")) {
+            apply_open_env(acct);      /* mvx.openaccount -> $MVX_OPENACCOUNT */
+            return engine_run(acct, ".git", sub, argc, argv, subidx);
+        }
+        /* No .git of its own: an account inside a larger repository.  Run the
+           engine on THAT repository, with this account's path as the prefix, so
+           its records commit as `acctA/CUST/C1` and stay apart from the next
+           account's (mv_git#44). */
+        if (repo_above(acct, gitdir, sizeof gitdir, prefix, sizeof prefix)) {
+            apply_open_env(acct);
+            mv_git_set_prefix(prefix);
+            return engine_run(acct, gitdir, sub, argc, argv, subidx);
+        }
+    }
+
+    /* Not an account, but a repository holding some?  Then a record operation
+       belongs to each of them in turn rather than to git (mv_git#44). */
+    if (sub && engine_sub(sub) && needs_accounts(sub)) {
+        int rc = run_accounts(sub, argc, argv, subidx);
+        if (rc >= 0) return rc;
     }
 
     /* Otherwise forward to real git.  A clone is cloned `--no-checkout`: the

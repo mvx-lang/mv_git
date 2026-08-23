@@ -544,5 +544,33 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   esac
 fi
 
+# --- several accounts in one repository (mv_git#44) --------------------------
+# One repo, one index, one commit, with accounts as subdirectories beside
+# ordinary files.  uv-git has walked such a repository for some time; mvx-git
+# fell through to plain git, which cannot see records and staged the backend
+# store as a blob — the one thing the format says must never be committed.
+# udt-git has no walk yet, so this is mvx/uv.
+case "$PLATFORM" in
+mvx|uv)
+  say "-- several accounts in one repository --"
+  MR="$WORK/multi"; mkdir -p "$MR"
+  ( cd "$MR" && git init -q . && printf '# repo\n' > README.md )
+  for m in mA mB; do
+    ACCT "$MR/$m"; LINK "$MR/$m"; CF "$MR/$m" CUST
+    SEED "$MR/$m" 'OPEN "CUST" TO F ELSE STOP
+WRITE "Ada":@AM:"London" ON F, "M1"'
+  done
+  ( cd "$MR" && "$MVXGIT" add -A >/dev/null 2>&1 )
+  paths="$( cd "$MR" && git ls-files )"
+  t  "both accounts staged"   "mA/CUST/M1"  "$paths"
+  t  "and the second"         "mB/CUST/M1"  "$paths"
+  t  "repo files staged too"  "README.md"   "$paths"
+  case "$paths" in
+    *lmdb*|*.uvdata*) bad "backend store kept out" "no store" "staged";;
+    *) ok "backend store kept out";;
+  esac
+  ;;
+esac
+
 say "== $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
