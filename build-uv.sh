@@ -25,13 +25,13 @@ cd "$HERE"
 sh ./build-gitd.sh bin                     # mvgitd + uv-git
 
 # ---- stage the release as a UniVerse account dir named 'git' ----------------
-# The tar wraps this one dir, so the tarball unpacks to ./git/ — a self-sufficient
+# The tar wraps this one dir, so the tarball unpacks to ./mv_git/ — a self-sufficient
 # UniVerse account you LOGTO and catalog from, exactly as on UniData.
 #   BP/            the verb + its whole handler/sub set
 #   bin/           mvgitd (the background process) + uv-git (the CLI)
 #   install.sh     host installer: binaries, account, compile + catalog
 ARCH="$(uname -m)"; OS="$(uname -s | tr '[:upper:]' '[:lower:]')"; case "$OS" in *linux*) OS=linux ;; esac
-ACCT="$STAGE/git"
+ACCT="$STAGE/mv_git"
 rm -rf "$ACCT"
 mkdir -p "$ACCT/BP" "$ACCT/bin"
 
