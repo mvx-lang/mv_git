@@ -112,11 +112,12 @@ static void sb_out(sbuf *s, mv_value *dst, const char *empty) {
    through unchanged (returns NULL).  On MVX this is absent — its D-items already
    ARE the open form.  Returns a malloc'd buffer + *outlen, or NULL.
 
-   UniData only for now: UniVerse has the same layout but has never had the
-   remap, and turning it on here would rewrite every dictionary in an existing
-   uv repository — mv_git#93.  The I-spec translation below is every foreign
-   platform's, which is why the two are guarded separately. */
-#ifdef MVXGIT_UDT
+   Both U2 platforms, confirmed against UniVerse's OWN display rather than
+   assumed from UniData: writing `M` at 6 and `PHONE_ITEMS` at 7 lists as
+   "M PHONE_ITEMS", and writing them the other way round lists as "S M" — the
+   association ignored and the depth defaulted (mv_git#93).  The first commit
+   from a UniVerse account after this carries a one-off correction, the same
+   shape #94 has. */
 static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     const char *att[32];
     int64_t alen[32];
@@ -144,7 +145,6 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
     return sb.d;
 }
-#endif  /* MVXGIT_UDT — the remap only */
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
  * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
@@ -1581,11 +1581,9 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             char *itmp = NULL;
 #ifdef MVXGIT_GITD
             if (dict_open) {
-#ifdef MVXGIT_UDT
                 int64_t dl;
                 dtmp = dict_item_swap(cp, clen, &dl);
                 if (dtmp) { sc = dtmp; sl = dl; }
-#endif
                 /* The I-type expression goes back to the canonical spelling it
                    was committed in (mv_git#90).  An item nobody touched must
                    produce NO diff, and the flattened chain a checkout writes
@@ -4017,11 +4015,42 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             char rnb[40];
             const char *rp;
             int64_t rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
-#ifdef MVXGIT_UDT
             int64_t dl;
             char *dn = dict_item_swap(rp, rlen, &dl);
             if (dn) { mv_set_str(&rec, dn, dl); free(dn); }
-#endif
+            /* DERIVE THE DEPTH.  The canonical form has no single/multi field —
+               MVX has none, and open-dict calls 7–8 derived and advisory — so a
+               U2 checkout left attribute 6 empty and both platforms defaulted it
+               to S.  An item IN an association is multivalued by definition, so
+               that is a fact to compute rather than one to carry: without it
+               UniVerse lists `S PHONE_ITEMS`, an item that is single-valued and
+               associated at the same time (mv_git#93). */
+            rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
+            {
+                char sm[8], asc[128];
+                attr_of(rp, rlen, (char)0xFE, 6, sm, sizeof sm);
+                attr_of(rp, rlen, (char)0xFE, 7, asc, sizeof asc);
+                if (!sm[0] && asc[0]) {
+                    const char *m = "M";
+                    char *att[16];
+                    (void)att;
+                    /* rebuild with attribute 6 = M */
+                    sbuf nb2 = {0};
+                    int a = 1;
+                    const char *p2 = rp, *e2 = rp + rlen;
+                    while (a <= 7) {
+                        const char *mk = memchr(p2, (char)0xFE, (size_t)(e2 - p2));
+                        const char *fe = mk ? mk : e2;
+                        if (a > 1) { char am = (char)0xFE; sb_put(&nb2, &am, 1); }
+                        if (a == 6) sb_put(&nb2, m, 1);
+                        else sb_put(&nb2, p2, (size_t)(fe - p2));
+                        if (!mk) break;
+                        p2 = mk + 1;
+                        a++;
+                    }
+                    if (nb2.d) { mv_set_str(&rec, nb2.d, (int64_t)nb2.len); free(nb2.d); }
+                }
+            }
             rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
             if (rec_is_itype(rp, rlen, (char)0xFE)) {
                 char spec[512];
