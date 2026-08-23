@@ -138,6 +138,331 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
     return sb.d;
 }
+/* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
+ *
+ * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
+ * is source code in the platform's own I-descriptor language, and MVX's
+ * spelling does not mean the same thing here.  Committed verbatim,
+ * `TRANS(CLIENTS,1,NAME,X)` reaches UniData and reads the `1` as the literal
+ * key "1" — no client is called 1, so the column comes out empty with no error
+ * to say why.  Three differences, each measured on 8.3:
+ *
+ *   the key      MVX numbers the source attribute; UniData wants an expression,
+ *                in practice the source dictionary's own name for it
+ *                (`CLIENT_NO`).  This is what silently emptied every column.
+ *   quoting      an unquoted target name is resolved against the SOURCE
+ *                dictionary first, so `TRANS(STATES,5,REGION,X)` living in an
+ *                item called REGION is rejected — "REGION is self-referential".
+ *                Quoting the file and the target settles it.
+ *   nesting      MVX lets the target NAME an item of the target file, and
+ *                chains if that item is itself an I-type (the documented
+ *                extension).  UniData does not chain — but it does accept a
+ *                TRANS as the KEY of another TRANS, so the chain flattens into
+ *                one nested expression, which is what expand() below builds.
+ *
+ * Translation needs to read other dictionary items — the source dictionary to
+ * turn an attribute number into a name, the target's to see whether a chain
+ * has to be flattened.  Those live in git during a checkout and in the index
+ * during a commit, so `dictsrc` is the one interface with two backings.  */
+typedef struct {
+    git_repository *repo;
+    git_tree       *tree;    /* checkout: the commit's root tree */
+    git_index      *index;   /* commit: the staged index */
+} dictsrc;
+
+/* Attribute `n` (1-based) of a record whose attributes are separated by `sep`
+   (0xFE in a live record, '\n' in a blob).  Empty string when absent. */
+static void attr_of(const char *rec, int64_t len, char sep, int n,
+                    char *out, size_t cap) {
+    out[0] = '\0';
+    const char *s = rec, *e = rec + len;
+    for (int i = 1; s <= e; i++) {
+        const char *m = memchr(s, sep, (size_t)(e - s));
+        const char *fe = m ? m : e;
+        if (i == n) {
+            size_t l = (size_t)(fe - s);
+            if (l >= cap) l = cap - 1;
+            memcpy(out, s, l);
+            out[l] = '\0';
+            return;
+        }
+        if (!m) return;
+        s = m + 1;
+    }
+}
+
+/* Read `<file>.DICT/<item>` through whichever backing this source has.  The
+   blob is the open form (newline-separated), which is also what the callers
+   below parse.  malloc'd and NUL-terminated, or NULL. */
+static char *ds_read(const dictsrc *ds, const char *file, const char *item) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.DICT/%s", file, item);
+    git_blob *b = NULL;
+    if (ds->tree) {
+        git_tree_entry *te = NULL;
+        if (git_tree_entry_bypath(&te, ds->tree, path) != 0) return NULL;
+        int ok = git_blob_lookup(&b, ds->repo, git_tree_entry_id(te)) == 0;
+        git_tree_entry_free(te);
+        if (!ok) return NULL;
+    } else if (ds->index) {
+        const git_index_entry *e = git_index_get_bypath(ds->index, path, 0);
+        if (!e || git_blob_lookup(&b, ds->repo, &e->id) != 0) return NULL;
+    } else {
+        return NULL;
+    }
+    size_t n = (size_t)git_blob_rawsize(b);
+    char *out = malloc(n + 1);
+    if (out) { memcpy(out, git_blob_rawcontent(b), n); out[n] = '\0'; }
+    git_blob_free(b);
+    return out;
+}
+
+/* The name of the D item in <file>.DICT that describes attribute `attr` — the
+   translation of MVX's numeric key into the name UniData needs.  The lowest
+   matching name wins so the choice is stable across runs when a dictionary has
+   synonyms. */
+static int ds_name_for_attr(const dictsrc *ds, const char *file, int attr,
+                            char *out, size_t cap) {
+    char pfx[600];
+    int pl = snprintf(pfx, sizeof pfx, "%s.DICT/", file);
+    out[0] = '\0';
+    if (attr <= 0) return 0;
+    /* one pass over the dictionary's items, whichever backing holds them */
+    size_t n = 0;
+    git_tree *sub = NULL;
+    if (ds->tree) {
+        char dpath[600];
+        snprintf(dpath, sizeof dpath, "%s.DICT", file);
+        git_tree_entry *te = NULL;
+        if (git_tree_entry_bypath(&te, ds->tree, dpath) != 0) return 0;
+        int ok = git_tree_lookup(&sub, ds->repo, git_tree_entry_id(te)) == 0;
+        git_tree_entry_free(te);
+        if (!ok) return 0;
+        n = git_tree_entrycount(sub);
+    } else if (ds->index) {
+        n = git_index_entrycount(ds->index);
+    }
+    for (size_t i = 0; i < n; i++) {
+        const char *name;
+        char *text = NULL;
+        if (sub) {
+            const git_tree_entry *te = git_tree_entry_byindex(sub, i);
+            name = git_tree_entry_name(te);
+            if (name[0] == '%') continue;
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, ds->repo, git_tree_entry_id(te)) != 0) continue;
+            size_t bl = (size_t)git_blob_rawsize(b);
+            text = malloc(bl + 1);
+            if (text) { memcpy(text, git_blob_rawcontent(b), bl); text[bl] = '\0'; }
+            git_blob_free(b);
+        } else {
+            const git_index_entry *e = git_index_get_byindex(ds->index, i);
+            if (!e || strncmp(e->path, pfx, (size_t)pl) != 0) continue;
+            name = e->path + pl;
+            if (name[0] == '%' || strchr(name, '/')) continue;
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, ds->repo, &e->id) != 0) continue;
+            size_t bl = (size_t)git_blob_rawsize(b);
+            text = malloc(bl + 1);
+            if (text) { memcpy(text, git_blob_rawcontent(b), bl); text[bl] = '\0'; }
+            git_blob_free(b);
+        }
+        if (!text) continue;
+        char ty[8], loc[64];
+        attr_of(text, (int64_t)strlen(text), '\n', 1, ty, sizeof ty);
+        attr_of(text, (int64_t)strlen(text), '\n', 2, loc, sizeof loc);
+        free(text);
+        if ((ty[0] == 'D' || ty[0] == 'd') && atoi(loc) == attr && loc[0]) {
+            if (!out[0] || strcmp(name, out) < 0) snprintf(out, cap, "%s", name);
+        }
+    }
+    if (sub) git_tree_free(sub);
+    return out[0] != '\0';
+}
+
+static int is_num(const char *s) {
+    if (!*s) return 0;
+    for (const char *p = s; *p; p++) if (*p < '0' || *p > '9') return 0;
+    return 1;
+}
+
+/* Split `TRANS(a,b,c,d)` into its four arguments, respecting nesting so a TRANS
+   inside one stays whole.  Quotes are left on: the caller strips them where it
+   wants a bare name and keeps them where it is re-emitting an expression.
+   Returns the count found, or 0 if this is not a TRANS at all. */
+static int trans_split(const char *spec, int64_t len, char a[4][256]) {
+    for (int i = 0; i < 4; i++) a[i][0] = '\0';
+    while (len && (*spec == ' ' || *spec == '\t')) { spec++; len--; }
+    while (len && (spec[len - 1] == ' ' || spec[len - 1] == '\t')) len--;
+    if (len < 8 || strncasecmp(spec, "TRANS(", 6) != 0 || spec[len - 1] != ')')
+        return 0;
+    const char *s = spec + 6, *e = spec + len - 1;
+    int n = 0, depth = 0;
+    char quote = 0;
+    const char *start = s;
+    for (const char *p = s; p <= e; p++) {
+        if (p < e && quote) { if (*p == quote) quote = 0; continue; }
+        if (p < e && (*p == '\'' || *p == '"')) { quote = *p; continue; }
+        if (p < e && *p == '(') { depth++; continue; }
+        if (p < e && *p == ')') { depth--; continue; }
+        if (p == e || (*p == ',' && depth == 0)) {
+            if (n < 4) {
+                size_t l = (size_t)(p - start);
+                while (l && (start[0] == ' ')) { start++; l--; }
+                while (l && start[l - 1] == ' ') l--;
+                if (l >= 256) l = 255;
+                memcpy(a[n], start, l);
+                a[n][l] = '\0';
+            }
+            n++;
+            start = p + 1;
+        }
+    }
+    return n;
+}
+
+static void unquote(char *s) {
+    size_t l = strlen(s);
+    if (l >= 2 && (s[0] == '\'' || s[0] == '"') && s[l - 1] == s[0]) {
+        memmove(s, s + 1, l - 2);
+        s[l - 2] = '\0';
+    }
+}
+
+/* Build the UniData spelling for "look `target` up in `file`, keyed by the
+   expression `key`".  When `target` names an I-type item of `file` — MVX's
+   chaining extension — UniData cannot follow it, so the chain is flattened:
+   this call becomes the KEY of the next one out, which UniData does accept.
+   The depth cap is the same guard the runtime evaluator has, for the same
+   reason (a dictionary can point at itself). */
+static void ispec_expand(const dictsrc *ds, const char *file, const char *key,
+                         const char *target, const char *ctl, int depth,
+                         char *out, size_t cap) {
+    char tgt[256];
+    snprintf(tgt, sizeof tgt, "%s", target);
+    unquote(tgt);
+    if (depth < 8 && !is_num(tgt)) {
+        char *text = ds_read(ds, file, tgt);
+        if (text) {
+            char ty[8], spec[256];
+            attr_of(text, (int64_t)strlen(text), '\n', 1, ty, sizeof ty);
+            attr_of(text, (int64_t)strlen(text), '\n', 2, spec, sizeof spec);
+            free(text);
+            char a[4][256];
+            if ((ty[0] == 'I' || ty[0] == 'i') &&
+                trans_split(spec, (int64_t)strlen(spec), a) >= 3) {
+                char k2[256];
+                snprintf(k2, sizeof k2, "%s", a[1]);
+                unquote(k2);
+                char k2name[256];
+                int have = 1;
+                if (is_num(k2))
+                    have = ds_name_for_attr(ds, file, atoi(k2), k2name,
+                                            sizeof k2name);
+                else
+                    snprintf(k2name, sizeof k2name, "%s", k2);
+                if (have) {
+                    char inner[1024];
+                    snprintf(inner, sizeof inner, "TRANS('%s',%s,'%s','%s')",
+                             file, key, k2name, ctl[0] ? ctl : "X");
+                    char f2[256], c2[16];
+                    snprintf(f2, sizeof f2, "%s", a[0]); unquote(f2);
+                    snprintf(c2, sizeof c2, "%s", a[3]); unquote(c2);
+                    ispec_expand(ds, f2, inner, a[2], c2[0] ? c2 : "X",
+                                 depth + 1, out, cap);
+                    return;
+                }
+            }
+        }
+    }
+    if (is_num(tgt))
+        snprintf(out, cap, "TRANS('%s',%s,%s,'%s')", file, key, tgt,
+                 ctl[0] ? ctl : "X");
+    else
+        snprintf(out, cap, "TRANS('%s',%s,'%s','%s')", file, key, tgt,
+                 ctl[0] ? ctl : "X");
+}
+
+/* canonical (open) I-spec -> the UniData spelling.  NULL leaves it alone: not a
+   TRANS, or a key we cannot name — better an expression that plainly does
+   nothing than one that quietly means something else. */
+static char *ispec_to_udt(const dictsrc *ds, const char *self,
+                          const char *spec, int64_t slen) {
+    char a[4][256];
+    if (trans_split(spec, slen, a) < 3) return NULL;
+    char key[256], ctl[16];
+    snprintf(key, sizeof key, "%s", a[1]); unquote(key);
+    snprintf(ctl, sizeof ctl, "%s", a[3]); unquote(ctl);
+    char keyname[256];
+    if (is_num(key)) {
+        if (!ds_name_for_attr(ds, self, atoi(key), keyname, sizeof keyname))
+            return NULL;
+    } else {
+        snprintf(keyname, sizeof keyname, "%s", key);
+    }
+    char file[256];
+    snprintf(file, sizeof file, "%s", a[0]); unquote(file);
+    char out[2048];
+    ispec_expand(ds, file, keyname, a[2], ctl[0] ? ctl : "X", 0, out, sizeof out);
+    return strdup(out);
+}
+
+/* the reverse, for a dictionary authored HERE: the key's name becomes its
+   attribute number and the quotes come off.  A key that is itself a TRANS is
+   left alone — that shape is what flattening produces and MVX has no canonical
+   spelling for it, so the round-trip below keeps git's copy instead. */
+static char *ispec_to_open(const dictsrc *ds, const char *self,
+                           const char *spec, int64_t slen) {
+    char a[4][256];
+    if (trans_split(spec, slen, a) < 3) return NULL;
+    if (strncasecmp(a[1], "TRANS(", 6) == 0) return NULL;
+    char file[256], key[256], tgt[256], ctl[16];
+    snprintf(file, sizeof file, "%s", a[0]); unquote(file);
+    snprintf(key,  sizeof key,  "%s", a[1]); unquote(key);
+    snprintf(tgt,  sizeof tgt,  "%s", a[2]); unquote(tgt);
+    snprintf(ctl,  sizeof ctl,  "%s", a[3]); unquote(ctl);
+    char num[32];
+    if (is_num(key)) {
+        snprintf(num, sizeof num, "%s", key);
+    } else {
+        char *text = ds_read(ds, self, key);
+        if (!text) return NULL;
+        char loc[64];
+        attr_of(text, (int64_t)strlen(text), '\n', 2, loc, sizeof loc);
+        free(text);
+        if (!is_num(loc)) return NULL;
+        snprintf(num, sizeof num, "%s", loc);
+    }
+    char out[1024];
+    snprintf(out, sizeof out, "TRANS(%s,%s,%s,%s)", file, num, tgt,
+             ctl[0] ? ctl : "X");
+    return strdup(out);
+}
+
+/* Replace attribute 2 of `rec` (separator `sep`) with `spec`. */
+static char *rec_set_attr2(const char *rec, int64_t len, char sep,
+                           const char *spec, int64_t *outlen) {
+    const char *a1e = memchr(rec, sep, (size_t)len);
+    if (!a1e) return NULL;
+    const char *a2e = memchr(a1e + 1, sep, (size_t)(rec + len - a1e - 1));
+    size_t head = (size_t)(a1e + 1 - rec);
+    size_t taill = a2e ? (size_t)(rec + len - a2e) : 0;
+    size_t sl = strlen(spec);
+    char *out = malloc(head + sl + taill + 1);
+    if (!out) return NULL;
+    memcpy(out, rec, head);
+    memcpy(out + head, spec, sl);
+    if (taill) memcpy(out + head + sl, a2e, taill);
+    *outlen = (int64_t)(head + sl + taill);
+    return out;
+}
+
+/* True when this dictionary record is an I item (type at attribute 1). */
+static int rec_is_itype(const char *rec, int64_t len, char sep) {
+    char ty[8];
+    attr_of(rec, len, sep, 1, ty, sizeof ty);
+    return ty[0] == 'I' || ty[0] == 'i';
+}
 #endif
 
 /* --- ignore rules ------------------------------------------------------
@@ -1160,16 +1485,58 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             const char *sc = cp;
             int64_t sl = clen;
             char *dtmp = NULL;
+            char *itmp = NULL;
 #ifdef MVXGIT_UDT
             if (dict_open) {
                 int64_t dl;
                 dtmp = dict_item_swap(cp, clen, &dl);
                 if (dtmp) { sc = dtmp; sl = dl; }
+                /* The I-type expression goes back to the canonical spelling it
+                   was committed in (mv_git#90).  An item nobody touched must
+                   produce NO diff, and the flattened chain a checkout writes
+                   has no canonical spelling at all — so the first question is
+                   whether git's copy still translates to exactly what is in the
+                   account.  If it does, git's copy IS the answer; only a real
+                   edit falls through to translating it back. */
+                if (rec_is_itype(sc, sl, (char)0xFE)) {
+                    char base2[300], spec[512];
+                    size_t bl2 = strlen(fn);
+                    snprintf(base2, sizeof base2, "%.*s", (int)(bl2 - 5), fn);
+                    attr_of(sc, sl, (char)0xFE, 2, spec, sizeof spec);
+                    dictsrc ds = { repo, NULL, index };
+                    char gpath[600];
+                    record_path(gpath, sizeof gpath, fn, idb);
+                    char *canon = NULL;
+                    const git_index_entry *pe =
+                        git_index_get_bypath(index, gpath, 0);
+                    git_blob *pb = NULL;
+                    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+                        const char *bp = git_blob_rawcontent(pb);
+                        int64_t bl = (int64_t)git_blob_rawsize(pb);
+                        char was[512];
+                        attr_of(bp, bl, '\n', 2, was, sizeof was);
+                        char *fwd = ispec_to_udt(&ds, base2, was,
+                                                 (int64_t)strlen(was));
+                        if (fwd && strcmp(fwd, spec) == 0) canon = strdup(was);
+                        free(fwd);
+                        git_blob_free(pb);
+                    }
+                    if (!canon)
+                        canon = ispec_to_open(&ds, base2, spec,
+                                              (int64_t)strlen(spec));
+                    if (canon) {
+                        int64_t nl;
+                        itmp = rec_set_attr2(sc, sl, (char)0xFE, canon, &nl);
+                        if (itmp) { sc = itmp; sl = nl; }
+                        free(canon);
+                    }
+                }
             }
 #endif
             int64_t bl;
             char *blob = xlate(sc, sl, (char)0xFE, '\n', &bl);
             free(dtmp);
+            free(itmp);
             git_oid boid;
             if (git_blob_create_from_buffer(&boid, repo, blob,
                                             (size_t)bl) == 0) {
@@ -3022,7 +3389,45 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
                 /* A genuine MV record: `add` staged it as the read form with
                    marks->newlines, so diff that same form. */
                 clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
+                char *dtmp2 = NULL;
+#ifdef MVXGIT_UDT
+                /* ...and `add` also puts an open-account I-type expression back
+                   into its canonical spelling (mv_git#90), so diff has to do the
+                   same or every translated item reads as changed for ever. */
+                size_t tl2 = strlen(top);
+                if (mv_openaccount() && tl2 > 5 &&
+                    strcmp(top + tl2 - 5, ".DICT") == 0 &&
+                    rec_is_itype(cp, clen, (char)0xFE)) {
+                    char base3[300], spec3[512];
+                    snprintf(base3, sizeof base3, "%.*s", (int)(tl2 - 5), top);
+                    attr_of(cp, clen, (char)0xFE, 2, spec3, sizeof spec3);
+                    dictsrc ds = { repo, NULL, index };
+                    char *canon = NULL;
+                    git_blob *ob = NULL;
+                    if (git_blob_lookup(&ob, repo, &e->id) == 0) {
+                        char was[512];
+                        attr_of(git_blob_rawcontent(ob),
+                                (int64_t)git_blob_rawsize(ob), '\n', 2,
+                                was, sizeof was);
+                        char *fwd = ispec_to_udt(&ds, base3, was,
+                                                 (int64_t)strlen(was));
+                        if (fwd && strcmp(fwd, spec3) == 0) canon = strdup(was);
+                        free(fwd);
+                        git_blob_free(ob);
+                    }
+                    if (!canon)
+                        canon = ispec_to_open(&ds, base3, spec3,
+                                              (int64_t)strlen(spec3));
+                    if (canon) {
+                        int64_t nl2;
+                        dtmp2 = rec_set_attr2(cp, clen, (char)0xFE, canon, &nl2);
+                        if (dtmp2) { cp = dtmp2; clen = nl2; }
+                        free(canon);
+                    }
+                }
+#endif
                 buf = xlate(cp, clen, (char)0xFE, '\n', &bl);
+                free(dtmp2);
             } else {
                 /* Not an MV record — a directory-backed dictionary item (mv_git#6),
                    a plain file (.mvx, README), or a file under a plain
@@ -3458,7 +3863,10 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         mv_set_str(&rec, r, rl);
         free(r);
 #ifdef MVXGIT_UDT
-        /* open-form dictionary D/I item -> native UniData order (SM/assoc). */
+        /* open-form dictionary D/I item -> native UniData order (SM/assoc),
+           and an I item's expression into UniData's own spelling (mv_git#90):
+           committed verbatim it reads the numeric key as a literal and the
+           column comes out empty. */
         if (is_dict && mv_openaccount()) {
             char rnb[40];
             const char *rp;
@@ -3466,6 +3874,19 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             int64_t dl;
             char *dn = dict_item_swap(rp, rlen, &dl);
             if (dn) { mv_set_str(&rec, dn, dl); free(dn); }
+            rlen = mv_val_chars(&rec, rnb, sizeof rnb, &rp);
+            if (rec_is_itype(rp, rlen, (char)0xFE)) {
+                char spec[512];
+                attr_of(rp, rlen, (char)0xFE, 2, spec, sizeof spec);
+                dictsrc ds = { repo, head, NULL };
+                char *nat = ispec_to_udt(&ds, base, spec, (int64_t)strlen(spec));
+                if (nat) {
+                    int64_t nl;
+                    char *nr = rec_set_attr2(rp, rlen, (char)0xFE, nat, &nl);
+                    if (nr) { mv_set_str(&rec, nr, nl); free(nr); }
+                    free(nat);
+                }
+            }
         }
 #endif
         mv_set_str(&id, name, (int64_t)strlen(name));
