@@ -93,7 +93,7 @@ done
 echo "built udt-callc/{gitcallcb,agentcallc,mvxgit,udtgit_rt}.o"
 
 # ---- stage the release as a UniData account dir named 'git' -----------------
-# The tar wraps this one dir, so the tarball unpacks to ./git/ — a self-sufficient
+# The tar wraps this one dir, so the tarball unpacks to ./mv_git/ — a self-sufficient
 # UniData account (install.sh runs `newacct` on it) you LOGTO and catalog from,
 # exactly as an MVPKG-installed package is an account.  MVPKG consumes the same
 # tarball with `tar --strip-components=1`, landing the contents at its store root.
@@ -104,7 +104,7 @@ echo "built udt-callc/{gitcallcb,agentcallc,mvxgit,udtgit_rt}.o"
 #   mvpkg.json/PKG   package metadata (name mvx-lang/git — the convergence key)
 # GIT.udt.b + udt-git are also kept at the root for a bare manual install.
 ARCH="$(uname -m)"; OS="$(uname -s | tr '[:upper:]' '[:lower:]')"; case "$OS" in *linux*) OS=linux ;; esac
-ACCT="$STAGE/git"
+ACCT="$STAGE/mv_git"
 mkdir -p "$ACCT/BP" "$ACCT/udt-callc"
 # The GIT verb is one $IFDEF source in BP/GIT: MVX takes the CMD-dispatch branch,
 # UniData takes the $ELSE (Model B) branch — so udt compiles the same file.
@@ -182,4 +182,4 @@ where MVPKG installed git from the start.
 Run:  udt-git -a <account> <clone|status|...>  |  GIT <status|...>
 Session env: UDT_HOST / UDT_USER / UDT_PASSWORD / UDT_SERVICE.
 EOF
-echo "build-udt: staged the udt-git package as ./git/"
+echo "build-udt: staged the udt-git package as ./mv_git/"

@@ -5,8 +5,8 @@
 # Run this from the unpacked release directory — which IS a UniData account
 # (its BP holds the GIT verb source; `newacct` below turns it into a real one):
 #
-#     tar xzf mvx-lang_git-<ver>-udt-<os>-<arch>-le.tar.gz
-#     cd git
+#     tar xzf mv_git-<ver>-udt-<os>-<arch>-le.tar.gz
+#     cd mv_git
 #     ./install.sh                 # needs sudo for $UDTHOME + /usr/local/bin
 #
 # It does the host-level, once-per-install work — the same the MVPKG "CALLC" +

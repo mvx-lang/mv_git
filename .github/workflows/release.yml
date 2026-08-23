@@ -3,10 +3,10 @@
 # indexes them via its release webhook (it hosts nothing).  Each job publishes
 # to the same release; asset names mirror the registry's artifact key
 # (<name>-<ver>-<suffix>, base = package name '/'->'_'):
-#   source                        -> mvx-lang_git-<ver>-source.tar.gz
-#   mvx binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-mvx-linux-x86_64-le.tar.gz
-#   udt binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-udt-linux-x86_64-le.tar.gz
-#   uv  binary  (linux/x86_64,le) -> mvx-lang_git-<ver>-uv-linux-x86_64-le.tar.gz
+#   source                        -> mv_git-<ver>-source.tar.gz
+#   mvx binary  (linux/x86_64,le) -> mv_git-<ver>-mvx-linux-x86_64-le.tar.gz
+#   udt binary  (linux/x86_64,le) -> mv_git-<ver>-udt-linux-x86_64-le.tar.gz
+#   uv  binary  (linux/x86_64,le) -> mv_git-<ver>-uv-linux-x86_64-le.tar.gz
 #
 # git is native (libgit2).  The mvx binary is the compiled verbs plus the
 # libgit2 extension library and the mvx-git CLI, built against a published mvx
@@ -78,7 +78,7 @@ jobs:
           case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
             0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
           esac
-          BASE="mvx-lang_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
+          BASE="mv_git-$VER-mvx-$OS-$ARCH-$ENDIAN"
 
           cd mv_git
           # setup-mvx exported MVXHOME (headers + libmvxrt); build-native.sh uses
@@ -149,6 +149,8 @@ jobs:
       - uses: mvx-lang/mv-package-registry/.github/actions/udt-build@main
         with:
           package: mvx-lang/git
+          # The FILE is mv_git; the package it installs as is not (mv_git#101).
+          artifact: mv_git
 
   # ---- UniVerse binary -------------------------------------------------------
   # Same shape as udt, and on the same runner: both build inside their licensed
@@ -164,3 +166,4 @@ jobs:
       - uses: mvx-lang/mv-package-registry/.github/actions/uv-build@main
         with:
           package: mvx-lang/git
+          artifact: mv_git
