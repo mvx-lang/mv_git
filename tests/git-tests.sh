@@ -507,6 +507,31 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   GITV "$A" GIT PUSH origin main >/dev/null 2>&1 || GITV "$A" GIT PUSH origin master >/dev/null 2>&1
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin main 2>&1 || GITV "$B" GIT PULL origin master 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
+
+  # Cloning an OPEN-format repo sets mvx.openaccount in the cloner's own config
+  # and that decides how every later commit here is written, so the CLI asks
+  # (mv_git#88).  With no terminal the answer is yes; --no-open-account and
+  # $MVXGIT_OPEN_ACCOUNT are how a script says otherwise.  A bare repo holding
+  # just the open descriptor is enough to exercise the decision, and keeps this
+  # off the suite's own fixture.  uv-git has no clone flags (it asks in adopt),
+  # so this is mvx/udt only.
+  case "$PLATFORM" in
+  mvx|udt)
+    OA="$WORK/oa"; mkdir -p "$OA"
+    printf '# .mv-account - open (portable) account descriptor\nname = oa\nversion = 1\nopenaccount = 1\nhash = hash\n' > "$OA/.mv-account"
+    ( cd "$OA" && git init -q . && git add -A && \
+      git -c user.name=Test -c user.email=test@example.com commit -qm oa ) >/dev/null 2>&1
+    "$MVXGIT" clone "$OA" "$WORK/oa-yes" >/dev/null 2>&1
+    te "clone open: opt-in by default" "true" \
+      "$(git -C "$WORK/oa-yes" config --get mvx.openaccount 2>&1)"
+    "$MVXGIT" clone --no-open-account "$OA" "$WORK/oa-no" >/dev/null 2>&1
+    te "clone open: --no-open-account declines" "" \
+      "$(git -C "$WORK/oa-no" config --get mvx.openaccount 2>&1)"
+    MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$OA" "$WORK/oa-env" >/dev/null 2>&1
+    te "clone open: env declines" "" \
+      "$(git -C "$WORK/oa-env" config --get mvx.openaccount 2>&1)"
+    ;;
+  esac
 fi
 
 say "== $PASS passed, $FAIL failed, $SKIP skipped"
