@@ -1628,6 +1628,18 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 }
             }
 #endif
+            /* A DICTIONARY ITEM CARRIES NO TRAILING EMPTY ATTRIBUTES.
+               Attribute 6 empty means "no association", which is the same fact
+               as the attribute not being there — but the two platforms wrote it
+               differently, so every dictionary item differed by one byte
+               between a commit made on MVX and one made on UniData
+               (mv_git#94): a cross-platform commit rewrote every item it had
+               not changed.  UniData already trimmed, as part of the SM/assoc
+               remap; this makes that rule canonical.
+               Dictionaries only — a trailing empty attribute in a DATA record
+               is the user's, and nobody else's business. */
+            if (dict_of_open_account(fn))
+                while (sl > 0 && (unsigned char)sc[sl - 1] == 0xFE) sl--;
             int64_t bl;
             char *blob = xlate(sc, sl, (char)0xFE, '\n', &bl);
             free(dtmp);
@@ -1643,12 +1655,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    Open interchange only: a native commit is for this platform,
                    and renaming there would only make it unrecognisable to it. */
                 const char *pid = idb;
-                {
-                    size_t fl2 = strlen(fn);
-                    if (fl2 > 5 && strcmp(fn + fl2 - 5, ".DICT") == 0 &&
-                        mv_openaccount())
-                        pid = id_item_to_canon(idb);
-                }
+                if (dict_of_open_account(fn)) pid = id_item_to_canon(idb);
                 record_path(path, sizeof path, fn, pid);
                 e.path = path;
                 e.mode = GIT_FILEMODE_BLOB;
@@ -1687,8 +1694,15 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 /* synthesised, never a record — see stage_file_control */
                 if (strcmp(rid, "%FILE%") == 0) continue;
                 if (dict_of_open_account(fn)) {
+                    /* Copy ONLY when the name actually changes: id_item_to_local
+                       returns its argument unchanged when there is nothing to
+                       rename, and `snprintf(rid, …, rid)` is an overlapping copy
+                       — undefined, and glibc duly emptied it, so every
+                       dictionary entry failed to read and was dropped from the
+                       index.  macOS happened to tolerate it, which is why it
+                       took a UniData run to find. */
                     const char *lid = id_item_to_local(rid);
-                    snprintf(rid, sizeof rid, "%s", lid);
+                    if (lid != rid) snprintf(rid, sizeof rid, "%s", lid);
                 }
                 mv_set_str(&id2, rid, (int64_t)strlen(rid));
                 if (!mv_read(ctx, &rec2, &fv2, &id2, 0)) {
