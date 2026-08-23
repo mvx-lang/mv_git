@@ -1,0 +1,67 @@
+* MVX — a native compiler and runtime for Pick/MultiValue BASIC.
+* Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+* GIT.REGACCT — register this account with UniData under a chosen NAME.
+*
+*   RUN BP GIT.REGACCT <name> <path> <owner> <group>
+*
+* newacct registers an account under a name it derives from the directory, so
+* two installs unpacked in different places get two names and one unpacked in
+* the same place twice gets one.  A site that wants several mv_git installs —
+* a current one and the one it is testing — needs to choose.  install.sh calls
+* this when $MVGIT_ACCT is set.
+*
+* UD.ACCOUNT is a plain hash file keyed by account name: attribute 1 the path,
+* 2 the owner, 3 the group.  Reached through a temporary F-pointer, which is
+* the same way the stock-VOC baseline reaches $UDTHOME/sys/VOC.
+$INCLUDE BP.INC PLATFORM.H
+$IFDEF UDT
+      S = @SENTENCE
+*     RUN <file> <program> <name> <path> <owner> <group> — the arguments start
+*     at field 4, after the verb, the file and the program.
+      NAME = FIELD(S, " ", 4)
+      APATH = FIELD(S, " ", 5)
+      AOWN = FIELD(S, " ", 6)
+      AGRP = FIELD(S, " ", 7)
+      IF NAME = "" OR APATH = "" THEN
+         PRINT "usage: RUN BP GIT.REGACCT <name> <path> <owner> <group>"
+         STOP
+      END
+      UDH = GETENV("UDTHOME")
+      IF UDH = "" THEN UDH = "/usr/ud83"
+      OPEN "VOC" TO V ELSE
+         PRINT "cannot open VOC"
+         STOP
+      END
+      P = ""
+      P<1> = "F"
+      P<2> = UDH : "/sys/UD.ACCOUNT"
+      P<3> = UDH : "/sys/D_UD.ACCOUNT"
+      WRITE P ON V, "%GITUDACCT%"
+      OPEN "%GITUDACCT%" TO A ELSE
+         PRINT "cannot open " : UDH : "/sys/UD.ACCOUNT — not registering"
+         DELETE V, "%GITUDACCT%"
+         STOP
+      END
+      READ OLD FROM A, NAME THEN
+         IF TRIM(OLD<1>) # APATH THEN
+            PRINT "'" : NAME : "' is already registered at " : OLD<1>
+            PRINT "refusing to point it at " : APATH : " — choose another name."
+            DELETE V, "%GITUDACCT%"
+            STOP
+         END
+      END
+      R = ""
+      R<1> = APATH
+      R<2> = AOWN
+      R<3> = AGRP
+      WRITE R ON A, NAME
+      DELETE V, "%GITUDACCT%"
+      PRINT "registered account '" : NAME : "' -> " : APATH
+$ELSE
+*     UniData only: UD.ACCOUNT is UniData's registry, and GETENV is not a verb
+*     every compiler here knows — the UniVerse build must not fail on a program
+*     it has no use for.
+      PRINT "GIT.REGACCT registers a UniData account; this is not UniData."
+$ENDIF
+      END
