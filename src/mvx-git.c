@@ -201,7 +201,8 @@ static int head_is_account(const char *acct) {
 /* True if the cloned HEAD carries the *open* descriptor `.mv-account` — the repo
    was committed in the open account format, so the materialised native account
    is an open account and status/diff must translate to open-space.  Cloning such
-   a repo turns the opt-in on automatically, without needing --open-account. */
+   a repo offers the opt-in (see ask_open_account) rather than needing
+   --open-account. */
 static int head_is_open(const char *acct) {
     return head_has(acct, ".mv-account");
 }
@@ -280,6 +281,8 @@ static char *collect_index_list(mv_ctx *ctx, const char *repo, int *ncreate,
    (cataloged BP, linked packages) with BUILD.  Alternate-key indexes declared in
    %INDEXES% are (re)built only after asking (#11): CREATE-INDEX builds the real
    LMDB index; the store already serves the declared index, so it is optional. */
+static void apply_open_env(const char *acct);
+
 static void materialize_clone(const char *acct) {
     fprintf(stderr, "mvx-git: materialising account %s\n", acct);
     char cwd0[PATH_MAX];
@@ -289,6 +292,11 @@ static void materialize_clone(const char *acct) {
         return;
     }
     setenv("MVXACCOUNT", ".", 1);
+    /* The open-account opt-in was just written to this clone's config; the
+       engine reads it from the environment, and materialise is where the open
+       form is translated back — the record-key item's name among it
+       (mv_git#96).  Without this the flag was set and unread. */
+    apply_open_env(".");
     mv_ctx *ctx = mv_ctx_create();
     char *r = mv_git_materialize(ctx, ".git");
     free(r);
@@ -402,6 +410,41 @@ static int ask_create_account(const char *acct) {
     char buf[16];
     if (!fgets(buf, sizeof buf, stdin)) return 0;
     return buf[0] == 'y' || buf[0] == 'Y';
+}
+
+/* A repo whose HEAD carries `.mv-account` was committed in the open account
+   format.  Checking it out as an open account is almost always what the cloner
+   wants — but it writes `mvx.openaccount` into their repository's config and
+   that decides how every later commit here is written, so it is asked rather
+   than assumed (mv_git#88).
+
+   With no terminal to ask on the answer is yes, said out loud: erroring would
+   break every scripted clone, and choosing native silently would mis-read an
+   open-form repo.  $MVXGIT_OPEN_ACCOUNT decides it for a script — same shape as
+   $MVXGIT_CREATE above. */
+static int ask_open_account(const char *acct) {
+    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+    if (env && env[0])
+        return !(env[0] == '0' || !strcasecmp(env, "no") ||
+                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr,
+                "mvx-git: '%s' was committed in the open account format — "
+                "checking it out as an open account.\n"
+                "         (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
+                "native checkout instead)\n", acct);
+        return 1;
+    }
+    fprintf(stderr,
+            "\n'%s' was committed in the open account format: its dictionaries "
+            "and file\ncontrols are in the portable shape that moves between MV "
+            "platforms.  Keeping\nit open is what lets this account travel back "
+            "the same way.\n\n"
+            "Make it an open account? [Y/n] ", acct);
+    fflush(stderr);
+    char buf[16];
+    if (!fgets(buf, sizeof buf, stdin)) return 1;
+    return !(buf[0] == 'n' || buf[0] == 'N');
 }
 
 /* --- record-git engine path ------------------------------------------- */
@@ -561,14 +604,17 @@ static int engine_run(const char *acct, const char *sub,
 }
 
 int main(int argc, char **argv) {
-    /* --open-account is an mvx-git-only clone flag (git never sees it): check
-       the checkout out with the open account format turned on.  Strip it from
-       the args before anything parses or forwards them. */
+    /* --open-account / --no-open-account are mvx-git-only clone flags (git
+       never sees them): check the clone out with the open account format turned
+       on, or decline it without being asked.  Strip them from the args before
+       anything parses or forwards them.  0 = undecided, and an open-form HEAD
+       asks (mv_git#88). */
     int want_open = 0;
     {
         int w = 1;
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--open-account") == 0) { want_open = 1; continue; }
+            if (strcmp(argv[i], "--no-open-account") == 0) { want_open = -1; continue; }
             argv[w++] = argv[i];
         }
         argc = w;
@@ -635,8 +681,20 @@ int main(int argc, char **argv) {
                         "(.udt); restoring files and records, but the account "
                         "may not be fully functional on MVX — commit it with "
                         "mvx.openaccount set for a portable checkout\n", acct);
-            /* persist the opt-in when asked, or when HEAD is itself open-form */
-            if (want_open || head_is_open(acct)) open_config_set(acct);
+            /* Persist the opt-in when asked for outright, or when HEAD is
+               open-form and the cloner agrees (declining is a native checkout
+               of a portable account: the records restore, but the open file
+               controls and dictionaries are read as if they were native). */
+            int open_on = want_open > 0;
+            if (want_open == 0 && head_is_open(acct))
+                open_on = ask_open_account(acct);
+            if (open_on) open_config_set(acct);
+            else if (head_is_open(acct))
+                fprintf(stderr,
+                        "mvx-git: warning: '%s' is an open-format repository "
+                        "checked out natively — its %%FILE%% controls and "
+                        "dictionaries are not translated, and a commit from "
+                        "here writes the native form\n", acct);
             materialize_clone(acct);              /* direct: git objects -> backend */
         } else {
             /* not an MVX account: a plain --no-checkout clone needs its working

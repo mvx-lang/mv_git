@@ -45,8 +45,44 @@ CALL GIT.SENT(MSENT)
 IF FIELD(MSENT, " ", 2) = "-M" THEN
    GMACH = 1
    GSENT = FIELD(MSENT, " ", 1) : " " : FIELD(MSENT, " ", 3, 99)
-   PRINT "<<<GIT-BEGIN>>>"
 END
+$IFDEF UDT
+* --- machine mode turns the pager off --------------------------------------
+* UniData paginates its own terminal output at the page depth TERM reports —
+* "Enter <New line> to continue..." — and in a driven session there is nobody
+* to answer it: the prompt takes the NEXT command off the input stack as its
+* keystroke instead.  That is how `GIT -M ADD -A` followed by `GIT -M COMMIT`
+* in one session ran the add and then silently never ran the commit.  It is
+* not a keep-the-messages-short problem: any account whose own honest output
+* fills a page re-creates it with no code change at all, so the verb turns
+* paging off for itself rather than promising to stay brief.
+*
+* THREE things about this line are load-bearing; each was measured on 8.3.
+*
+* NO `CAPTURING`.  `EXECUTE ... CAPTURING` issued AFTER anything has been
+* printed fires the pager itself, right there, and that prompt eats the next
+* command — the exact bug, moved.  (Print first, then EXECUTE CAPTURING: one
+* pager hit.  Either without CAPTURING, or before any output: none.)  This is
+* what made an earlier attempt at this fix read as "EXECUTE consumes the input
+* stack"; it is CAPTURING that does, and only after output.  TERM prints
+* nothing when it is given parameters, so there is nothing to capture.
+*
+* BEFORE the fence, not after.  It has to run before we print, both for the
+* rule above and so that anything the child does say lands outside the fenced
+* region, where a machine-mode caller already discards it.
+*
+* `TERM ,0` and not `TERM 132,0`: only the depth is ours to change.  The width
+* belongs to whoever set the session up, and a machine-mode caller wants the
+* lines it would otherwise have got, not lines re-wrapped to a number we
+* picked.
+*
+* UDT only.  UniVerse does not paginate a driven session at all (measured with
+* both a dumb and a vt100 TERM), and its TERM verb REJECTS a depth of 0 —
+* "must be an integer in the range 1 through 32767" — so the same line there
+* would print an error and fix nothing.
+IF GMACH THEN EXECUTE "TERM ,0"
+$ENDIF
+IF GMACH THEN PRINT "<<<GIT-BEGIN>>>"
 $IFNDEF MVX
 * Off MVX the git objects live outside this session — CallC on UniData, the
 * background process on UniVerse — and both fail silently when absent, so probe

@@ -357,6 +357,40 @@ static char *collect_index_changes(mv_ctx *ctx, const char *repo, int *ncreate,
     return scr;
 }
 
+/* Checking a repo out as an open account writes `mvx.openaccount` into the
+   cloner's own config and decides how every later commit here is written, so it
+   is asked rather than assumed — the same question, defaults and env override
+   mvx-git uses (mv_git#88).  Declined by --no-open-account / the env, or by
+   answering no; with no terminal the answer is yes, said out loud, because
+   erroring would break every scripted clone. */
+static int g_open_flag;                 /* 1 = --open-account, -1 = --no-, 0 = ask */
+
+static int ask_open_account(const char *dir) {
+    if (g_open_flag) return g_open_flag > 0;
+    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+    if (env && env[0])
+        return !(env[0] == '0' || !strcasecmp(env, "no") ||
+                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr,
+                "udt-git: '%s' was committed in the open account format — "
+                "checking it out as an open account.\n"
+                "         (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
+                "native checkout instead)\n", dir);
+        return 1;
+    }
+    fprintf(stderr,
+            "\n'%s' was committed in the open account format: its dictionaries "
+            "and file\ncontrols are in the portable shape that moves between MV "
+            "platforms.  Keeping\nit open is what lets this account travel back "
+            "the same way.\n\n"
+            "Make it an open account? [Y/n] ", dir);
+    fflush(stderr);
+    char buf[16];
+    if (!fgets(buf, sizeof buf, stdin)) return 1;
+    return !(buf[0] == 'n' || buf[0] == 'N');
+}
+
 /* udt-git clone <repo> [<dir>] — provision a UniData account from a record-git
    repository.  Clone the repo without a working tree, create a fresh registered
    account in place with newacct, then materialise HEAD's files and records into
@@ -414,13 +448,15 @@ static int do_clone(const char *repo, const char *dir) {
     }
 
     /* A cloned OPEN account carries `.mv-account` in HEAD, but `git clone` does
-       not copy the local `mvx.openaccount` flag — set it now so open-account
+       not copy the local `mvx.openaccount` flag — it is set here so open-account
        materialisation runs: the committed %FILE% controls and dictionaries are
        in the open form, and the reverse translation (open -> native, incl. the
-       dict SM/assoc order) is gated on this flag. */
+       dict SM/assoc order) is gated on this flag.  Asked rather than assumed,
+       and the same way mvx-git asks (mv_git#88): the flag lands in the user's
+       own repository config and decides how every later commit is written. */
     {
         const char *chk[] = { "git", "cat-file", "-e", "HEAD:.mv-account", NULL };
-        if (runcmd_quiet(chk) == 0) {
+        if (runcmd_quiet(chk) == 0 && ask_open_account(dir)) {
             const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
             runcmd(cfg);
         }
@@ -658,6 +694,20 @@ int main(int argc, char **argv) {
        session layer is shared with UniVerse and has no default shell, so naming
        it here is what makes these UniData sessions. */
     mvs_set_shell("udt");
+
+    /* --open-account / --no-open-account are clone flags of ours that git never
+       sees: answer the open-account question up front instead of being asked.
+       Stripped before anything parses or forwards the args. */
+    {
+        int w = 1;
+        for (int a = 1; a < argc; a++) {
+            if (!strcmp(argv[a], "--open-account"))    { g_open_flag =  1; continue; }
+            if (!strcmp(argv[a], "--no-open-account")) { g_open_flag = -1; continue; }
+            argv[w++] = argv[a];
+        }
+        argc = w;
+        argv[argc] = NULL;
+    }
 
     /* optional "-a <account>" before the subcommand */
     int i = 1;
