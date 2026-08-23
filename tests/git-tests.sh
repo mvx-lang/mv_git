@@ -217,6 +217,16 @@ t  "log"         "base"              "$(GITV "$A" GIT LOG)"
 t  "status clean" "clean"            "$(GITV "$A" GIT STATUS)"
 t  "record round-trips" "London"     "$(CT "$A" CUST C1)"
 
+# VERSION, as a command and as the switch people type first.  Both, and then a
+# flagged command AFTER them: the first attempt at the switch read @SENTENCE and
+# assigned the uppercased result to the COMMON the handlers parse, so `-m` came
+# back "unknown option 'M'" while the switch itself never fired (mv_git#85).
+# The regression was not in the switch; it was in everything else.
+t  "version command"  "libgit2"     "$(GITV "$A" GIT VERSION)"
+t  "version switch"   "libgit2"     "$(GITV "$A" GIT --VERSION)"
+t  "flags still parse after it" "[" "$(SEED "$A" 'OPEN "CUST" TO F ELSE STOP
+WRITE "Zoe":@AM:"Perth" ON F, "CV"'; GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m after-version)"
+
 say "-- change / show / diff / restore --"
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"Paris" ON F, "C1"'

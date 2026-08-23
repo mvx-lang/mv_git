@@ -1337,6 +1337,32 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(r);
 }
 
+/* --- GITVERSION(repo, out) ---------------------------------------------- *
+ *
+ * What is actually running: this build, the libgit2 it was linked against, and
+ * which of libgit2's optional transports that libgit2 has.  The transports are
+ * the point — whether an ssh remote can work is a property of the library, not
+ * of mv_git, and there was no way to ask from inside the tool (mv_git#21).
+ *
+ * MVX had no such primitive at all, so `GIT VERSION` here called a subroutine
+ * that did not exist and the verb failed with "not cataloged" (mv_git#85).  The
+ * UniData CallC side has had GITVERSION since the verb was written; this is the
+ * MVX half of the same op.  `repo` is unused — the answer is about the engine,
+ * not the repository — and is taken for the shape every other op has. */
+void mvx_sub_GITVERSION(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    ensure_init();
+    char *v = mv_git_versions("mvx-git");
+    if (!v) { mv_set_str(argv[1], "", 0); return; }
+    /* the verb prints this through GIT.ECHO, which splits on attribute marks */
+    for (char *p = v; *p; p++) if (*p == '\n') *p = (char)0xFE;
+    size_t n = strlen(v);
+    while (n && (unsigned char)v[n - 1] == 0xFE) v[--n] = '\0';
+    mv_set_str(argv[1], v, (int64_t)n);
+    free(v);
+}
+
 /* --- GITINIT(repo, out) ------------------------------------------------ */
 void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
