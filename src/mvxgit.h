@@ -133,6 +133,11 @@ void mv_git_forget_account(void);
    makes it available to both the CLI and the in-session verb.  NULL or a
    missing file means no subtraction — every record is the account's own. */
 int mv_account_furniture(const char *name, size_t len);
+
+/* The local name of the record-key dictionary item — `@ID` here, `ID` on D3.
+   Overridable with $MVGIT_ID_ITEM, which is how the rename is tested while
+   every platform to hand agrees on `@ID` (mv_git#96). */
+const char *mv_git_id_item(void);
 char *mv_git_filter_furniture(const char *list);
 char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);

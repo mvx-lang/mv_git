@@ -281,6 +281,8 @@ static char *collect_index_list(mv_ctx *ctx, const char *repo, int *ncreate,
    (cataloged BP, linked packages) with BUILD.  Alternate-key indexes declared in
    %INDEXES% are (re)built only after asking (#11): CREATE-INDEX builds the real
    LMDB index; the store already serves the declared index, so it is optional. */
+static void apply_open_env(const char *acct);
+
 static void materialize_clone(const char *acct) {
     fprintf(stderr, "mvx-git: materialising account %s\n", acct);
     char cwd0[PATH_MAX];
@@ -290,6 +292,11 @@ static void materialize_clone(const char *acct) {
         return;
     }
     setenv("MVXACCOUNT", ".", 1);
+    /* The open-account opt-in was just written to this clone's config; the
+       engine reads it from the environment, and materialise is where the open
+       form is translated back — the record-key item's name among it
+       (mv_git#96).  Without this the flag was set and unread. */
+    apply_open_env(".");
     mv_ctx *ctx = mv_ctx_create();
     char *r = mv_git_materialize(ctx, ".git");
     free(r);

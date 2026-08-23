@@ -30,7 +30,14 @@ $ELSE
 * Inlined from GITUDT.STATUS, which had exactly one caller — this one.
 REPO = ""
 CALL GIT.REPO(REPO)
-   AM = CHAR(254) ; LF = CHAR(10)
+*  VM IS USED AND SO MUST BE SET.  The furniture candidates below are built as
+*  `id<VM>type`, and an unassigned variable concatenates as EMPTY here rather
+*  than complaining — so the separator simply vanished, the engine read
+*  `_PH_DIR` as one name, and every exact-name and `_x_` rule missed.  Only the
+*  `DV_` PREFIX rule still matched, which is why 41 candidates yielded exactly
+*  4 furniture ids and status reported the rest as `?? VOC/_HOLD_` for ever
+*  while `add` — which sets VM — never staged them (mv_git#87).
+   AM = CHAR(254) ; VM = CHAR(253) ; LF = CHAR(10)
    FCTL = ".DICT/%FILE%" ; LC = LEN(FCTL) ; NCH = 0
 *  STAGED FIRST — what the index holds that HEAD does not.
 *
