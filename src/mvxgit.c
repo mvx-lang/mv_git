@@ -205,7 +205,7 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
  * native records while `status` hashed projected ones, so a cloned account
  * never read clean and a commit from inside the session would have written
  * native spellings into a portable repository (mv_git#108). */
-#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT)
+#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
 #define MVXGIT_OPENDICT 1
 #endif
 
@@ -238,6 +238,17 @@ static const char *desc_native_name(void) {
     return ".mvx";
 #endif
 }
+
+/* Platforms whose native D/I item carries the single/multi flag at attribute 6
+   and the association at 7 -- the order the canonical open form swaps, since it
+   is mvx-shaped (association at 6, single/multi at 7).
+   UniData and jBASE agree, both verified against a live account; UniVerse does
+   not want it.  Named for the fact rather than the platform list, because a
+   guard that enumerates platforms is how jBASE ended up with none of this in
+   the first place (mv_git#108, #114). */
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
+#define MVXGIT_DICT_SM_AT_6 1
+#endif
 
 #ifdef MVXGIT_OPENDICT
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
@@ -562,7 +573,7 @@ static char *open_dict_project(const char *rec, int64_t len, int64_t *outlen) {
     char *cur = NULL;
     const char *p = rec;
     int64_t l = len;
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_DICT_SM_AT_6
     {
         int64_t dl;
         char *sw = dict_item_swap(p, l, &dl);
