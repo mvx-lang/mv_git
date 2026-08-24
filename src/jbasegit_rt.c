@@ -25,6 +25,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <strings.h>   /* strcasecmp */
 
 /* jBASE's own headers define VAR, STRING and friends; nothing below needs
    them, and the engine never sees them. */
@@ -237,14 +238,58 @@ int64_t mv_readnext(mv_ctx *ctx, mv_value *id) {
    and they are the part most likely to want jBASE-specific spelling.  Left
    deliberately minimal and honest about it rather than guessed at. */
 
+/* Run a sentence through jBASE's own command processor.
+ *
+ * NOT JediFileOp, though it exists and is exported.  Its flags do not mean what
+ * they are named: CREATE with flags=0 reported JEDI_FILEOP_FILE_EXISTS_DATA on
+ * an empty directory and made only the `]D` dictionary, after which opening the
+ * file resolved to that dictionary and a record written to the "file" went into
+ * it.  DATA_ONLY did create the data section and no dictionary; DICT_ONLY then
+ * reported the data existing.  Undocumented, and a file half-created that way is
+ * worse than no file, so this drives the sentence jBASE itself uses -- which
+ * gets the type and geometry right by construction.  udtgit_rt.c reaches for
+ * UniData's ECL the same way and for the same reason (mv_git#114). */
+static int jb_run_sentence(const char *sentence) {
+    char cmd[1200];
+    /* jsh reads TCL from stdin; the account is the working directory, which is
+       already where the engine is operating. */
+    snprintf(cmd, sizeof cmd,
+             "printf '%%s\\n' \"%s\" | jsh >/dev/null 2>&1", sentence);
+    int rc = system(cmd);
+    if (getenv("JBGIT_DEBUG"))
+        fprintf(stderr, "jb-git: %s -> %d\n", sentence, rc);
+    return rc == 0;
+}
+
+/* `type` is NULL/"" for the account default (a hash file) or "DIR".
+ *
+ * jBASE spells the types JP (hash) and UD (Unix directory) -- and NOT JD, which
+ * is also a regular file rather than a directory and would silently give a
+ * directory file the wrong shape. */
 int64_t mv_createfile(mv_ctx *ctx, const mv_value *spec, const mv_value *type) {
-    (void)ctx; (void)spec; (void)type;
-    return 0;   /* TODO(#114): CREATE-FILE via JediFileOp / an EXECUTE */
+    (void)ctx;
+    if (!spec || !spec->data || !spec->data[0]) return 0;
+    const char *t = type && type->data ? type->data : "";
+    int isdir = (strcasecmp(t, "DIR") == 0);
+    char sentence[600];
+    snprintf(sentence, sizeof sentence, "CREATE-FILE %s 1 11%s",
+             spec->data, isdir ? " TYPE=UD" : "");
+    if (!jb_run_sentence(sentence)) return 0;
+    /* Believe the filesystem, not the exit status: jsh reports a create in its
+       output rather than its return code. */
+    struct stat st;
+    return stat(spec->data, &st) == 0;
 }
 
 int64_t mv_deletefile(mv_ctx *ctx, const mv_value *spec) {
-    (void)ctx; (void)spec;
-    return 0;   /* TODO(#114) */
+    (void)ctx;
+    if (!spec || !spec->data || !spec->data[0]) return 0;
+    struct stat st;
+    if (stat(spec->data, &st) != 0) return 1;      /* already gone */
+    char sentence[600];
+    snprintf(sentence, sizeof sentence, "DELETE-FILE %s", spec->data);
+    jb_run_sentence(sentence);
+    return stat(spec->data, &st) != 0;             /* gone afterwards? */
 }
 
 /* The account's files, as `name<VM>type` rows separated by @AM.
