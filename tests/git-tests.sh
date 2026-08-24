@@ -507,6 +507,42 @@ else
   # (menu 3).  Harmless on the platforms that do not need it.
   clone_out="$(GITV "$A" GIT CLONE "$REM" "$B" --flavour=PICK)"
   t  "clone"         "cloned"        "$clone_out"
+
+  # --- the account descriptor -------------------------------------------
+  #
+  # It is a FILE only on MVX, where it carries local state (permit/deny policy
+  # and the rest of what an account is configured with).  Everywhere else it
+  # lives in the git objects, and its job THERE is to be the indicator that
+  # tells a clone to build an ACCOUNT rather than just a directory of files.
+  # UniVerse is the exception that proves the rule: it writes .uv because a
+  # UniVerse account is created WITH a VOC flavour that cannot be asked for
+  # afterwards (#15), so the flavour has to be recorded.
+  #
+  # None of this was tested, and all four write sites spelled the name ".mvx"
+  # outright -- so every platform wrote MVX's descriptor into the account and
+  # the suite stayed green.  On UniData the stray turned out to be LOAD-BEARING:
+  # materialise wrote it, the walk staged it as an ordinary file, and the
+  # open-form conversion turned that into the committed .mv-account.  Removing
+  # the stray -- which is right -- silently stopped the indicator travelling,
+  # and a freshly cloned account reported ` M .mv-account` with nothing to fix.
+  #
+  # So both halves are asserted: what is on DISK, and what is in GIT.  Testing
+  # only one of them is how this survived.
+  descfiles() { local d="$1" out="" n
+                for n in .mvx .udt .uv .jbase; do
+                    [ -f "$d/$n" ] && out="$out$n"
+                done
+                printf '%s' "$out"; }
+  case "$PLATFORM" in
+    mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
+    uv)    te "descriptor is a file here"      ".uv"  "$(descfiles "$B")" ;;
+    *)     te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
+  esac
+  # ...and the indicator is in the COMMIT, which is what a clone reads to know
+  # this is an account at all.
+  t  "indicator is committed" ".mv-account" \
+     "$(git --git-dir="$B/.git" ls-tree --name-only HEAD 2>/dev/null)"
+
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null
   GITV "$B" GIT CONFIG user.email test@example.com >/dev/null
