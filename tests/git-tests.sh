@@ -514,9 +514,13 @@ else
   # and the rest of what an account is configured with).  Everywhere else it
   # lives in the git objects, and its job THERE is to be the indicator that
   # tells a clone to build an ACCOUNT rather than just a directory of files.
-  # UniVerse is the exception that proves the rule: it writes .uv because a
-  # UniVerse account is created WITH a VOC flavour that cannot be asked for
-  # afterwards (#15), so the flavour has to be recorded.
+  # There is no exception.  UniVerse still writes .uv today, and should not:
+  # the VOC flavour belongs in the git objects like everything else about the
+  # account, where GIT ATTR can edit it.  It already travels there -- the
+  # descriptor carries `flavour = ...` and uv-git reads it from the committed
+  # tree -- so the file is a local cache on top of the real answer.  Asserted
+  # as-is below ONLY so the suite records the deviation instead of hiding it;
+  # flip it to "" in the change that stops uv-git writing the file.
   #
   # None of this was tested, and all four write sites spelled the name ".mvx"
   # outright -- so every platform wrote MVX's descriptor into the account and
@@ -535,7 +539,8 @@ else
                 printf '%s' "$out"; }
   case "$PLATFORM" in
     mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
-    uv)    te "descriptor is a file here"      ".uv"  "$(descfiles "$B")" ;;
+    uv)    # TODO: should be "" -- uv-git still writes .uv (see the note above)
+           te "descriptor file (uv: known deviation)" ".uv" "$(descfiles "$B")" ;;
     *)     te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
   esac
   # ...and the indicator is in the COMMIT, which is what a clone reads to know
