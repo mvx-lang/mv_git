@@ -1745,6 +1745,39 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
                      base, fl[0] ? "flavour = " : "", fl, fl[0] ? "\n" : "");
         }
         snprintf(path, pcap, "%s.uv", pfx);
+#elif defined(MVXGIT_JBASE)
+        /* Synthesised like UniData's and UniVerse's: an account should not have
+           to have had a descriptor written into it before its first commit.
+           jBASE keeps no flavour of its own the way UniVerse does, so there is
+           nothing here that cannot be regenerated -- but an existing .jbase is
+           still read for anything it carries, so a hand-set key survives a
+           round trip rather than being quietly dropped (mv_git#114). */
+        {
+            char extra[256];
+            extra[0] = '\0';
+            FILE *j = fopen(".jbase", "rb");
+            if (j) {
+                char line[512];
+                while (fgets(line, sizeof line, j)) {
+                    if (line[0] == '#') continue;
+                    if (strstr(line, "name") || strstr(line, "version")) continue;
+                    char *nl = strpbrk(line, "\r\n");
+                    if (nl) *nl = '\0';
+                    if (!line[0]) continue;
+                    size_t have = strlen(extra), add = strlen(line) + 1;
+                    if (have + add < sizeof extra) {
+                        memcpy(extra + have, line, add - 1);
+                        extra[have + add - 1] = '\n';
+                        extra[have + add] = '\0';
+                    }
+                }
+                fclose(j);
+            }
+            snprintf(desc, dcap,
+                     "# jBASE account descriptor\nname = %s\nversion = 1\n%s",
+                     base, extra);
+        }
+        snprintf(path, pcap, "%s.jbase", pfx);
 #else
         (void)desc; (void)path; (void)pcap; (void)dcap;
         return 0;               /* MVX writes a real .mvx; it travels as a file */
@@ -2834,7 +2867,7 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
  * there the control IS a record and `add` already stages it — synthesising a
  * second one would be inventing content over the account's own. */
 static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
-#if !defined(MVXGIT_GITD) && !defined(MVXGIT_UDT)
+#ifdef MVXGIT_MVXRT
     (void)ctx; (void)rp; (void)name;
     return;                     /* MVX: the file's control is its own record */
 #else
@@ -4478,7 +4511,7 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
         const char *bc = git_blob_rawcontent(b);
         int64_t bl = (int64_t)git_blob_rawsize(b);
         control_type(bc, bl, out, cap);
-#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD)
+#ifdef MVXGIT_MVXRT
         /* THE NATIVE CONTROL NAMES THE FILE'S BACKEND, and it was being thrown
            away: everything that was not "dir" fell through to the account's
            default, so a clone put every file on local LMDB however the original

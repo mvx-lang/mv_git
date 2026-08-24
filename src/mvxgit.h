@@ -32,6 +32,11 @@
      - default (mvx-git): the MVX runtime, libmvxrt (mvx_runtime.h).
      - MVXGIT_UDT (udt-git): the same names over Rocket UniData's InterCall API
        (udtgit_rt.h / udtgit_rt.c).
+     - MVXGIT_JBASE (jb-git): the same names over jBASE's Jedi* record API
+       (jbasegit_rt.h / jbasegit_rt.c).  jBASE hands C both halves — a DEFC
+       entry point receives the session, and a standalone process makes one with
+       JBASESessionObjectFactory() — so this is the MVX arrangement rather than
+       UniData's, with no BASIC-driven loop and no daemon (mv_git#114).
      - MVXGIT_GITD (mvgitd): no record layer at all (gitd_rt.h / gitd_rt.c) —
        the background process does git-object work for a session that keeps its
        own records, so the primitives abort if ever reached.  See gitd_rt.h.
@@ -43,7 +48,10 @@
 #  include "gitd_rt.h"
 #elif defined(MVXGIT_UDT)
 #  include "udtgit_rt.h"
+#elif defined(MVXGIT_JBASE)
+#  include "jbasegit_rt.h"
 #else
+#  define MVXGIT_MVXRT 1        /* the native MVX runtime is the backend */
 #  include "mvx_runtime.h"
 /* The shared engine speaks a platform-neutral record API (mv_*); on MVX those
    names map to the runtime's mvx_* symbols at compile time — direct calls, no
