@@ -1,0 +1,6 @@
+* GITFILES - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITFILES(REPO, ANS)
+      DEFC VAR JBGITFILES(VAR, VAR)
+      ANS = ""
+      X = JBGITFILES(REPO, ANS)
+      RETURN

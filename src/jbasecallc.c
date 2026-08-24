@@ -56,53 +56,330 @@ static void give(DPSTRUCT *dp, VAR *out, char *answer) {
     free(answer);
 }
 
-/* Every op is the same shape: adopt the caller's session, run the engine,
-   answer through the output argument. */
-#define JB_OP0(NAME, CALL)                                                    \
-    VAR *NAME(VAR *Result, JBASEDP VAR *Repo, VAR *Out) {                     \
-        mv_jbase_use_session(dp);                                             \
-        mv_ctx *ctx = mv_ctx_create();                                        \
-        char *r = CALL;                                                       \
-        mv_ctx_destroy(ctx);                                                  \
-        give(dp, Out, r);                                                     \
-        STORE_VBI(Result, 0);                                                 \
-        return Result;                                                        \
-    }
+VAR *JBGITADD(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_add(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
 
-#define JB_OP1(NAME, CALL)                                                    \
-    VAR *NAME(VAR *Result, JBASEDP VAR *Repo, VAR *A1, VAR *Out) {            \
-        mv_jbase_use_session(dp);                                             \
-        mv_ctx *ctx = mv_ctx_create();                                        \
-        char *r = CALL;                                                       \
-        mv_ctx_destroy(ctx);                                                  \
-        give(dp, Out, r);                                                     \
-        STORE_VBI(Result, 0);                                                 \
-        return Result;                                                        \
-    }
+VAR *JBGITADDALL(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_addall(ctx, sfb(dp, A0));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
 
-#define JB_OP2(NAME, CALL)                                                    \
-    VAR *NAME(VAR *Result, JBASEDP VAR *Repo, VAR *A1, VAR *A2, VAR *Out) {   \
-        mv_jbase_use_session(dp);                                             \
-        mv_ctx *ctx = mv_ctx_create();                                        \
-        char *r = CALL;                                                       \
-        mv_ctx_destroy(ctx);                                                  \
-        give(dp, Out, r);                                                     \
-        STORE_VBI(Result, 0);                                                 \
-        return Result;                                                        \
-    }
+VAR *JBGITBRANCH(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_branch(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
 
-JB_OP0(JBGITINIT,     mv_git_init(ctx, sfb(dp, Repo)))
-JB_OP0(JBGITSTATUS,   mv_git_status(ctx, sfb(dp, Repo)))
-JB_OP0(JBGITADDALL,   mv_git_addall(ctx, sfb(dp, Repo)))
-JB_OP0(JBGITVERSION,  mv_git_versions("jb-git " MVXGIT_VERSION))
+VAR *JBGITCAT(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_catpath(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
 
-JB_OP1(JBGITCOMMIT,   mv_git_commit(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(JBGITLOG,      mv_git_log(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(JBGITDIFF,     mv_git_diff(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(JBGITBRANCH,   mv_git_branch(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(JBGITCHECKOUT, mv_git_checkout(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(JBGITRESTORE,  mv_git_restore(ctx, sfb(dp, Repo), sfb(dp, A1)))
+VAR *JBGITCHECKOUT(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_checkout(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
 
-JB_OP2(JBGITADD,      mv_git_add(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
-JB_OP2(JBGITSHOW,     mv_git_show(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
-JB_OP2(JBGITRM,       mv_git_rm(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
+VAR *JBGITCHERRYPICK(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_cherrypick(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITCLONE(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    /* mv_git_clone takes no repo: a clone has no repository yet. */
+    char *r = mv_git_clone(ctx, sfb(dp, A1), sfb(dp, A2), sfb(dp, A3));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITCOMMIT(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_commit(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITCONFIG(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_config(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITDIFF(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_diff(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITDIFFU(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_diff_u(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITFETCH(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_fetch(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITFILES(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_headfiles(ctx, sfb(dp, A0));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITINIT(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_init(ctx, sfb(dp, A0));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITIXCAT(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_ixcat(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITLOG(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_log(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITMERGE(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_merge(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITPULL(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_pull(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITPUSH(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_push(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITPUTDESC(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_putdesc(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITREMOTE(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_remote(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2), sfb(dp, A3));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITRESTORE(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_restore(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITRM(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_rm(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITSHOW(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_show(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITSTAGECTL(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_stagectl(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITSTAGED(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_staged(ctx, sfb(dp, A0));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITSTATUS(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_status(ctx, sfb(dp, A0));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITTAG(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *A4, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_tag(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2), sfb(dp, A3), sfb(dp, A4));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITUDIFF(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    /* udiff works on two texts, not on a repository. */
+    char *r = mv_git_udiff(ctx, sfb(dp, A1), sfb(dp, A2), sfb(dp, A3));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+/* The three that do not fit the pattern.
+   filter_furniture takes a list and no session; versions answers about the
+   build; stagedesc synthesises the account descriptor and stages it. */
+
+VAR *JBGITFURNITURE(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    char *r = mv_git_filter_furniture(sfb(dp, A0));
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITVERSION(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    (void)A0;
+    mv_jbase_use_session(dp);
+    char *r = mv_git_versions("jb-git " MVXGIT_VERSION);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITSTAGEDESC(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char dpath[700], ddesc[2048];
+    char *r = NULL;
+    const char *op = sfb(dp, A2);
+    if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc,
+                        sfb(dp, A1), op[0] == '1'))
+        r = mv_git_stageblob(ctx, sfb(dp, A0), dpath, ddesc);
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}

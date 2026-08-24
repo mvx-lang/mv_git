@@ -224,14 +224,50 @@ elif [ "$PLATFORM" = jbase ]; then
            ( cd "$1" && printf 'CREATE-FILE BP 1 11 TYPE=UD\n' | "$MVX" ) >/dev/null 2>&1
            printf '# jBASE account descriptor\nname = %s\nversion = 1\n' \
                   "$(basename "$1")" > "$1/.jbase"; }
-  LINK() { :; }                               # nothing to install for the CLI
+  # JBGIT_VIA=verb drives the in-session verb, as the mvx and udt arms do; the
+  # DEFAULT is the CLI, because the verb path's catalog step does not work yet
+  # (the shared library is not being produced, so the session cannot find GIT)
+  # and a default that fails tells you nothing about mv_git.  UV_VIA has the
+  # same shape for the same kind of reason.
+  #
+  # The handlers and the jBASE shims are CATALOGed ONCE into a shared library
+  # every test account reaches through $JBCOBJECTLIST -- udt catalogs globally
+  # for the same reason, and doing it per account would recompile forty programs
+  # for every test.
+  JBLIB="$WORK/jblib"
+  LINK() {
+      mkdir -p "$1/BP.INC"
+      cp "$GITPKG/PLATFORM.H" "$1/BP.INC/PLATFORM.H" 2>/dev/null
+      cp "$GITPKG"/BP/* "$1/BP/" 2>/dev/null
+      [ -f "$JBLIB/.done" ] && return 0
+      mkdir -p "$JBLIB/bin"
+      ( cd "$1" && for p in BP/*; do
+            printf 'BASIC BP %s\nCATALOG BP %s\n' "$(basename "$p")" "$(basename "$p")"
+        done | JBCDEV_LIB="$JBLIB" JBCDEV_BIN="$JBLIB/bin" "$MVX" ) >/dev/null 2>&1
+      touch "$JBLIB/.done"; }
   # JP is a hash file; UD is a unix DIRECTORY, which is what the open form's DIR
   # means.  JD is NOT a directory -- it is another regular file.
   CF()   { ( cd "$1" && printf 'CREATE-FILE %s 1 11\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   DF()   { ( cd "$1" && printf 'DELETE-FILE %s\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
-  GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
-  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
-           printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  # LD_PRELOAD is not a workaround for anything mv_git does: a CATALOGed
+  # subroutine cannot resolve a DEFC function unless the library is forced into
+  # the process, and that is jBASE's behaviour for DEFC generally -- reproduced
+  # with five lines of C and no mv_git at all (mv_git#114).
+  JBPRE="${JBGIT_LIB:-$GITPKG/libjbgit.so}"
+  if [ "${JBGIT_VIA:-cli}" = cli ]; then
+    GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  else
+    GITV() { local a="$1"; shift; local s="$*"
+             ( cd "$a" && printf '%s\n' "$s" \
+               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             ( cd "$a" && printf '%s\n%s' "$s" "$k" \
+               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+  fi
   CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"

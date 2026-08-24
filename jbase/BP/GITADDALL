@@ -1,4 +1,4 @@
-* GITADDALL - see BP/GITSTATUS for why these shims exist.
+* GITADDALL - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
       SUBROUTINE GITADDALL(REPO, ANS)
       DEFC VAR JBGITADDALL(VAR, VAR)
       ANS = ""

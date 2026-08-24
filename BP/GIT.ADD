@@ -25,7 +25,7 @@ SUBROUTINE GIT.ADD
 * -A/--all stages every changed record (also '.'); DICT addresses a dictionary;
 * otherwise a positional file {record}.  Flags are decoded by the cmd dispatch
 * (GIT.CMD.FLAG A/o).  The udt Model-B ADD re-reads the raw sentence itself.
-$IFDEF MVX
+$IFDEF ENGINE
 CALL GIT.CMD.HAS("all", ALLF)
 CALL GIT.CMD.ARG(1, A1)
 IF ALLF OR A1 = "." THEN

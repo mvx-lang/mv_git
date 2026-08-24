@@ -1,0 +1,6 @@
+* GITINIT - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITINIT(REPO, ANS)
+      DEFC VAR JBGITINIT(VAR, VAR)
+      ANS = ""
+      X = JBGITINIT(REPO, ANS)
+      RETURN

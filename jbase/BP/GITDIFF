@@ -1,0 +1,6 @@
+* GITDIFF - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITDIFF(REPO, FILE, ANS)
+      DEFC VAR JBGITDIFF(VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITDIFF(REPO, FILE, ANS)
+      RETURN

@@ -19,7 +19,7 @@ IF FN = "" OR ID = "" THEN
    PRINT "usage: GIT SHOW file record"
    RETURN
 END
-$IFDEF MVX
+$IFDEF ENGINE
 GOUT = ""
 CALL GITSHOW(".git", FN, ID, GOUT)
 FOR I = 1 TO DCOUNT(GOUT, @AM)

@@ -1,0 +1,6 @@
+* GITADD - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITADD(REPO, FILE, ID, ANS)
+      DEFC VAR JBGITADD(VAR, VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITADD(REPO, FILE, ID, ANS)
+      RETURN
