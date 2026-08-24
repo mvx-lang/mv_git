@@ -132,6 +132,25 @@ static int is_account(const char *dir) {
     return stat(p, &sb) == 0;
 }
 
+/* A LEGIBLE account has no backend store: its records are already the tracked
+ * files on disk, so mvx-git is plain git for it.
+ *
+ * It must not run the record engine, and not merely because it has no need to:
+ * opening the account is what CREATES the LMDB store, so running the engine
+ * gives a directory-backed account the very store it deliberately does not
+ * have.  `add -A` then reported success, staged the right files, and left an
+ * mvxdata.lmdb behind (mv_git#112).
+ *
+ * The descriptor cannot answer this: `hash` names a backend but is normally
+ * empty on native accounts too, so its absence distinguishes nothing.  The
+ * store's existence does. */
+static int has_backend_store(const char *dir) {
+    char p[PATH_MAX];
+    snprintf(p, sizeof p, "%s/mvxdata.lmdb", dir);
+    struct stat sb;
+    return stat(p, &sb) == 0;
+}
+
 /* True if the account carries its own git repository (a .git directly in the
  * account root).  A standalone account does; an account that is a subdirectory
  * of a larger repo does not — it is tracked by that repo, so mvx-git forwards
@@ -596,7 +615,12 @@ static int engine_run(const char *acct, const char *gitdir, const char *sub,
             for (int i = subidx + 1; i < argc; i++)
                 if (argv[i][0] == '-' && argv[i][1] >= '1' && argv[i][1] <= '9')
                     n = argv[i] + 1;
-        out = mv_git_log(ctx, repo, n ? n : "20");
+        int one = 0;
+        for (int i = subidx + 1; i < argc; i++)
+            if (!strcmp(argv[i], "--oneline")) one = 1;
+        char cnt[64];
+        snprintf(cnt, sizeof cnt, "%s%s", n ? n : "20", one ? " ONELINE" : "");
+        out = mv_git_log(ctx, repo, cnt);
     } else if (!strcmp(sub, "diff")) {
         out = mv_git_diff(ctx, repo, p0 ? p0 : "");
     } else if (!strcmp(sub, "show")) {
@@ -756,7 +780,8 @@ int main(int argc, char **argv) {
      * convert.  An account with no .git of its own belongs to an enclosing
      * repository: the engine runs on that one, prefixed (see repo_above). */
     char acct[PATH_MAX];
-    if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct)) {
+    if (sub && engine_sub(sub) && account_from_cwd(acct, sizeof acct) &&
+        (has_backend_store(acct) || !strcmp(sub, "init"))) {
         char gitdir[PATH_MAX + 8] = "", prefix[PATH_MAX] = "";
         if (has_own_git(acct) || !strcmp(sub, "init")) {
             apply_open_env(acct);      /* mvx.openaccount -> $MVX_OPENACCOUNT */
@@ -784,11 +809,28 @@ int main(int argc, char **argv) {
      * account is materialised directly from the git objects into its backend,
      * so the open form never lands on disk and no adopt tool is run. */
     int is_clone = sub && strcmp(sub, "clone") == 0;
-    char **gargv = malloc((size_t)(argc + 2) * sizeof *gargv);
+    /* `commit <message>` with the message as a bare word: the engine took it
+       that way (it read only -m, so a positional message became an EMPTY
+       commit message), and plain git rejects it outright.  Since a legible
+       account now forwards to git (mv_git#112), accept the form and give git
+       the -m it wants -- an empty commit message was never the right answer to
+       somebody who plainly supplied one. */
+    int add_m = 0;
+    if (sub && !strcmp(sub, "commit")) {
+        int have_m = 0, positional = 0;
+        for (int i = subidx + 1; i < argc; i++) {
+            if (!strcmp(argv[i], "-m") || !strcmp(argv[i], "--message"))
+                have_m = 1;
+            else if (argv[i][0] != '-') positional = i;
+        }
+        if (!have_m && positional) add_m = positional;
+    }
+    char **gargv = malloc((size_t)(argc + 3) * sizeof *gargv);
     if (!gargv) { perror("mvx-git"); return 1; }
     gargv[0] = "git";
     int gi = 1;
     for (int i = 1; i < argc; i++) {
+        if (i == add_m) gargv[gi++] = "-m";
         gargv[gi++] = argv[i];
         if (i == subidx && is_clone) gargv[gi++] = "--no-checkout";
     }

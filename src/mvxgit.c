@@ -1906,6 +1906,23 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     if (!rel) return 1;                     /* another account's territory */
     char top[256];
     split_top(rel, top, sizeof top);
+    /* A SUBMODULE is a gitlink, not a directory of blobs.
+     *
+     * `submodule add` puts mode 160000 in the index; this pass then walked into
+     * the directory and staged its files, which REPLACED the gitlink -- so the
+     * repository ended up claiming a submodule at that path while the tree held
+     * a copy of its contents, and a clone got one already populated with blobs
+     * the submodule does not know about (mv_git#111).
+     *
+     * A directory carrying its own `.git` is one, whether registered in
+     * .gitmodules or just a nested repository someone left there.  Either way
+     * its contents are not this repository's to stage. */
+    if (top[0] && strcmp(top, rel) != 0) {
+        char gp[1100];
+        struct stat gs;
+        snprintf(gp, sizeof gp, "%s/.git", top);
+        if (stat(gp, &gs) == 0) return 1;
+    }
     /* At the repository root — no prefix — a top-level directory that is itself
        an account belongs to that account's own pass.  Without this the root pass
        would sweep every account's records up as ordinary blobs, which is exactly
@@ -3479,6 +3496,18 @@ void mvx_sub_GITLOG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096], cnt[32];
     arg_str(argv[0], rp, sizeof rp);
     arg_str(argv[1], cnt, sizeof cnt);
+    /* The count argument may carry a format word after the number --
+       "20 ONELINE" -- so `log --oneline` can be honoured without changing this
+       op's arity, which BASIC callers also depend on.  A caller that knows
+       nothing about it passes a bare number and gets the long form (#113). */
+    int oneline = 0;
+    {
+        char *sp = strchr(cnt, ' ');
+        if (sp) {
+            *sp = '\0';
+            if (strcasecmp(sp + 1, "ONELINE") == 0) oneline = 1;
+        }
+    }
     int64_t want = atoll(cnt);
     if (want <= 0) want = 20;
     git_repository *repo = NULL;
@@ -3501,6 +3530,19 @@ void mvx_sub_GITLOG(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             git_oid_tostr(full, sizeof full, &oid);
             const git_signature *au = git_commit_author(c);
             char line[4300];
+            if (oneline) {
+                /* `<short> <subject>`: the shape of git's own --oneline, which
+                   is what someone wants when they are reading the shape of a
+                   history rather than reading it. */
+                const char *m = git_commit_message(c);
+                int sl = 0;
+                while (m && m[sl] && m[sl] != '\n') sl++;
+                snprintf(line, sizeof line, "%.7s %.*s", full, sl, m ? m : "");
+                sb_line(&s, line);
+                git_commit_free(c);
+                seen++;
+                continue;
+            }
             snprintf(line, sizeof line, "commit %s", full);
             sb_line(&s, line);
             if (au) {
