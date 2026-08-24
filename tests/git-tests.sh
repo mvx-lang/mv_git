@@ -507,6 +507,52 @@ else
   # (menu 3).  Harmless on the platforms that do not need it.
   clone_out="$(GITV "$A" GIT CLONE "$REM" "$B" --flavour=PICK)"
   t  "clone"         "cloned"        "$clone_out"
+
+  # --- the account descriptor -------------------------------------------
+  #
+  # It is a FILE only on MVX, where it carries local state (permit/deny policy
+  # and the rest of what an account is configured with).  Everywhere else it
+  # lives in the git objects, and its job THERE is to be the indicator that
+  # tells a clone to build an ACCOUNT rather than just a directory of files.
+  # There is no exception.  UniVerse used to write .uv for the VOC flavour --
+  # the one fact about a UniVerse account that cannot be regenerated, since it
+  # is fixed at creation and readable nowhere afterwards.  It belongs in the git
+  # objects like everything else about the account, where GIT ATTR can edit it,
+  # not in a file beside the records.
+  #
+  # None of this was tested, and all four write sites spelled the name ".mvx"
+  # outright -- so every platform wrote MVX's descriptor into the account and
+  # the suite stayed green.  On UniData the stray turned out to be LOAD-BEARING:
+  # materialise wrote it, the walk staged it as an ordinary file, and the
+  # open-form conversion turned that into the committed .mv-account.  Removing
+  # the stray -- which is right -- silently stopped the indicator travelling,
+  # and a freshly cloned account reported ` M .mv-account` with nothing to fix.
+  #
+  # So both halves are asserted: what is on DISK, and what is in GIT.  Testing
+  # only one of them is how this survived.
+  descfiles() { local d="$1" out="" n
+                for n in .mvx .udt .uv .jbase; do
+                    [ -f "$d/$n" ] && out="$out$n"
+                done
+                printf '%s' "$out"; }
+  case "$PLATFORM" in
+    mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
+    uv)    te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
+    *)     te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
+  esac
+  # ...and the indicator is in the COMMIT, which is what a clone reads to know
+  # this is an account at all.
+  t  "indicator is committed" ".mv-account" \
+     "$(git --git-dir="$B/.git" ls-tree --name-only HEAD 2>/dev/null)"
+
+  # The flavour is what the file used to be FOR, so removing the file has to
+  # leave it reachable: git's config carries it until the next `add` stages a
+  # descriptor that does, and the git objects from then on.
+  if [ "$PLATFORM" = uv ]; then
+    t "flavour survives the clone" "PICK" \
+      "$(git --git-dir="$B/.git" config mvx.flavour 2>/dev/null)$(git --git-dir="$B/.git" show HEAD:.mv-account 2>/dev/null | grep flavour)"
+  fi
+
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null
   GITV "$B" GIT CONFIG user.email test@example.com >/dev/null
