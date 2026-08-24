@@ -691,6 +691,25 @@ void mv_git_set_prefix(const char *p) {
  * $MVGIT_ID_ITEM overrides the local name.  That is not a knob for users: it is
  * how the rename gets tested at all, since every platform to hand agrees on
  * `@ID` and an untested translation is one that rots before D3 arrives. */
+/* The account's NATIVE descriptor file name.
+ *
+ * Every platform keeps one under its own name, and status compares the on-disk
+ * native form against the committed portable `.mv-account`.  That compare used
+ * to fopen(".mvx") outright, which is right only on MVX: anywhere else the open
+ * failed, the compare could not succeed, and a freshly cloned account reported
+ * `M .mv-account` for ever with nothing to fix (found on jBASE, mv_git#114). */
+static const char *desc_native_name(void) {
+#if defined(MVXGIT_UDT)
+    return ".udt";
+#elif defined(MVXGIT_GITD)
+    return ".uv";
+#elif defined(MVXGIT_JBASE)
+    return ".jbase";
+#else
+    return ".mvx";
+#endif
+}
+
 #define MV_ID_CANON "@ID"
 
 const char *mv_git_id_item(void) {
@@ -4338,23 +4357,36 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                form and compare that against the committed blob, so a local
                permit/deny edit is invisible while a real identity change shows. */
             if (mv_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
-                FILE *df = fopen(".mvx", "rb");
                 int clean = 0;
+                char open[2048];
+                int ol = 0;
+                FILE *df = fopen(desc_native_name(), "rb");
                 if (df) {
                     char buf[65536];
                     size_t bn = fread(buf, 1, sizeof buf, df);
                     fclose(df);
                     acct_desc ad;
                     desc_parse(buf, bn, &ad);
-                    char open[1024];
-                    int ol = desc_render_open(&ad, open, sizeof open);
-                    git_oid woid;
-                    if (ol > 0 &&
-                        git_odb_hash(&woid, open, (size_t)ol,
-                                     GIT_OBJECT_BLOB) == 0 &&
-                        git_oid_equal(&woid, &d->old_file.id))
-                        clean = 1;
+                    ol = desc_render_open(&ad, open, sizeof open);
+                } else {
+                    /* No native descriptor on disk, which is the NORMAL state
+                       everywhere but MVX: the portable one is synthesised from
+                       the account rather than stored, so there is no file to
+                       project down.  Compare what a commit would write instead
+                       -- otherwise a freshly cloned account reports
+                       `M .mv-account` for ever with nothing to fix, and no
+                       edit could make it clean (mv_git#114). */
+                    char dpath[700], ddesc[2048];
+                    if (mv_git_desc_for(dpath, sizeof dpath, ddesc,
+                                        sizeof ddesc, mv_git_prefix(), 1))
+                        ol = snprintf(open, sizeof open, "%s", ddesc);
                 }
+                git_oid woid;
+                if (ol > 0 &&
+                    git_odb_hash(&woid, open, (size_t)ol,
+                                 GIT_OBJECT_BLOB) == 0 &&
+                    git_oid_equal(&woid, &d->old_file.id))
+                    clean = 1;
                 if (clean) continue;
                 sb_line(&s, " M .mv-account");
                 continue;
@@ -4616,7 +4648,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
                 /* descriptor: on disk it is native `.mvx`; diff its portable
                    projection (open form) against the committed `.mv-account`, so
                    a local permit/deny edit is not shown as a change */
-                FILE *df = fopen(".mvx", "rb");
+                FILE *df = fopen(desc_native_name(), "rb");
                 if (df) {
                     char raw[65536];
                     size_t rn = fread(raw, 1, sizeof raw, df);
