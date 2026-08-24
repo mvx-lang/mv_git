@@ -195,8 +195,21 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     return sb.d;
 }
 
-/* Everything below to the matching #endif is the UniVerse daemon only. */
-#ifdef MVXGIT_GITD
+/* The open-account dictionary interchange -- the SM/association remap above and
+   the I-type expression translation below -- is needed wherever an account is
+   read or written in the open format.  That is the UniVerse daemon
+   (MVXGIT_GITD) and BOTH UniData builds (MVXGIT_UDT), including the in-session
+   CallC one, which defines UDT and not GITD.
+ *
+ * Guarded on GITD alone, the CallC build had none of it: `add` staged raw
+ * native records while `status` hashed projected ones, so a cloned account
+ * never read clean and a commit from inside the session would have written
+ * native spellings into a portable repository (mv_git#108). */
+#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT)
+#define MVXGIT_OPENDICT 1
+#endif
+
+#ifdef MVXGIT_OPENDICT
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
  * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
@@ -668,6 +681,61 @@ static int dict_of_open_account(const char *fn) {
 static void record_path(char *out, size_t cap, const char *fn, const char *id) {
     snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
 }
+
+#ifdef MVXGIT_OPENDICT
+/* The canonical spelling of an I-type item's expression, for the record as it
+   stands live in the account.
+ *
+ * ONE IMPLEMENTATION, for exactly the reason open_dict_project is one: `add`
+ * stages this and `status` hashes it, and if the two disagree by a byte the
+ * account never reads clean.  Status did not do this part at all -- it applied
+ * the attribute remap and stopped -- so every I-type dictionary item on a
+ * cloned UniData account reported modified for ever (mv_git#108).  That is #95
+ * again, one level further in, and the answer is the same one: not two callers
+ * being careful, one function both of them call.
+ *
+ * An item nobody touched must produce NO diff, and the flattened chain a
+ * checkout writes has no canonical spelling of its own -- so the first question
+ * is whether git's copy still translates forward to exactly what is in the
+ * account.  If it does, git's copy IS the answer, and only a real edit falls
+ * through to translating back.
+ *
+ * Returns a malloc'd record with attribute 2 replaced + *outlen, or NULL when
+ * there is nothing to change. */
+static char *open_dict_ispec(git_repository *repo, git_index *index,
+                             const char *fn, const char *idb,
+                             const char *rec, int64_t len, int64_t *outlen) {
+    if (!rec_is_itype(rec, len, (char)0xFE)) return NULL;
+
+    char base[300], spec[512];
+    size_t bl = strlen(fn);
+    snprintf(base, sizeof base, "%.*s", (int)(bl - 5), fn);   /* drop ".DICT" */
+    attr_of(rec, len, (char)0xFE, 2, spec, sizeof spec);
+
+    dictsrc ds = { repo, NULL, index };
+    char gpath[600];
+    record_path(gpath, sizeof gpath, fn, idb);
+
+    char *canon = NULL;
+    const git_index_entry *pe = git_index_get_bypath(index, gpath, 0);
+    git_blob *pb = NULL;
+    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+        char was[512];
+        attr_of(git_blob_rawcontent(pb), (int64_t)git_blob_rawsize(pb),
+                '\n', 2, was, sizeof was);
+        char *fwd = ispec_to_udt(&ds, base, was, (int64_t)strlen(was));
+        if (fwd && strcmp(fwd, spec) == 0) canon = strdup(was);
+        free(fwd);
+        git_blob_free(pb);
+    }
+    if (!canon) canon = ispec_to_open(&ds, base, spec, (int64_t)strlen(spec));
+    if (!canon) return NULL;
+
+    char *out = rec_set_attr2(rec, len, (char)0xFE, canon, outlen);
+    free(canon);
+    return out;
+}
+#endif
 
 /* The account-relative part of a repo path, or NULL when the path belongs to a
    different account.  Used where a name has to travel back the other way —
@@ -1518,7 +1586,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
     int voc_open = is_voc && mv_openaccount();
-#ifdef MVXGIT_GITD
+#ifdef MVXGIT_OPENDICT
     /* An open-account dictionary commits its D/I items in the canonical (mvx-
        shaped) open form: UniData's SM/assoc attribute order is remapped, and on
        every foreign platform an I-type's expression goes back to the canonical
@@ -1676,7 +1744,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             int64_t sl = clen;
             char *dtmp = NULL;
             char *itmp = NULL;
-#ifdef MVXGIT_GITD
+#ifdef MVXGIT_OPENDICT
             if (dict_open) {
                 int64_t dl;
                 dtmp = open_dict_project(cp, clen, &dl);   /* shared with status */
@@ -1688,38 +1756,10 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    whether git's copy still translates to exactly what is in the
                    account.  If it does, git's copy IS the answer; only a real
                    edit falls through to translating it back. */
-                if (rec_is_itype(sc, sl, (char)0xFE)) {
-                    char base2[300], spec[512];
-                    size_t bl2 = strlen(fn);
-                    snprintf(base2, sizeof base2, "%.*s", (int)(bl2 - 5), fn);
-                    attr_of(sc, sl, (char)0xFE, 2, spec, sizeof spec);
-                    dictsrc ds = { repo, NULL, index };
-                    char gpath[600];
-                    record_path(gpath, sizeof gpath, fn, idb);
-                    char *canon = NULL;
-                    const git_index_entry *pe =
-                        git_index_get_bypath(index, gpath, 0);
-                    git_blob *pb = NULL;
-                    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
-                        const char *bp = git_blob_rawcontent(pb);
-                        int64_t bl = (int64_t)git_blob_rawsize(pb);
-                        char was[512];
-                        attr_of(bp, bl, '\n', 2, was, sizeof was);
-                        char *fwd = ispec_to_udt(&ds, base2, was,
-                                                 (int64_t)strlen(was));
-                        if (fwd && strcmp(fwd, spec) == 0) canon = strdup(was);
-                        free(fwd);
-                        git_blob_free(pb);
-                    }
-                    if (!canon)
-                        canon = ispec_to_open(&ds, base2, spec,
-                                              (int64_t)strlen(spec));
-                    if (canon) {
-                        int64_t nl;
-                        itmp = rec_set_attr2(sc, sl, (char)0xFE, canon, &nl);
-                        if (itmp) { sc = itmp; sl = nl; }
-                        free(canon);
-                    }
+                {
+                    int64_t nl;
+                    itmp = open_dict_ispec(repo, index, fn, idb, sc, sl, &nl);
+                    if (itmp) { sc = itmp; sl = nl; }
                 }
             }
 #endif
@@ -3244,7 +3284,21 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                        must agree or the account never reads clean (mv_git#95). */
                     int64_t pl2;
                     char *proj = open_dict_project(cp, clen, &pl2);
-                    record_oid(proj ? proj : cp, proj ? pl2 : clen, &woid);
+                    const char *hc = proj ? proj : cp;
+                    int64_t hl = proj ? pl2 : clen;
+#ifdef MVXGIT_OPENDICT
+                    /* ...including the I-type expression, which add puts back
+                       into its canonical spelling.  Hashing the native one here
+                       is why every I-type item read modified (mv_git#108). */
+                    int64_t il;
+                    char *ispec = open_dict_ispec(repo, index, fn, idb,
+                                                  hc, hl, &il);
+                    if (ispec) { hc = ispec; hl = il; }
+#endif
+                    record_oid(hc, hl, &woid);
+#ifdef MVXGIT_OPENDICT
+                    free(ispec);
+#endif
                     free(proj);
                 } else {
                     record_oid(cp, clen, &woid);
@@ -3643,7 +3697,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
                    marks->newlines, so diff that same form. */
                 clen = mv_val_chars(&rec, nb, sizeof nb, &cp);
                 char *dtmp2 = NULL;
-#ifdef MVXGIT_GITD
+#ifdef MVXGIT_OPENDICT
                 /* ...and `add` also puts an open-account I-type expression back
                    into its canonical spelling (mv_git#90), so diff has to do the
                    same or every translated item reads as changed for ever. */
@@ -4115,7 +4169,7 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         if (is_dir && rl > 0 && (unsigned char)r[rl - 1] == 0xFE) rl--;
         mv_set_str(&rec, r, rl);
         free(r);
-#ifdef MVXGIT_GITD
+#ifdef MVXGIT_OPENDICT
         /* open-form dictionary D/I item -> native order (UniData's SM/assoc),
            and an I item's expression into the platform's own spelling
            (mv_git#90): committed verbatim it reads the numeric key as a literal
