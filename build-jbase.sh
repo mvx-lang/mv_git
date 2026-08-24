@@ -73,6 +73,9 @@ $DEFINE ENGINE
 PLATEOF
 echo "  wrote PLATFORM.H (MV, JBASE, ENGINE)"
 cp "$HERE/bin/jb-git" "$HERE/bin/libjbgit.so" "$STAGE/mv_git/"
+mkdir -p "$STAGE/mv_git/BP"
+cp "$HERE/jbase/BP/"* "$STAGE/mv_git/BP/" 2>/dev/null || true
+cp "$HERE/jbase/install.sh" "$STAGE/mv_git/"; chmod +x "$STAGE/mv_git/install.sh"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/mv_git/"
 [ -f "$HERE/README.md" ] && cp "$HERE/README.md" "$STAGE/mv_git/"
 echo "build-jbase: staged the jBASE package as $STAGE/mv_git/"
