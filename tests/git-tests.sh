@@ -576,9 +576,11 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   # So the assertion is NOT "status is clean".  It is that adopt and clone
   # produce the SAME ACCOUNT: same record count, dictionary present, records
   # readable, and no descriptor left on disk off MVX (mv_git#122).
-  # udt only for now.  uv-git's adopt reads the data from DISK, which is the
-  # behaviour mv_git#124 is converging on for all of them -- so these
-  # assertions, which describe the HEAD-based one, do not apply to it yet.
+  # udt only, and that is a KNOWN GAP rather than a decision: uv-git's adopt
+  # predates all of this and does not share the capture/clear/materialise path,
+  # so it fails four of these (mv_git#124).  The assertions describe what every
+  # platform should do, and unscoping them is part of converging uv-git -- not
+  # something to do first and leave red.
   case "$PLATFORM" in
     udt)
       P="$WORK/plainco"
@@ -624,6 +626,32 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       t  "adopt in a subdirectory"     "acctA-one" "$(CT "$M/acctA" CUST C1)"
       te "the sibling account is untouched" "acctB-one" \
          "$(head -1 "$M/acctB/CUST/C1" 2>/dev/null)"
+
+      # A SUBMODULE account takes its account type from its OWN repository.
+      #
+      # mvx.openaccount lives in .git/config, so it is a property of the
+      # repository: two accounts under one repo share one flag (#44, #49).  A
+      # submodule is the exception, and for the right reason -- it HAS its own
+      # repository, so it has its own config and its own answer, independent of
+      # whatever contains it.  That is a real shape, not a hypothetical: it is
+      # how packages/git sits inside mvx.
+      #
+      # libgit2 resolves a submodule's gitlink `.git` FILE to the submodule's
+      # own repository, which is what makes this work.  Untested until now, and
+      # the kind of thing that gets "simplified" into reading the parent's
+      # config by someone who has not hit the case.
+      S="$WORK/subm"
+      mkdir -p "$S/inner" && ( cd "$S" && git init -q . )
+      ( cd "$S/inner" && git init -q . &&
+        git config mvx.openaccount true &&
+        printf 'x\n' > f && git add -A >/dev/null 2>&1 &&
+        git -c user.email=t@t -c user.name=t commit -qm inner >/dev/null 2>&1 )
+      # the parent says NOT open; the submodule says open
+      ( cd "$S" && git config mvx.openaccount false )
+      te "submodule keeps its own account type" "true" \
+         "$( cd "$S/inner" && git config --get mvx.openaccount )"
+      te "the parent keeps its own"             "false" \
+         "$( cd "$S" && git config --get mvx.openaccount )"
       ;;
   esac
 

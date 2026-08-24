@@ -771,6 +771,24 @@ int main(int argc, char **argv) {
        `mvx-git textconv <tempfile>` to render a record blob legibly for the
        diff view (the blob is untouched).  Handle it before any account
        detection so it works from anywhere. */
+    /* `adopt` — build the live account from a checkout somebody made with plain
+       git.  MVX has done this since before the subcommand existed, but only as
+       a side effect of clone: convert_import() runs mvx-git-adopt after the
+       records land.  Reaching it by hand meant knowing that tool's name, and
+       `mvx-git adopt` answered "unknown command" -- which reads as "this does
+       not exist" rather than "this is over there" (mv_git#124). */
+    if (sub && !strcmp(sub, "adopt")) {
+        char aacct[PATH_MAX];
+        const char *dir = (subidx + 1 < argc && argv[subidx + 1][0] != '-')
+                          ? argv[subidx + 1] : ".";
+        if (!realpath(dir, aacct)) {
+            fprintf(stderr, "mvx-git adopt: no such directory: %s\n", dir);
+            return 1;
+        }
+        convert_import(aacct);
+        return 0;
+    }
+
     if (sub && !strcmp(sub, "textconv"))
         return mv_git_textconv(subidx + 1 < argc ? argv[subidx + 1] : "-");
 
