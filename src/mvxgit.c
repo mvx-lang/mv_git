@@ -150,7 +150,6 @@ static char *rec_set_attr(const char *rec, int64_t len, char sep, int n,
     return sb.d;
 }
 
-#ifdef MVXGIT_GITD
 /* UniData D-item <-> open-dict attribute remap (mvx#25 open-dict interchange).
    A UniData dictionary D/I item is  TYP LOC CONV NAME FORMAT SM ASSOC — single/
    multi at attribute 6, association at 7; the canonical open form is mvx-shaped,
@@ -195,6 +194,9 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
     if (!sb.d) { char *z = malloc(1); return z; }   /* empty but non-NULL */
     return sb.d;
 }
+
+/* Everything below to the matching #endif is the UniVerse daemon only. */
+#ifdef MVXGIT_GITD
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
  * The open format carries a dictionary's semantics, but an I-type's EXPRESSION
@@ -1393,6 +1395,10 @@ void mvx_sub_GITSTAGEDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
  * runs: the daemon is a separate binary from the verb and the two can drift, so
  * the version you get back is the one actually doing the work.
  */
+#ifndef MVXGIT_VERSION
+#define MVXGIT_VERSION "0"
+#endif
+
 char *mv_git_versions(const char *self) {
     int maj = 0, min = 0, rev = 0;
     git_libgit2_version(&maj, &min, &rev);
@@ -1442,7 +1448,9 @@ void mvx_sub_GITVERSION(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 2) return;
     ensure_init();
-    char *v = mv_git_versions("mvx-git");
+    char self[64];
+    snprintf(self, sizeof self, "mvx-git %s", MVXGIT_VERSION);
+    char *v = mv_git_versions(self);
     if (!v) { mv_set_str(argv[1], "", 0); return; }
     /* the verb prints this through GIT.ECHO, which splits on attribute marks */
     for (char *p = v; *p; p++) if (*p == '\n') *p = (char)0xFE;
