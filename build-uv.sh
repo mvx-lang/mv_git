@@ -19,6 +19,8 @@ set -eu
 
 STAGE="${1:-stage}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/version.sh"
+UVVER="${MV_GIT_VERSION:-$(mv_git_version "$HERE")}"
 cd "$HERE"
 
 # ---- binaries ---------------------------------------------------------------
@@ -53,6 +55,7 @@ done
 cp bin/mvgitd bin/uv-git "$ACCT/bin/"
 cp uv/install.sh "$ACCT/install.sh"; chmod +x "$ACCT/install.sh"
 cp mvpkg.json PKG LICENSE README.md "$ACCT/" 2>/dev/null || true
+mv_git_stamp_manifests "$ACCT" "$UVVER"   # the tag, not whatever is in the tree
 
 # PLATFORM.H — the compile-time platform defines the BASIC sources $INCLUDE as
 # `$INCLUDE BP.INC PLATFORM.H`.  BUILT HERE, not written by install.sh: it is

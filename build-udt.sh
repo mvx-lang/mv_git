@@ -144,6 +144,7 @@ cp udt/install.sh "$ACCT/install.sh";            chmod +x "$ACCT/install.sh"
 cp udt/udt-callc-build.sh "$ACCT/udt-callc-build.sh"; chmod +x "$ACCT/udt-callc-build.sh"
 cp udt-git "$ACCT/"
 cp mvpkg.json PKG LICENSE README.md "$ACCT/" 2>/dev/null || true
+mv_git_stamp_manifests "$ACCT" "$UGVER"   # the tag, not whatever is in the tree
 cp udt-callc/*.o udt-callc/funcs "$ACCT/udt-callc/" 2>/dev/null || true
 # Generate udt-callc/libs from the ACTUAL libgit2 link flags this build used, so
 # the CallC library links the SAME libgit2 the udt-git binary does (a static
