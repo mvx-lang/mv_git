@@ -2277,6 +2277,48 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
         snprintf(gp, sizeof gp, "%s/.git", top);
         if (stat(gp, &gs) == 0) return 1;
     }
+#ifdef MVXGIT_JBASE
+    /* A jBASE dictionary is a REGULAR FILE beside its data file, named
+       `<file>]D` -- so unlike U2, where a dictionary is a directory the record
+       pass claims, this pass sees an ordinary blob and stages it.  It must not:
+       a dictionary travels as <file>.DICT/ records, and committing the hash
+       file as well puts the same dictionary in the repository twice, once
+       portable and once as a binary nothing else can read.  It also comes back
+       to bite status, which derives the files to scan from the paths in the
+       index and would then open `<file>]D` as a file in its own right and
+       report its dictionary items as untracked records. */
+    {
+        size_t tl = strlen(top);
+        if (tl > 2 && strcmp(top + tl - 2, "]D") == 0) return 1;
+        /* Compiled BASIC, which jBASE writes beside the source.  Object code
+           is not source and does not travel -- the rule BP.O gets on UniVerse.
+
+           The extension is the HOST's, not a jBASE constant: .so on Linux and
+           AIX, .dll on Windows, .sl on HP-UX, .dylib on macOS, and jBASE leaves
+           an `.el` export-list companion beside each.  Matched case-insensitively
+           because Windows is.  A repository is shared BETWEEN hosts, so a Linux
+           checkout has to recognise a .dll committed from Windows and vice
+           versa -- testing only the local platform's extension would let each
+           host commit the others' object code.
+
+           Deliberately not here: `.a`, which jcompile -a produces, because a
+           static archive is normally collected into a named library rather than
+           left beside a source -- and the bare executable jcompile -o leaves,
+           which has no extension at all and nothing distinguishes from a data
+           file.  Over-excluding silently drops somebody's records, which is
+           worse than committing an object (TODO #114). */
+        {
+            static const char *const objext[] = {
+                ".so", ".dll", ".dylib", ".sl",
+                ".so.el", ".dll.el", ".dylib.el", ".sl.el", NULL };
+            for (int oi = 0; objext[oi]; oi++) {
+                size_t el = strlen(objext[oi]);
+                if (tl > el && strcasecmp(top + tl - el, objext[oi]) == 0)
+                    return 1;
+            }
+        }
+    }
+#endif
     /* At the repository root — no prefix — a top-level directory that is itself
        an account belongs to that account's own pass.  Without this the root pass
        would sweep every account's records up as ordinary blobs, which is exactly
