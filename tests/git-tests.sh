@@ -143,6 +143,31 @@ elif [ "$PLATFORM" = uv ]; then
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
+elif [ "$PLATFORM" = jbase ]; then
+  # jbase: an account is simply a DIRECTORY -- there is no VOC and no account
+  # bootstrap -- and $MVX is jsh, jBASE's own shell, which reads TCL from stdin.
+  #
+  # This arm drives the CLI (jb-git), the way UV_VIA=cli does for UniVerse.  The
+  # in-session verb exists and works, but a CATALOGed subroutine cannot resolve
+  # a DEFC function without the library being forced into the process -- which is
+  # jBASE's behaviour for DEFC generally, not something mv_git does (mv_git#114).
+  # Driving the verb here would test that packaging question rather than mv_git.
+  ACCT() { mkdir -p "$1"
+           ( cd "$1" && printf 'CREATE-FILE BP 1 11 TYPE=UD\n' | "$MVX" ) >/dev/null 2>&1
+           printf '# jBASE account descriptor\nname = %s\nversion = 1\n' \
+                  "$(basename "$1")" > "$1/.jbase"; }
+  LINK() { :; }                               # nothing to install for the CLI
+  # JP is a hash file; UD is a unix DIRECTORY, which is what the open form's DIR
+  # means.  JD is NOT a directory -- it is another regular file.
+  CF()   { ( cd "$1" && printf 'CREATE-FILE %s 1 11\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  DF()   { ( cd "$1" && printf 'DELETE-FILE %s\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+           printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
+  SEED() { local a="$1" body="$2"
+           printf '%s\n' "$body" > "$a/BP/SEEDT"
+           ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
   #
