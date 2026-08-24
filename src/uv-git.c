@@ -65,6 +65,10 @@ void mv_agent_release(void);
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef UVGIT_VERSION
+#define UVGIT_VERSION "0"
+#endif
+
 #define UV_BIN "uv"
 
 /* The repository this directory belongs to, found the way git finds it: by
@@ -911,7 +915,9 @@ static int run_account(int argc, char **argv, int i) {
         }
     }
     else if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
-        char *v = mv_git_versions("uv-git");
+        char self[64];
+        snprintf(self, sizeof self, "uv-git %s", UVGIT_VERSION);
+        char *v = mv_git_versions(self);
         fputs(v ? v : "", stdout);
         free(v);
         out = NULL;

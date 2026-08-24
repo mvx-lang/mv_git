@@ -51,6 +51,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef GITD_VERSION
+#define GITD_VERSION "0"
+#endif
+
 /* How long the server lingers with no sessions before exiting, and how long a
    child waits on a silent client before giving up.  These are BACKSTOPS, not the
    mechanism: a child normally leaves as soon as it notices its session has gone
@@ -363,7 +367,7 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
    in order to say what is furniture (mv_git#81). */
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
 /* Answered by mvgitd itself, so the version is the one doing the work. */
-BRIDGE1(op_version,    mv_git_versions("mvgitd"))
+BRIDGE1(op_version,    mv_git_versions("mvgitd " GITD_VERSION))
 static opres op_stagedesc(const args *g) {
     char path[700], desc[2048];
     if (mv_git_desc_for(path, sizeof path, desc, sizeof desc,
