@@ -30,6 +30,7 @@ LG2_LIBS="${LIBGIT2_LIBS:-$(pkg-config --libs libgit2 2>/dev/null || echo "-L${L
 
 mkdir -p "$HERE/bin"
 "$CC" -std=c11 -O2 -DMVXGIT_JBASE -DMVXGIT_VERSION="\"$UGVER\"" \
+      -DJBGIT_VERSION="\"$UGVER\"" \
       -I"$SRC" -I"$JBCRELEASEDIR/include" $LG2_CFLAGS \
       "$SRC/jb-git.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" \
       -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil \

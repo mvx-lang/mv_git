@@ -10,13 +10,19 @@
  * Anything the engine does not implement is forwarded to the real git, so a
  * jBASE account behaves like a git working tree for every non-record command.
  */
+/* Before EVERY include, mvxgit.h included: -std=c11 asks for strict ANSI, so
+   strdup is only declared when _POSIX_C_SOURCE is set -- and a feature-test
+   macro set after the first header has already missed features.h.  It sat
+   below <stdio.h>, so strdup was implicitly declared as returning int, which
+   truncates the pointer on 64-bit. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "mvxgit.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#define _POSIX_C_SOURCE 200809L
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -25,7 +31,13 @@
 static int engine_sub(const char *sub) {
     static const char *ops[] = {
         "init", "add", "rm", "commit", "status", "log", "diff", "show",
-        "branch", "checkout", "restore", NULL};
+        "branch", "checkout", "restore", "tag", "version", "--version",
+        "config",
+        /* A record account's remote work is the ENGINE's, not git's: a push
+           sends the projected records and a pull has to re-materialise them
+           into live files.  Forwarded to git these looked like they worked and
+           left the account untouched. */
+        "remote", "fetch", "push", "pull", "clone", NULL};
     for (int i = 0; ops[i]; i++)
         if (strcmp(sub, ops[i]) == 0) return 1;
     return 0;
@@ -82,7 +94,8 @@ int main(int argc, char **argv) {
     if (i >= argc || !strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
         fputs("usage: jb-git [-a <account>] <command> [args]\n"
               "  init | add | rm | commit | status | log | diff | show\n"
-              "  branch | checkout | restore\n"
+              "  branch | checkout | restore | tag | config | version\n"
+              "  remote | fetch | push | pull | clone\n"
               "anything else is passed to git.\n", stdout);
         return i >= argc ? 1 : 0;
     }
@@ -112,12 +125,28 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* ATTR IS AN IN-SESSION VERB and deliberately has no twin here -- it is
+       BASIC (registry, validation, staging, a full-screen editor), and verbs
+       are BASIC rather than C on purpose.  Forwarding it to git answered
+       "'attr' is not a git command", which reads as "this does not exist"
+       rather than "this lives somewhere else".  uv-git says the same thing. */
+    if (!strcmp(sub, "attr")) {
+        fprintf(stderr,
+            "jb-git: 'attr' is an in-session verb, not a shell command.\n"
+            "        Run it inside a jBASE session in this account:\n"
+            "            GIT ATTR                       account attributes\n"
+            "            GIT ATTR <file>                a file's parameters\n"
+            "            GIT ATTR <file> --set k=v      change one\n");
+        return 2;
+    }
     if (!engine_sub(sub)) return run_git(argc, argv, subidx);
 
     const char *p0 = subidx + 1 < argc ? argv[subidx + 1] : NULL;
     const char *p1 = subidx + 2 < argc ? argv[subidx + 2] : NULL;
+    const char *p2 = subidx + 3 < argc ? argv[subidx + 3] : NULL;
     if (p0 && p0[0] == '-') p0 = NULL;
     if (p1 && p1[0] == '-') p1 = NULL;
+    if (p2 && p2[0] == '-') p2 = NULL;
 
     mv_ctx *ctx = mv_ctx_create();
     char *out = NULL;
@@ -155,6 +184,69 @@ int main(int argc, char **argv) {
                                                             p0 ? p0 : "");
     else if (!strcmp(sub, "restore")) out = mv_git_restore(ctx, repo,
                                                           p0 ? p0 : "");
+    else if (!strcmp(sub, "config"))  out = mv_git_config(ctx, repo,
+                                                         p0 ? p0 : "",
+                                                         p1 ? p1 : "");
+    else if (!strcmp(sub, "remote"))  out = mv_git_remote(ctx, repo,
+                                                        p0 ? p0 : "",
+                                                        p1 ? p1 : "",
+                                                        p2 ? p2 : "");
+    else if (!strcmp(sub, "clone")) {
+        /* Forwarded, this ran a PLAIN git clone: it produced a directory of
+           files and no account at all, and still read as a pass because git's
+           own "you appear to have cloned an empty repository" contains the
+           word the assertion looks for. */
+        if (!p0 || !p1) {
+            fprintf(stderr, "usage: jb-git clone <url> <dir> [ref]\n");
+            mv_ctx_destroy(ctx);
+            return 2;
+        }
+        out = mv_git_clone(ctx, p0, p1, p2 ? p2 : "");
+    }
+    else if (!strcmp(sub, "fetch"))   out = mv_git_fetch(ctx, repo, p0 ? p0 : "");
+    else if (!strcmp(sub, "push"))    out = mv_git_push(ctx, repo, p0 ? p0 : "",
+                                                       p1 ? p1 : "");
+    else if (!strcmp(sub, "pull"))    out = mv_git_pull(ctx, repo, p0 ? p0 : "",
+                                                       p1 ? p1 : "");
+    else if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
+        /* Forwarded, this answered `git version 2.43.7` -- jb-git reporting
+           stock git's version as its own, which is worse than not answering. */
+        char self[64];
+        snprintf(self, sizeof self, "jb-git %s", JBGIT_VERSION);
+        char *v = mv_git_versions(self);
+        fputs(v ? v : "", stdout);
+        free(v);
+        out = NULL;
+    }
+    else if (!strcmp(sub, "tag")) {
+        /* git's own spelling, decoded to the engine's op -- the same shapes
+           uv-git accepts, so the CLIs stay drop-in replacements for each other
+           as much as for git:
+             tag                      list
+             tag name {commit}        lightweight, HEAD if no commit
+             tag -a name -m message   annotated
+             tag -d name              delete                                  */
+        const char *op = "list", *name = "", *target = "", *msg = "";
+        for (int k = subidx + 1; k < argc; k++) {
+            if (!strcmp(argv[k], "-d") && k + 1 < argc) {
+                op = "delete"; name = argv[++k];
+            } else if (!strcmp(argv[k], "-a") && k + 1 < argc) {
+                op = "add";    name = argv[++k];
+            } else if (!strcmp(argv[k], "-m") && k + 1 < argc) {
+                msg = argv[++k];
+            } else if (argv[k][0] != '-') {
+                if (!*name)        { op = "add"; name = argv[k]; }
+                else if (!*target) target = argv[k];
+            }
+        }
+        if (strcmp(op, "list") != 0 && !*name) {
+            fprintf(stderr, "usage: jb-git tag {name {commit} | -a name "
+                            "-m msg | -d name}\n");
+            mv_ctx_destroy(ctx);
+            return 2;
+        }
+        out = mv_git_tag(ctx, repo, op, name, target, msg);
+    }
 
     print_out(out);
     mv_ctx_destroy(ctx);

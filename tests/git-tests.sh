@@ -463,8 +463,20 @@ esac
 # the registry, the validation and the staging, in C, which is exactly what
 # "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
 # where this is tested on UniVerse, and it runs there in full.
-if [ "$PLATFORM" = uv ] && [ "${UV_VIA:-verb}" = cli ]; then
-  skip "GIT ATTR" "in-session verb; covered by the UV_VIA=verb run"
+# GIT ATTR is an in-session VERB -- registry, validation, staging and a
+# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
+# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
+# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
+# the CLI, therefore ran all 32 of these against a command that cannot exist
+# and reported them as port failures.  Ask how the arm is DRIVEN, not which
+# platform it is.
+case "$PLATFORM" in
+  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
+  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
+  *)     ATTR_VIA=verb ;;
+esac
+if [ "$ATTR_VIA" = cli ]; then
+  skip "GIT ATTR" "in-session verb; not reachable through a CLI-driven arm"
 else
 say "-- GIT ATTR: the attribute editor (mv_git#15) --"
 # Every one of these runs through the SWITCHES, which is why the switches exist:
