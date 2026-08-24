@@ -148,6 +148,10 @@ char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);
 /* Remove a native descriptor a plain `git checkout` left behind.  A no-op on
    MVX, where the descriptor is a real file; elsewhere it is virtual. */
+/* Clear a plain-git checkout so an account can be built from HEAD in its place.
+   Refuses (-1, with the offending line in `why`) when the tree is dirty. */
+int mv_git_worktree_clear(char *why, size_t wcap);
+
 void mv_git_drop_native_desc(void);
 
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,

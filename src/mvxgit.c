@@ -1478,6 +1478,52 @@ char *mv_git_filter_furniture(const char *list) {
  * the adopt path itself reads it to decide whether this is an open account.
  *
  * A no-op on MVX by construction -- there the file is the real thing. */
+/* Clear a plain-git checkout so an account can be built from HEAD in its place.
+ *
+ * `git checkout` writes the OPEN FORM, and those are exactly the names the
+ * native files want -- CLIENTS lands as a DIRECTORY of record files where a
+ * hash file belongs, so creating the file fails and the records go nowhere.
+ * Adopting a checkout of mvx-lang/demo materialised 4 records instead of 118
+ * that way, and reported success, because `status` then compared the open form
+ * against itself and read clean.
+ *
+ * The working tree is redundant: every byte of it is in HEAD, which is what
+ * materialise reads.  So it is removed -- which is what `clone` gets for free
+ * from --no-checkout.  Same input to the same code, so an adopted account and a
+ * cloned one are the same account (mv_git#124).
+ *
+ * Refuses when the tree is DIRTY, because "every byte is in HEAD" is only true
+ * then; otherwise this would delete work nobody committed.  Returns 0 on
+ * success, or -1 with the first offending line in `why`. */
+int mv_git_worktree_clear(char *why, size_t wcap) {
+    if (why && wcap) why[0] = '\0';
+    FILE *st = popen("git status --porcelain 2>/dev/null", "r");
+    if (st) {
+        char line[512];
+        int dirty = fgets(line, sizeof line, st) != NULL;
+        pclose(st);
+        if (dirty) {
+            char *nl = strpbrk(line, "\r\n");
+            if (nl) *nl = '\0';
+            if (why && wcap) snprintf(why, wcap, "%s", line);
+            return -1;
+        }
+    }
+    FILE *ls = popen("git ls-tree --name-only HEAD 2>/dev/null", "r");
+    if (!ls) return 0;
+    char name[1024];
+    while (fgets(name, sizeof name, ls)) {
+        char *nl = strpbrk(name, "\r\n");
+        if (nl) *nl = '\0';
+        if (!name[0] || !strcmp(name, ".git")) continue;
+        char cmd[1200];
+        snprintf(cmd, sizeof cmd, "rm -rf -- '%s'", name);
+        (void)system(cmd);
+    }
+    pclose(ls);
+    return 0;
+}
+
 void mv_git_drop_native_desc(void) {
 #ifndef MVXGIT_DESC_ON_DISK
     static const char *const names[] = { ".mvx", ".udt", ".uv", ".jbase", NULL };

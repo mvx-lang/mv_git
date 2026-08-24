@@ -564,6 +564,43 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin main 2>&1 || GITV "$B" GIT PULL origin master 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
 
+  # --- adopt: a PLAIN-GIT checkout becomes a live account ----------------
+  #
+  # The path nobody had tested, and the one that was broken.  `git` gives you
+  # files; adopt gives you an account.  A plain checkout puts the OPEN FORM on
+  # disk -- CLIENTS lands as a DIRECTORY of record files -- and those are the
+  # names the native files want, so creating them failed and the records went
+  # nowhere: 4 materialised instead of 118, while `status` read clean because
+  # it was comparing the open form against itself.
+  #
+  # So the assertion is NOT "status is clean".  It is that adopt and clone
+  # produce the SAME ACCOUNT: same record count, dictionary present, records
+  # readable, and no descriptor left on disk off MVX (mv_git#122).
+  # udt only for now.  uv-git's adopt reads the data from DISK, which is the
+  # behaviour mv_git#124 is converging on for all of them -- so these
+  # assertions, which describe the HEAD-based one, do not apply to it yet.
+  case "$PLATFORM" in
+    udt)
+      P="$WORK/plainco"
+      git clone -q "$REM" "$P" 2>/dev/null
+      t  "plain checkout has the open form" "CUST" \
+         "$(ls "$P" 2>/dev/null | tr '\n' ' ')"
+      adopt_out="$( cd "$P" && "$MVXGIT" adopt 2>&1 )"
+      t  "adopt reports an account"    "account"  "$adopt_out"
+      # The record itself, not CT's whole output: the session banner carries
+      # each account's own path, so two good accounts never match exactly.
+      t  "adopt materialises records"  "Oslo"     "$(CT "$P" CUST C3)"
+      te "adopt leaves no descriptor"  ""         "$(descfiles "$P")"
+      # ...and it refuses when the tree is dirty, because it rebuilds from HEAD
+      # and would otherwise delete work nobody committed.
+      Q="$WORK/plaindirty"
+      git clone -q "$REM" "$Q" 2>/dev/null
+      echo scratch > "$Q/UNCOMMITTED"
+      t  "adopt refuses a dirty tree" "uncommitted" \
+         "$( cd "$Q" && "$MVXGIT" adopt 2>&1 )"
+      ;;
+  esac
+
   # Cloning an OPEN-format repo sets mvx.openaccount in the cloner's own config
   # and that decides how every later commit here is written, so the CLI asks
   # (mv_git#88).  With no terminal the answer is yes; --no-open-account and

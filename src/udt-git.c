@@ -709,7 +709,30 @@ static int do_adopt(int argc, char **argv, int i) {
             "        so there is no account here to adopt.\n", dir);
         return 1;
     }
-    return provision(dir, 1);
+    if (chdir(dir) != 0) {
+        fprintf(stderr, "udt-git adopt: cannot enter %s: %s\n",
+                dir, strerror(errno));
+        return 1;
+    }
+
+    /* The open form git checked out occupies the names the native files want,
+       so it is cleared and the account built from HEAD instead -- what `clone`
+       gets for free from --no-checkout.  Shared with uv-git: an adopted account
+       and a cloned one have to BE the same account (mv_git#124). */
+    {
+        char why[512];
+        if (mv_git_worktree_clear(why, sizeof why) != 0) {
+            fprintf(stderr,
+                "udt-git adopt: the checkout has uncommitted changes.\n"
+                "        Adopting rebuilds the account from HEAD, so anything "
+                "not committed\n"
+                "        would be lost.  Commit or discard them first:\n"
+                "            %s\n", why);
+            return 1;
+        }
+    }
+
+    return provision(".", 1);
 }
 
 /* Copy a file byte-for-byte.  Returns 0 on success. */
