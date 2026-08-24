@@ -526,6 +526,8 @@ static int run_accounts(int argc, char **argv, int subidx) {
    account in place with newacct, then materialise HEAD's files and records into
    it over InterCall.  The account owner/group default to the current login and
    can be overridden with UDT_ACCT_OWNER / UDT_ACCT_GROUP. */
+static int provision(const char *dir, int adopted);   /* defined below */
+
 static int do_clone(const char *repo, const char *dir) {
     if (!repo || !repo[0]) {
         fprintf(stderr, "usage: udt-git clone <repo> [<dir>]\n");
@@ -553,10 +555,31 @@ static int do_clone(const char *repo, const char *dir) {
         return 1;
     }
 
+    return provision(dir, 0);
+}
+
+/* Turn the checkout in `dir` into a live UniData account: create it, seed the
+   agent, materialise HEAD's records, offer the index rebuild, deploy the verb.
+ *
+ * ONE implementation, shared by `clone` and `adopt`.  They differ only in how
+ * the checkout got there -- clone fetches it, adopt is handed one someone made
+ * with plain git -- and everything after that point is the same work.  Two
+ * copies of it is how `add` and `status` came to disagree (#108, #87); the same
+ * mistake here would mean a cloned account and an adopted one were subtly
+ * different accounts.
+ *
+ * `adopted` says the checkout came from plain git, which changes two things:
+ * the account may already exist, and the tree may hold a native descriptor that
+ * git wrote and this platform must not keep (#122). */
+static int provision(const char *dir, int adopted) {
     /* 2. make the target a real UniData account (VOC + all the system files). */
     if (chdir(dir) != 0) {
         fprintf(stderr, "udt-git: cannot enter %s\n", dir);
         return 1;
+    }
+    if (adopted && access("VOC", F_OK) == 0) {
+        /* already an account -- do not re-run newacct over a live one */
+        goto have_account;
     }
     const char *owner = getenv("UDT_ACCT_OWNER");
     const char *group = getenv("UDT_ACCT_GROUP");
@@ -577,6 +600,7 @@ static int do_clone(const char *repo, const char *dir) {
         return 1;
     }
 
+have_account:
     /* A cloned OPEN account carries `.mv-account` in HEAD, but `git clone` does
        not copy the local `mvx.openaccount` flag — it is set here so open-account
        materialisation runs: the committed %FILE% controls and dictionaries are
@@ -600,6 +624,12 @@ static int do_clone(const char *repo, const char *dir) {
     if (!mv_agent_cataloged() && mv_agent_seed() != 0)
         fprintf(stderr, "udt-git clone: could not put an agent into the new "
                         "account; it exists but will hold no records\n");
+
+    /* A plain `git checkout` writes whatever the tree holds, including a
+       committed native descriptor -- and off MVX that file is virtual (#122).
+       Left behind it sits in the account unread and the next commit carries it
+       forward as an ordinary file. */
+    if (adopted) mv_git_drop_native_desc();
 
     /* 4. materialise the user's files and records on top, over InterCall. */
     char acctpath[4096];
@@ -645,8 +675,41 @@ static int do_clone(const char *repo, const char *dir) {
        statement that the clone had succeeded — only a record count — and the
        suite, which looks for exactly this, reported every good clone as a
        failure. */
-    printf("cloned into %s as a UniData account\n", dir);
+    printf("%s into %s as a UniData account\n",
+           adopted ? "adopted" : "cloned", dir);
     return 0;
+}
+
+/* adopt [dir] -- take a checkout somebody made with plain git and build the
+   live account from it.  git gives you files; this gives you an account. */
+static int do_adopt(int argc, char **argv, int i) {
+    const char *dir = ".";
+    for (i++; i < argc; i++) {
+        if (argv[i][0] == '-') {
+            fprintf(stderr, "udt-git adopt: unknown option %s\n", argv[i]);
+            return 2;
+        }
+        dir = argv[i];
+    }
+    /* A descriptor is the checkout's own statement that it is an account.
+       Without one this is an ordinary repository and adopting it would build
+       an account around files that never were one. */
+    static const char *const names[] = { ".mv-account", ".mvx", ".udt", ".uv",
+                                         ".jbase", NULL };
+    int found = 0;
+    for (int k = 0; names[k] && !found; k++) {
+        char p[4200];
+        snprintf(p, sizeof p, "%s/%s", dir, names[k]);
+        if (access(p, F_OK) == 0) found = 1;
+    }
+    if (!found) {
+        fprintf(stderr,
+            "udt-git adopt: %s carries no MV account descriptor "
+            "(.mv-account, .mvx, .udt, .uv or .jbase),\n"
+            "        so there is no account here to adopt.\n", dir);
+        return 1;
+    }
+    return provision(dir, 1);
 }
 
 /* Copy a file byte-for-byte.  Returns 0 on success. */
@@ -898,6 +961,12 @@ int main(int argc, char **argv) {
        existing-account path below (it creates the directory itself). */
     if (!strcmp(sub, "clone"))
         return do_clone(arg(argc, argv, i), arg(argc, argv, i + 1));
+
+    /* adopt provisions an account from a checkout that already exists, so it
+       runs here too rather than under the chdir path -- the directory it is
+       given is not yet an account. */
+    if (!strcmp(sub, "adopt"))
+        return do_adopt(argc, argv, i - 1);
 
     /* A repository holding accounts, with no -a naming one: visit each. */
     if (!strcmp(account, ".") && needs_accounts(sub)) {
