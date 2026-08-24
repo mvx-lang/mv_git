@@ -312,6 +312,16 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         if (nm[0] == '.') continue;                    /* . .. .git .jbase */
         size_t l = strlen(nm);
         if (l > 2 && !strcmp(nm + l - 2, "]D")) continue;  /* a dictionary */
+        /* ...and so is <file>.DICT, which is what an OPEN-FORM clone puts on
+           disk.  jBASE has no VOC, so this walk is a directory scan and a
+           dictionary looks exactly like a data file: enumerated as one, it was
+           given a dictionary of its OWN, so `add -A` invented
+           CLIENTS.DICT.DICT/%FILE% for every file in the account and rewrote
+           the real CLIENTS.DICT/%FILE% from `hash 2 DYNAMIC` to `DIR`.
+           `status` never saw any of it, because %FILE% is synthesised at add
+           time rather than read -- so a freshly cloned account read clean and
+           committed twelve changes anyway. */
+        if (l > 5 && !strcmp(nm + l - 5, ".DICT")) continue;
         struct stat st;
         if (stat(nm, &st) != 0) continue;
         const char *type;

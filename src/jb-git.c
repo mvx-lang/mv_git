@@ -24,8 +24,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>          /* strcasecmp, strncasecmp */
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* Is this repository kept in the open (portable) account form?
+ *
+ * The engine asks mv_openaccount(), which reads $MVX_OPENACCOUNT -- and a CLI
+ * is the only thing that can set it, because the flag lives in .git/config
+ * where the engine does not look.  udt-git and uv-git both do this; jb-git did
+ * not, so the engine decided an open account was not one and staged the NATIVE
+ * descriptor: every commit deleted .mv-account and added .mvx, on a clone that
+ * had just been reported clean.  (The same missing seed was half of #108.) */
+static int g_open_flag;          /* 1 = --open-account, -1 = --no-open-account */
+
+static int open_account_on(void) {
+    FILE *f = fopen(".git/config", "r");
+    if (!f) return 0;
+    char line[512];
+    int in_mvx = 0, on = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
+        if (in_mvx && strncasecmp(s, "openaccount", 11) == 0) {
+            char *eq = strchr(s, '=');
+            if (eq) {
+                eq++;
+                while (*eq == ' ' || *eq == '\t') eq++;
+                on = strncasecmp(eq, "true", 4) == 0 || *eq == '1' ||
+                     strncasecmp(eq, "yes", 3) == 0;
+            }
+        }
+    }
+    fclose(f);
+    return on;
+}
 
 /* Subcommands the record-git engine implements. */
 static int engine_sub(const char *sub) {
@@ -87,6 +121,14 @@ static const char *opt_value(int argc, char **argv, int from, const char *opt) {
 int main(int argc, char **argv) {
     int i = 1;
     const char *account = ".";
+    /* Ours, not git's: strip them so a forwarded command never sees them. */
+    for (int a = 1; a < argc; a++) {
+        if (!strcmp(argv[a], "--open-account"))         g_open_flag = 1;
+        else if (!strcmp(argv[a], "--no-open-account")) g_open_flag = -1;
+        else continue;
+        for (int b = a; b + 1 < argc; b++) argv[b] = argv[b + 1];
+        argc--; a--;
+    }
     if (i < argc && !strcmp(argv[i], "-a") && i + 1 < argc) {
         account = argv[i + 1];
         i += 2;
@@ -148,6 +190,8 @@ int main(int argc, char **argv) {
     if (p1 && p1[0] == '-') p1 = NULL;
     if (p2 && p2[0] == '-') p2 = NULL;
 
+    if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+
     mv_ctx *ctx = mv_ctx_create();
     char *out = NULL;
     const char *repo = ".git";
@@ -201,7 +245,78 @@ int main(int argc, char **argv) {
             mv_ctx_destroy(ctx);
             return 2;
         }
-        out = mv_git_clone(ctx, p0, p1, p2 ? p2 : "");
+        /* --no-checkout, exactly as udt-git does: the account is BUILT from
+           HEAD's tree by mv_git_materialize, and a git checkout would only put
+           the open form on disk -- %FILE% controls and all -- for the build to
+           then contradict.  jb-git used to call mv_git_clone, which is
+           git_clone WITH a checkout and nothing after it, so a "clone" left a
+           directory tree that jBASE opens as UD files because it opens any
+           directory as one.  It read clean; then `add -A` rewrote every file's
+           %FILE% from `hash 2 DYNAMIC` to `DIR`, because by then that was the
+           truth on disk. */
+        {
+            pid_t pid = fork();
+            if (pid == 0) {
+                execlp("git", "git", "clone", "--no-checkout", p0, p1,
+                       (char *)NULL);
+                _exit(127);
+            }
+            int st = 0;
+            if (pid < 0 || waitpid(pid, &st, 0) < 0 ||
+                !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+                fprintf(stderr, "jb-git clone: git clone failed\n");
+                mv_ctx_destroy(ctx);
+                return 1;
+            }
+        }
+        printf("cloned %s -> %s\n", p0, p1);
+        /* mv_git_clone is git_clone and nothing more: it leaves the OPEN FORM
+           checked out on disk -- %FILE% controls and all -- and the account is
+           built from it afterwards.  udt-git and uv-git both do this step and
+           say so in their closing line; jb-git did not, so a "clone" produced a
+           directory tree that jBASE would open as UD files because it opens any
+           directory as one.  It read clean, and then `add -A` rewrote every
+           file's %FILE% from `hash 2 DYNAMIC` to `DIR` -- because by then that
+           WAS the truth on disk. */
+        if (chdir(p1) != 0) {
+            fprintf(stderr, "jb-git clone: cannot enter %s\n", p1);
+            mv_ctx_destroy(ctx);
+            return 1;
+        }
+        char acctpath[4096];
+        if (getcwd(acctpath, sizeof acctpath))
+            setenv("MVXACCOUNT", acctpath, 1);
+        /* A repository committed in the OPEN form has to be checked out as an
+           open account, or every later commit here writes the native shape and
+           the account stops travelling.  The flag lives in the cloner's own
+           config, so cloning is the only moment it can be set -- and it is
+           asked rather than assumed (#88).  Without this, a jBASE clone of an
+           open account committed .mvx over .mv-account on its very first
+           commit, having just reported itself clean. */
+        if (system("git cat-file -e HEAD:.mv-account >/dev/null 2>&1") == 0) {
+            const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+            int open = 1;
+            if (g_open_flag)  open = g_open_flag > 0;
+            else if (env && env[0])
+                open = !(env[0] == '0' || !strcasecmp(env, "no") ||
+                         !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+            if (open) {
+                if (system("git config mvx.openaccount true") != 0)
+                    fprintf(stderr, "jb-git clone: could not set "
+                                    "mvx.openaccount\n");
+                else
+                    fprintf(stderr, "jb-git: '%s' was committed in the open "
+                                    "account format - checking it out as an "
+                                    "open account.\n"
+                                    "        (--no-open-account, or "
+                                    "MVXGIT_OPEN_ACCOUNT=0, for a native "
+                                    "checkout instead)\n", p1);
+            }
+        }
+        if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+        mv_ctx_destroy(ctx);
+        ctx = mv_ctx_create();
+        out = mv_git_materialize(ctx, ".git");
     }
     else if (!strcmp(sub, "fetch"))   out = mv_git_fetch(ctx, repo, p0 ? p0 : "");
     else if (!strcmp(sub, "push"))    out = mv_git_push(ctx, repo, p0 ? p0 : "",

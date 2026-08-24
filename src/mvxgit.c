@@ -2637,6 +2637,20 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     {
         size_t tl = strlen(top);
         if (tl > 2 && strcmp(top + tl - 2, "]D") == 0) return 1;
+        /* ...and neither does the DATA file it belongs to.  A jBASE hash file
+           is one regular file too (VOC is 49152 bytes of it), so this pass saw
+           an ordinary blob and committed the whole hash structure -- a binary
+           nothing else can read, beside the very records it already carries in
+           portable form.  A regular file with a `]D` beside it is an MV file:
+           its RECORDS travel and its bytes do not.  That pairing is the same
+           test mv_filelist uses to decide the file is a file at all, so the two
+           passes agree by construction rather than by two lists kept in step. */
+        {
+            struct stat ds;
+            char dictpath[1200];
+            snprintf(dictpath, sizeof dictpath, "%s]D", top);
+            if (stat(dictpath, &ds) == 0) return 1;
+        }
         /* Compiled BASIC, which jBASE writes beside the source.  Object code
            is not source and does not travel -- the rule BP.O gets on UniVerse.
 
