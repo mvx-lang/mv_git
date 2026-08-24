@@ -12,6 +12,7 @@
  */
 #include "mvxgit.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,12 +39,18 @@ static void print_out(char *s) {
     free(s);
 }
 
-static int run_git(int argc, char **argv) {
+/* `from` is the index of the subcommand: everything before it is ours (the
+   -a <account> we have already acted on by chdir'ing) and must NOT reach git,
+   which rejects it with "unknown option: -a" and a usage block.  Getting this
+   wrong makes every forwarded command fail -- clone, push, pull, remote -- so
+   the driver stops being a drop-in for git at exactly the point where being one
+   matters most. */
+static int run_git(int argc, char **argv, int from) {
     char **g = malloc((size_t)(argc + 2) * sizeof *g);
     if (!g) { perror("jb-git"); return 1; }
     g[0] = (char *)"git";
     int n = 1;
-    for (int i = 1; i < argc; i++) g[n++] = argv[i];
+    for (int i = from; i < argc; i++) g[n++] = argv[i];
     g[n] = NULL;
     pid_t pid = fork();
     if (pid < 0) { perror("jb-git: fork"); free(g); return 1; }
@@ -79,6 +86,22 @@ int main(int argc, char **argv) {
         return i >= argc ? 1 : 0;
     }
 
+    /* An MV user types the sentence in UPPER CASE -- `GIT STATUS`, `GIT PUSH`
+       -- because that is how TCL has always been written, and the verb accepts
+       it.  The CLI has to as well, or the two disagree about the same command;
+       git itself only knows lower case, so the token is folded for matching AND
+       for forwarding (`git PUSH` is "not a git command"). */
+    static char subbuf[64];
+    {
+        const char *p = argv[i];
+        size_t n = 0;
+        while (p[n] && n < sizeof subbuf - 1) {
+            subbuf[n] = (char)tolower((unsigned char)p[n]);
+            n++;
+        }
+        subbuf[n] = '\0';
+        argv[i] = subbuf;             /* forwarded to git in this form too */
+    }
     const char *sub = argv[i];
     int subidx = i;
 
@@ -88,7 +111,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (!engine_sub(sub)) return run_git(argc, argv);
+    if (!engine_sub(sub)) return run_git(argc, argv, subidx);
 
     const char *p0 = subidx + 1 < argc ? argv[subidx + 1] : NULL;
     const char *p1 = subidx + 2 < argc ? argv[subidx + 2] : NULL;
