@@ -2367,6 +2367,15 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
                     return 1;
             }
         }
+        /* And CATALOG's own bookkeeping: cataloguing BP/GIT.STATUS leaves a
+           `$GIT.STATUS` entry beside the source, which is the catalogued object
+           and not something anybody wrote.  A `$` name inside a FILE is jBASE's,
+           the same way BP.O is UniVerse's. */
+        {
+            const char *slash = strchr(rel, '/');
+            if (slash && slash[1] == '$') return 1;
+        }
+        if (top[0] == '$') return 1;
     }
 #endif
     /* At the repository root — no prefix — a top-level directory that is itself
