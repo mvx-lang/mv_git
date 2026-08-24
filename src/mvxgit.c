@@ -713,6 +713,8 @@ static void record_path(char *out, size_t cap, const char *fn, const char *id) {
 }
 
 #ifdef MVXGIT_OPENDICT
+static git_tree *head_tree(git_repository *repo);   /* defined below */
+
 /* The canonical spelling of an I-type item's expression, for the record as it
    stands live in the account.
  *
@@ -742,14 +744,34 @@ static char *open_dict_ispec(git_repository *repo, git_index *index,
     snprintf(base, sizeof base, "%.*s", (int)(bl - 5), fn);   /* drop ".DICT" */
     attr_of(rec, len, (char)0xFE, 2, spec, sizeof spec);
 
-    dictsrc ds = { repo, NULL, index };
+    /* HEAD, not the index.  "The spelling it was committed in" is a question
+       about the COMMIT, and `add -A` rebuilds the index from empty -- so by the
+       time a dictionary item is reached, the index holds only what this run has
+       already staged and the committed copy is simply absent.  Every lookup
+       missed, every item fell through to translating back, and the ones whose
+       key field could not be resolved from a half-built index were staged in
+       the native spelling: a freshly cloned account restated its I-types on
+       every commit (mv_git#90 on jBASE, and the same fault on UniData).
+       The index is still consulted first, so a STAGED edit is not undone by an
+       older HEAD. */
+    git_tree *ht = head_tree(repo);
+    dictsrc ds = { repo, ht, index };
     char gpath[600];
     record_path(gpath, sizeof gpath, fn, idb);
 
     char *canon = NULL;
     const git_index_entry *pe = git_index_get_bypath(index, gpath, 0);
     git_blob *pb = NULL;
-    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+    if (!pe && ht) {
+        git_tree_entry *te = NULL;
+        if (git_tree_entry_bypath(&te, ht, gpath) == 0) {
+            git_blob_lookup(&pb, repo, git_tree_entry_id(te));
+            git_tree_entry_free(te);
+        }
+    } else if (pe) {
+        git_blob_lookup(&pb, repo, &pe->id);
+    }
+    if (pb) {
         char was[512];
         attr_of(git_blob_rawcontent(pb), (int64_t)git_blob_rawsize(pb),
                 '\n', 2, was, sizeof was);
@@ -759,6 +781,7 @@ static char *open_dict_ispec(git_repository *repo, git_index *index,
         git_blob_free(pb);
     }
     if (!canon) canon = ispec_to_open(&ds, base, spec, (int64_t)strlen(spec));
+    if (ht) git_tree_free(ht);
     if (!canon) return NULL;
 
     char *out = rec_set_attr2(rec, len, (char)0xFE, canon, outlen);
