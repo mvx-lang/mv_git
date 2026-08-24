@@ -19,7 +19,7 @@ IF FN = "" THEN
    PRINT "usage: GIT RM file {record}"
    RETURN
 END
-$IFDEF MVX
+$IFDEF ENGINE
 GOUT = ""
 CALL GITRM(".git", FN, ID, GOUT)
 PRINT GOUT

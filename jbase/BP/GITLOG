@@ -1,6 +1,6 @@
-* GITLOG - see BP/GITSTATUS for why these shims exist.
-      SUBROUTINE GITLOG(REPO, CNT, ANS)
+* GITLOG - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITLOG(REPO, COUNT, ANS)
       DEFC VAR JBGITLOG(VAR, VAR, VAR)
       ANS = ""
-      X = JBGITLOG(REPO, CNT, ANS)
+      X = JBGITLOG(REPO, COUNT, ANS)
       RETURN

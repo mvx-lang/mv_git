@@ -688,25 +688,6 @@ void mv_git_set_prefix(const char *p) {
  * $MVGIT_ID_ITEM overrides the local name.  That is not a knob for users: it is
  * how the rename gets tested at all, since every platform to hand agrees on
  * `@ID` and an untested translation is one that rots before D3 arrives. */
-/* The account's NATIVE descriptor file name.
- *
- * Every platform keeps one under its own name, and status compares the on-disk
- * native form against the committed portable `.mv-account`.  That compare used
- * to fopen(".mvx") outright, which is right only on MVX: anywhere else the open
- * failed, the compare could not succeed, and a freshly cloned account reported
- * `M .mv-account` for ever with nothing to fix (found on jBASE, mv_git#114). */
-static const char *desc_native_name(void) {
-#if defined(MVXGIT_UDT)
-    return ".udt";
-#elif defined(MVXGIT_GITD)
-    return ".uv";
-#elif defined(MVXGIT_JBASE)
-    return ".jbase";
-#else
-    return ".mvx";
-#endif
-}
-
 #define MV_ID_CANON "@ID"
 
 const char *mv_git_id_item(void) {

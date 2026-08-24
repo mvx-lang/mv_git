@@ -47,7 +47,7 @@
       $INCLUDE BP.INC PLATFORM.H
       GOUT = ""
 *
-      $IFDEF MVX
+      $IFDEF ENGINE
 *     ---- MVX: the engine is in this process --------------------------------
 *     Only the ops a shared BASIC body needs; anything else is refused BY NAME
 *     rather than quietly answering "", because an op that silently produced

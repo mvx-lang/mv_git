@@ -12,7 +12,7 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.LOG
-$IFDEF MVX
+$IFDEF ENGINE
 GOUT = ""
 CALL GITLOG(".git", "20", GOUT)
 FOR I = 1 TO DCOUNT(GOUT, @AM)
