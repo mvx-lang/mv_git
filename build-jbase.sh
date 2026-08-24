@@ -37,8 +37,19 @@ mkdir -p "$HERE/bin"
       -o "$HERE/bin/jb-git"
 echo "  built bin/jb-git (record-git engine + jBASE Jedi record layer)"
 
+# The in-session verb: the same engine again, as a shared library the compiled
+# BASIC links against.  jBASE declares these with DEFC and is handed its own
+# session, so the verb reads the records of the session that called it.
+"$CC" -std=c11 -O2 -fPIC -shared -DMVXGIT_JBASE -DMVXGIT_VERSION="\"$UGVER\"" \
+      -I"$SRC" -I"$JBCRELEASEDIR/include" $LG2_CFLAGS \
+      "$SRC/jbasecallc.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" \
+      -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil \
+      $LG2_LIBS -lm -ldl -lpthread \
+      -o "$HERE/bin/libjbgit.so"
+echo "  built bin/libjbgit.so (the GIT* entry points for the in-session verb)"
+
 mkdir -p "$STAGE/mv_git"
-cp "$HERE/bin/jb-git" "$STAGE/mv_git/"
+cp "$HERE/bin/jb-git" "$HERE/bin/libjbgit.so" "$STAGE/mv_git/"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/mv_git/"
 [ -f "$HERE/README.md" ] && cp "$HERE/README.md" "$STAGE/mv_git/"
 echo "build-jbase: staged the jBASE package as $STAGE/mv_git/"
