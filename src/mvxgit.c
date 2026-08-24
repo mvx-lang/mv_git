@@ -209,6 +209,36 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
 #define MVXGIT_OPENDICT 1
 #endif
 
+/* Only MVX keeps the account descriptor as a FILE.  Everywhere else it exists
+   in the git objects and nowhere on disk: the portable form is synthesised from
+   the account when something asks, which is why the status compare has a
+   no-file path and calls it "the NORMAL state everywhere but MVX".
+   Writing one anyway is not harmless.  It put a .mvx into every cloned UniData
+   account -- a descriptor in a spelling that platform's own reader never opens
+   -- and on jBASE it made the compare read a file that should not have been
+   there instead of synthesising the answer. */
+#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD) && !defined(MVXGIT_JBASE)
+#define MVXGIT_DESC_ON_DISK 1
+#endif
+
+/* The account's NATIVE descriptor file name.
+ *
+ * Only MVX writes one (see MVXGIT_DESC_ON_DISK above), but the name is also
+ * what identifies a natively-committed descriptor in a tree, so every build
+ * needs to be able to say it.  The four sites that wrote or matched one spelled
+ * ".mvx" outright, which is right on exactly one platform. */
+static const char *desc_native_name(void) {
+#if defined(MVXGIT_UDT)
+    return ".udt";
+#elif defined(MVXGIT_GITD)
+    return ".uv";
+#elif defined(MVXGIT_JBASE)
+    return ".jbase";
+#else
+    return ".mvx";
+#endif
+}
+
 #ifdef MVXGIT_OPENDICT
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
  *
@@ -2354,7 +2384,12 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         if (e->mode == GIT_FILEMODE_COMMIT) continue;   /* submodule gitlink */
         size_t pl = strlen(e->path);
 
-        if (strcmp(e->path, ".mvx") == 0) {   /* .mvx -> .mv-account (convert) */
+        /* the NATIVE descriptor -> .mv-account (convert).  Named, not
+           spelled ".mvx": on jBASE the native one is .jbase, so the literal
+           left it unrecognised -- staged as an ordinary file, while the
+           .mv-account it should have become was never produced.  A clone then
+           committed .jbase and deleted .mv-account on its first commit. */
+        if (strcmp(e->path, desc_native_name()) == 0) {
             git_blob *b = NULL;
             if (git_blob_lookup(&b, repo, &e->id) == 0) {
                 acct_desc d;
@@ -2438,7 +2473,35 @@ void mvx_sub_GITOPENFORM(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         e.mode = GIT_FILEMODE_BLOB;
         e.id = mvx_blob;
         git_index_add(index, &e);
-        git_index_remove_bypath(index, ".mvx");
+        git_index_remove_bypath(index, desc_native_name());
+    } else {
+        /* No descriptor on disk -- the normal state everywhere but MVX, where
+           .mvx is a real file because it carries local policy (permit/deny).
+           Elsewhere the descriptor exists only in the git objects, and it has a
+           job to do there: it is the INDICATOR that tells a clone to build an
+           ACCOUNT rather than just a directory of files.  So it is synthesised
+           from the account, the same answer the status compare's no-file path
+           already produces.
+           It used to be staged only by accident: materialise wrote a stray
+           .mvx into every UniData clone, the walk picked it up as an ordinary
+           file, and the conversion above turned that into .mv-account.  Stop
+           writing the stray -- which is right -- and the indicator silently
+           stopped travelling, so a cloned account reported `M .mv-account`
+           with nothing to fix. */
+        char dpath[700], ddesc[2048];
+        if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc,
+                            mv_git_prefix(), 1)) {
+            git_oid doid;
+            if (git_blob_create_from_buffer(&doid, repo, ddesc,
+                                            strlen(ddesc)) == 0) {
+                git_index_entry e;
+                memset(&e, 0, sizeof e);
+                e.path = dpath;
+                e.mode = GIT_FILEMODE_BLOB;
+                e.id = doid;
+                git_index_add(index, &e);
+            }
+        }
     }
     free(fix);
     int rc = git_index_write(index);
@@ -3989,7 +4052,7 @@ void mvx_sub_GITPUTDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
     if (argc < 4) return;
     if (argc >= 4) mv_set_str(argv[3], "", 0);
-#if defined(MVXGIT_UDT) || defined(MVXGIT_GITD)
+#ifndef MVXGIT_DESC_ON_DISK
     (void)argv;                 /* no on-disk descriptor on these platforms */
 #else
     ensure_init();
@@ -4000,9 +4063,11 @@ void mvx_sub_GITPUTDESC(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     int64_t cl = mv_val_chars(argv[2], nb, sizeof nb, &cp);
     size_t pl = strlen(path);
     int is_open = pl >= 11 && strcmp(path + pl - 11, ".mv-account") == 0;
-    int is_nat  = pl >= 4  && strcmp(path + pl - 4,  ".mvx") == 0;
+    const char *nat_name = desc_native_name();
+    size_t nnl = strlen(nat_name);
+    int is_nat  = pl >= nnl && strcmp(path + pl - nnl, nat_name) == 0;
     if (!is_open && !is_nat) return;      /* .udt / .uv: git-only, nothing here */
-    FILE *f = fopen(".mvx", "wb");
+    FILE *f = fopen(nat_name, "wb");
     if (!f) return;
     if (is_open) {
         acct_desc d;
@@ -4655,8 +4720,15 @@ void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         git_object_t ty = git_tree_entry_type(te);
         if (ty == GIT_OBJECT_TREE && tree_is_mv_file(tree, name)) continue;
         if (ty == GIT_OBJECT_BLOB && strcmp(name, ".mv-account") == 0) {
-            /* portable descriptor -> minimal native `.mvx` (convert; local
-               security policy is re-seeded locally, never shipped in git) */
+            /* portable descriptor -> the minimal NATIVE one for THIS platform
+               (convert; local security policy is re-seeded locally, never
+               shipped in git).  The name was the literal ".mvx", so every
+               platform wrote MVX's descriptor: a cloned UniData account came
+               with a stray .mvx its own reader ignores, and on jBASE the write
+               said .mvx while the read asked desc_native_name() for .jbase --
+               so the descriptor was written, never found, and `status`
+               reported .mv-account modified on an untouched clone. */
+#ifdef MVXGIT_DESC_ON_DISK
             git_blob *b = NULL;
             if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
                 acct_desc d;
@@ -4664,22 +4736,29 @@ void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                            (size_t)git_blob_rawsize(b), &d);
                 char nat[1024];
                 int nl = desc_render_native(&d, nat, sizeof nat);
-                FILE *f = fopen(".mvx", "wb");
+                FILE *f = fopen(desc_native_name(), "wb");
                 if (f) { if (nl > 0) fwrite(nat, 1, (size_t)nl, f); fclose(f); }
                 git_blob_free(b);
             }
+#endif
             continue;
         }
-        if (ty == GIT_OBJECT_BLOB && strcmp(name, ".mvx") == 0) {
+        if (ty == GIT_OBJECT_BLOB && strcmp(name, desc_native_name()) == 0) {
             /* native descriptor committed verbatim (a native, non-open repo):
-               restore as-is so its local `permit`/`deny` policy round-trips */
+               restore as-is so its local `permit`/`deny` policy round-trips.
+               Only THIS platform's own native name: a `.mvx` committed from MVX
+               means nothing to UniData, and writing it there produced a file
+               its reader would never open.  A native repo does not cross
+               platforms -- that is what the open form is for. */
+#ifdef MVXGIT_DESC_ON_DISK
             git_blob *b = NULL;
             if (git_blob_lookup(&b, repo, git_tree_entry_id(te)) == 0) {
-                FILE *f = fopen(".mvx", "wb");
+                FILE *f = fopen(desc_native_name(), "wb");
                 if (f) { fwrite(git_blob_rawcontent(b), 1,
                                 (size_t)git_blob_rawsize(b), f); fclose(f); }
                 git_blob_free(b);
             }
+#endif
             continue;
         }
         if (ty == GIT_OBJECT_TREE) {
