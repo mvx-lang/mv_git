@@ -150,7 +150,14 @@ int mv_agent_cataloged(void);
    MVX, where the descriptor is a real file; elsewhere it is virtual. */
 /* Clear a plain-git checkout so an account can be built from HEAD in its place.
    Refuses (-1, with the offending line in `why`) when the tree is dirty. */
+/* Write the working tree into a tree object (via `git add -A` + write-tree) and
+   return its id.  Nothing is committed; the index keeps the captured state. */
+int mv_git_worktree_capture(char *oid, size_t ocap);
+
 int mv_git_worktree_clear(char *why, size_t wcap);
+
+/* This platform's native descriptor name (".mvx", ".udt", ".uv", ".jbase"). */
+const char *mv_git_desc_native_name(void);
 
 void mv_git_drop_native_desc(void);
 
@@ -275,6 +282,10 @@ char *mv_git_openform(mv_ctx *ctx, const char *repo);
    path): MV files -> backend, .mv-account/.mvx -> .mvx, plain files -> disk.
    The open form never touches disk; no external adopt tool is run. */
 char *mv_git_materialize(mv_ctx *ctx, const char *repo);
+/* Materialise a given tree-ish instead of HEAD: `adopt` builds the account from
+   the WORKING TREE, so an edit somebody made in a plain checkout is carried in
+   rather than silently replaced by the committed version. */
+char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev);
 char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mv_git_commit(mv_ctx *ctx, const char *repo, const char *msg);

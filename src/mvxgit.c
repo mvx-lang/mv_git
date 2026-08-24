@@ -1495,20 +1495,41 @@ char *mv_git_filter_furniture(const char *list) {
  * Refuses when the tree is DIRTY, because "every byte is in HEAD" is only true
  * then; otherwise this would delete work nobody committed.  Returns 0 on
  * success, or -1 with the first offending line in `why`. */
+/* Write the WORKING TREE into a tree object and return its id.
+ *
+ * This is how `adopt` takes the data from disk.  A plain checkout may have been
+ * edited, and adopting it should carry those edits into the account -- so the
+ * tree is captured first, the checkout is cleared, and the account is built
+ * from the captured tree.  Nothing is committed: the index is left holding the
+ * captured state, so the edits show as STAGED afterwards and the person who
+ * made them decides whether to commit.
+ *
+ * `git add -A` rather than a libgit2 walk, so .gitignore, mode bits and
+ * deletions are handled exactly as git handles them -- adopt must not have its
+ * own opinion about what is in a working tree (mv_git#124). */
+int mv_git_worktree_capture(char *oid, size_t ocap) {
+    if (!oid || !ocap) return -1;
+    oid[0] = '\0';
+    if (system("git add -A >/dev/null 2>&1") != 0) return -1;
+    FILE *wt = popen("git write-tree 2>/dev/null", "r");
+    if (!wt) return -1;
+    char line[128];
+    int got = fgets(line, sizeof line, wt) != NULL;
+    pclose(wt);
+    if (!got) return -1;
+    char *nl = strpbrk(line, "\r\n");
+    if (nl) *nl = '\0';
+    if (!line[0]) return -1;
+    snprintf(oid, ocap, "%s", line);
+    return 0;
+}
+
 int mv_git_worktree_clear(char *why, size_t wcap) {
     if (why && wcap) why[0] = '\0';
-    FILE *st = popen("git status --porcelain 2>/dev/null", "r");
-    if (st) {
-        char line[512];
-        int dirty = fgets(line, sizeof line, st) != NULL;
-        pclose(st);
-        if (dirty) {
-            char *nl = strpbrk(line, "\r\n");
-            if (nl) *nl = '\0';
-            if (why && wcap) snprintf(why, wcap, "%s", line);
-            return -1;
-        }
-    }
+    /* No dirty check.  Adopt captures the working tree BEFORE clearing it, so
+       an edit is not lost -- it is what gets adopted.  Refusing here was the
+       right guard while adopt rebuilt from HEAD and the wrong one once it
+       stopped. */
     FILE *ls = popen("git ls-tree --name-only HEAD 2>/dev/null", "r");
     if (!ls) return 0;
     char name[1024];
@@ -1523,6 +1544,11 @@ int mv_git_worktree_clear(char *why, size_t wcap) {
     pclose(ls);
     return 0;
 }
+
+/* This platform's native descriptor name, for a driver that has to tell whether
+   a checkout is native to THIS system or another one -- which is what decides
+   whether `adopt` asks about the open form (mv_git#124). */
+const char *mv_git_desc_native_name(void) { return desc_native_name(); }
 
 void mv_git_drop_native_desc(void) {
 #ifndef MVXGIT_DESC_ON_DISK
@@ -4827,12 +4853,39 @@ static void checkout_plain_tree(git_repository *repo, git_tree *tree,
 void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
+    /* run_sub appends the OUT slot after the inputs, so it is argv[argc-1] --
+       not argv[1], which is the first INPUT once there is more than one.  The
+       optional tree-ish went into argv[1] and the result was written over it,
+       so materialise silently found no tree and adopted an empty account. */
+    mv_value *res = argv[argc - 1];
+    char rev[128] = "";
+    if (argc >= 3) arg_str(argv[1], rev, sizeof rev);
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     git_repository *repo = NULL;
-    if (git_repository_open(&repo, rp) != 0) { fail(argv[1], "open"); return; }
-    git_tree *tree = head_tree(repo);
-    if (!tree) { git_repository_free(repo); mv_set_str(argv[1], "empty", 5); return; }
+    if (git_repository_open(&repo, rp) != 0) { fail(res, "open"); return; }
+    /* An optional tree-ish: materialise THAT instead of HEAD.
+     *
+     * `adopt` needs it.  A checkout somebody made with plain git may have been
+     * EDITED, and adopting it should carry the edits into the account -- taking
+     * HEAD instead would silently prefer the committed version of a record over
+     * the one on disk in front of them.  So adopt writes the working tree into
+     * a tree object and hands that in, and the whole materialise path is
+     * unchanged: same code builds a cloned account and an adopted one
+     * (mv_git#124). */
+    git_tree *tree = NULL;
+    if (rev[0]) {
+        git_object *o = NULL;
+        if (git_revparse_single(&o, repo, rev) == 0) {
+            git_object *t = NULL;
+            if (git_object_peel(&t, o, GIT_OBJECT_TREE) == 0)
+                tree = (git_tree *)t;
+            git_object_free(o);
+        }
+    } else {
+        tree = head_tree(repo);
+    }
+    if (!tree) { git_repository_free(repo); mv_set_str(res, "empty", 5); return; }
 
     int64_t nw = 0, nd = 0;
     materialize_tree_x(ctx, repo, tree, 1, &nw, &nd);   /* strict: MV files only */
@@ -4915,7 +4968,7 @@ void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
     char out[80];
     snprintf(out, sizeof out, "materialised %lld record(s)", (long long)nw);
-    mv_set_str(argv[1], out, (int64_t)strlen(out));
+    mv_set_str(res, out, (int64_t)strlen(out));
 }
 
 /* GITBRANCH(repo, name, out) — list branches, or create one at HEAD. */
@@ -6139,6 +6192,11 @@ char *mv_git_openform(mv_ctx *ctx, const char *repo) {
 char *mv_git_materialize(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
+}
+/* Materialise a given tree-ish rather than HEAD -- see GITMATERIALIZE. */
+char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev) {
+    const char *a[] = {repo, rev};
+    return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 2);
 }
 char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id) {

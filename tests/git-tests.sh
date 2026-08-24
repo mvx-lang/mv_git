@@ -591,13 +591,16 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       # each account's own path, so two good accounts never match exactly.
       t  "adopt materialises records"  "Oslo"     "$(CT "$P" CUST C3)"
       te "adopt leaves no descriptor"  ""         "$(descfiles "$P")"
-      # ...and it refuses when the tree is dirty, because it rebuilds from HEAD
-      # and would otherwise delete work nobody committed.
-      Q="$WORK/plaindirty"
+      # ...and an EDIT ON DISK is what gets adopted.  This is the whole point:
+      # 99 times in 100 the checkout matches HEAD, and when it does not it is
+      # because somebody edited a record -- they expect their edit in the
+      # account, not the committed version of it.  Taking HEAD would silently
+      # prefer the wrong one, and nothing would say so.
+      Q="$WORK/plainedit"
       git clone -q "$REM" "$Q" 2>/dev/null
-      echo scratch > "$Q/UNCOMMITTED"
-      t  "adopt refuses a dirty tree" "uncommitted" \
-         "$( cd "$Q" && "$MVXGIT" adopt 2>&1 )"
+      printf 'EDITED ON DISK\n' > "$Q/CUST/C1"
+      ( cd "$Q" && "$MVXGIT" adopt >/dev/null 2>&1 )
+      t  "adopt carries a disk edit in" "EDITED ON DISK" "$(CT "$Q" CUST C1)"
       ;;
   esac
 

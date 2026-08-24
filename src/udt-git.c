@@ -526,7 +526,7 @@ static int run_accounts(int argc, char **argv, int subidx) {
    account in place with newacct, then materialise HEAD's files and records into
    it over InterCall.  The account owner/group default to the current login and
    can be overridden with UDT_ACCT_OWNER / UDT_ACCT_GROUP. */
-static int provision(const char *dir, int adopted);   /* defined below */
+static int provision(const char *dir, int adopted, const char *rev);
 
 static int do_clone(const char *repo, const char *dir) {
     if (!repo || !repo[0]) {
@@ -555,7 +555,7 @@ static int do_clone(const char *repo, const char *dir) {
         return 1;
     }
 
-    return provision(dir, 0);
+    return provision(dir, 0, "");
 }
 
 /* Turn the checkout in `dir` into a live UniData account: create it, seed the
@@ -571,7 +571,7 @@ static int do_clone(const char *repo, const char *dir) {
  * `adopted` says the checkout came from plain git, which changes two things:
  * the account may already exist, and the tree may hold a native descriptor that
  * git wrote and this platform must not keep (#122). */
-static int provision(const char *dir, int adopted) {
+static int provision(const char *dir, int adopted, const char *rev) {
     /* 2. make the target a real UniData account (VOC + all the system files). */
     if (chdir(dir) != 0) {
         fprintf(stderr, "udt-git: cannot enter %s\n", dir);
@@ -609,8 +609,11 @@ have_account:
        and the same way mvx-git asks (mv_git#88): the flag lands in the user's
        own repository config and decides how every later commit is written. */
     {
+        /* adopt has already asked its own, better-targeted question -- whether a
+           FOREIGN-native checkout should become open, or an open one should have
+           the flag enabled -- so it must not be asked a second time here. */
         const char *chk[] = { "git", "cat-file", "-e", "HEAD:.mv-account", NULL };
-        if (runcmd_quiet(chk) == 0 && ask_open_account(dir)) {
+        if (!adopted && runcmd_quiet(chk) == 0 && ask_open_account(dir)) {
             const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
             runcmd(cfg);
         }
@@ -639,7 +642,8 @@ have_account:
         setenv("MVX_OPENACCOUNT", "1", 1);
 
     mv_ctx *ctx = mv_ctx_create();
-    emit(mv_git_materialize(ctx, ".git"));
+    emit(rev && rev[0] ? mv_git_materialize_rev(ctx, ".git", rev)
+                       : mv_git_materialize(ctx, ".git"));
     /* Detect changed indexes while the repo is readable, then close the InterCall
        session before touching them.  Do NOT rebuild automatically (#11): report
        the changes and ask; only on yes feed the script to a fresh `udt`. */
@@ -696,13 +700,13 @@ static int do_adopt(int argc, char **argv, int i) {
        an account around files that never were one. */
     static const char *const names[] = { ".mv-account", ".mvx", ".udt", ".uv",
                                          ".jbase", NULL };
-    int found = 0;
-    for (int k = 0; names[k] && !found; k++) {
+    int any = 0;
+    for (int k = 0; names[k] && !any; k++) {
         char p[4200];
         snprintf(p, sizeof p, "%s/%s", dir, names[k]);
-        if (access(p, F_OK) == 0) found = 1;
+        if (access(p, F_OK) == 0) any = 1;
     }
-    if (!found) {
+    if (!any) {
         fprintf(stderr,
             "udt-git adopt: %s carries no MV account descriptor "
             "(.mv-account, .mvx, .udt, .uv or .jbase),\n"
@@ -715,24 +719,56 @@ static int do_adopt(int argc, char **argv, int i) {
         return 1;
     }
 
-    /* The open form git checked out occupies the names the native files want,
-       so it is cleared and the account built from HEAD instead -- what `clone`
-       gets for free from --no-checkout.  Shared with uv-git: an adopted account
-       and a cloned one have to BE the same account (mv_git#124). */
-    {
-        char why[512];
-        if (mv_git_worktree_clear(why, sizeof why) != 0) {
-            fprintf(stderr,
-                "udt-git adopt: the checkout has uncommitted changes.\n"
-                "        Adopting rebuilds the account from HEAD, so anything "
-                "not committed\n"
-                "        would be lost.  Commit or discard them first:\n"
-                "            %s\n", why);
-            return 1;
+    /* Which system is this checkout native to?  That decides what, if
+       anything, adopt asks -- see mv_git#124.  The descriptor present says who
+       wrote it; desc_native_name() says who we are. */
+    const char *found = NULL;
+    for (int k = 0; names[k] && !found; k++)
+        if (access(names[k], F_OK) == 0) found = names[k];
+    int is_open    = found && !strcmp(found, ".mv-account");
+    int is_foreign = found && !is_open && strcmp(found, mv_git_desc_native_name());
+    int flag_on    = open_account_on();
+
+    if (is_open && !flag_on) {
+        /* The data is already portable; the FLAG is what is missing, and it
+           does not travel with a clone (#88).  Left off, this account looks
+           portable and the first commit writes the native form over it.  So the
+           question is "enable", not "convert" -- nothing is being converted. */
+        if (ask_open_account(dir)) {
+            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
+            runcmd(cfg);
+        }
+    } else if (is_foreign) {
+        /* Native to another MV system, so it is being converted either way to
+           be usable here.  That is the one moment worth asking whether it
+           should ALSO become portable.  Declining still adopts -- it just stays
+           native. */
+        fprintf(stderr,
+            "udt-git adopt: %s is a native %s account, and will be converted to "
+            "a UniData one.\n", dir, found);
+        if (ask_open_account(dir)) {
+            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
+            runcmd(cfg);
         }
     }
 
-    return provision(".", 1);
+    /* Take the data from DISK.  The checkout may have been edited, and adopting
+       it should carry the edits into the account rather than silently prefer
+       the committed version of a record over the one in front of you.  So the
+       working tree is captured into a tree object, the checkout is cleared --
+       its open form occupies the names the native files want -- and the account
+       is built from what was captured. */
+    char tree[128] = "";
+    if (mv_git_worktree_capture(tree, sizeof tree) != 0) {
+        fprintf(stderr, "udt-git adopt: could not read the working tree\n");
+        return 1;
+    }
+    {
+        char why[512];
+        (void)mv_git_worktree_clear(why, sizeof why);
+    }
+
+    return provision(".", 1, tree);
 }
 
 /* Copy a file byte-for-byte.  Returns 0 on success. */
