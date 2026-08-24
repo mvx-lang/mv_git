@@ -1510,16 +1510,50 @@ char *mv_git_filter_furniture(const char *list) {
 int mv_git_worktree_capture(char *oid, size_t ocap) {
     if (!oid || !ocap) return -1;
     oid[0] = '\0';
-    if (system("git add -A >/dev/null 2>&1") != 0) return -1;
+    /* `-- .` so only THIS account is staged.  A bare `git add -A` stages the
+       whole worktree wherever it is run from, which in a repository holding
+       several accounts (#44, #49) means the others too. */
+    if (system("git add -A -- . >/dev/null 2>&1") != 0) return -1;
+
+    char line[128];
     FILE *wt = popen("git write-tree 2>/dev/null", "r");
     if (!wt) return -1;
-    char line[128];
     int got = fgets(line, sizeof line, wt) != NULL;
     pclose(wt);
     if (!got) return -1;
     char *nl = strpbrk(line, "\r\n");
     if (nl) *nl = '\0';
     if (!line[0]) return -1;
+
+    /* write-tree writes the whole INDEX, so in a subdirectory account that tree
+       is the repository's root, not the account's.  Materialising it would build
+       every OTHER account's files inside this one.  Peel to the subtree at the
+       prefix, which is the account. */
+    char pfx[1024] = "";
+    FILE *sp = popen("git rev-parse --show-prefix 2>/dev/null", "r");
+    if (sp) {
+        if (fgets(pfx, sizeof pfx, sp)) {
+            char *pn = strpbrk(pfx, "\r\n");
+            if (pn) *pn = '\0';
+        }
+        pclose(sp);
+    }
+    size_t pl = strlen(pfx);
+    while (pl && pfx[pl - 1] == '/') pfx[--pl] = '\0';
+    if (pl) {
+        char cmd[1400], sub[128];
+        snprintf(cmd, sizeof cmd, "git rev-parse '%s:%s' 2>/dev/null", line, pfx);
+        FILE *rp = popen(cmd, "r");
+        if (!rp) return -1;
+        int ok = fgets(sub, sizeof sub, rp) != NULL;
+        pclose(rp);
+        if (!ok) return -1;
+        char *sn = strpbrk(sub, "\r\n");
+        if (sn) *sn = '\0';
+        if (!sub[0]) return -1;
+        snprintf(oid, ocap, "%s", sub);
+        return 0;
+    }
     snprintf(oid, ocap, "%s", line);
     return 0;
 }

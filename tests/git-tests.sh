@@ -601,6 +601,29 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       printf 'EDITED ON DISK\n' > "$Q/CUST/C1"
       ( cd "$Q" && "$MVXGIT" adopt >/dev/null 2>&1 )
       t  "adopt carries a disk edit in" "EDITED ON DISK" "$(CT "$Q" CUST C1)"
+
+      # ...and an account that is a SUBDIRECTORY of a repository (#44, #49).
+      # There is no .git in it -- the repository's is above -- and adopt passed
+      # the literal ".git", so the account was built EMPTY and adopt reported
+      # success anyway.  The sibling assertion is the important one: `git add -A`
+      # stages the whole worktree wherever it is run, and write-tree writes the
+      # whole index, so without scoping adopt would have built acctB's files
+      # inside acctA and cleared what it did not own.
+      M="$WORK/multi"
+      mkdir -p "$M" && ( cd "$M" && git init -q . )
+      for A in acctA acctB; do
+          mkdir -p "$M/$A/CUST" "$M/$A/CUST.DICT"
+          printf '%s-one\n' "$A" > "$M/$A/CUST/C1"
+          printf 'DIR' > "$M/$A/CUST.DICT/%FILE%"
+          printf '# .mv-account - open (portable) account descriptor\nname = %s\nversion = 1\nopenaccount = 1\n' \
+                 "$A" > "$M/$A/.mv-account"
+      done
+      ( cd "$M" && git add -A >/dev/null 2>&1 &&
+        git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
+      ( cd "$M/acctA" && MVXGIT_OPEN_ACCOUNT=1 "$MVXGIT" adopt >/dev/null 2>&1 )
+      t  "adopt in a subdirectory"     "acctA-one" "$(CT "$M/acctA" CUST C1)"
+      te "the sibling account is untouched" "acctB-one" \
+         "$(head -1 "$M/acctB/CUST/C1" 2>/dev/null)"
       ;;
   esac
 

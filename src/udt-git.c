@@ -642,14 +642,33 @@ have_account:
         setenv("MVX_OPENACCOUNT", "1", 1);
 
     mv_ctx *ctx = mv_ctx_create();
-    emit(rev && rev[0] ? mv_git_materialize_rev(ctx, ".git", rev)
-                       : mv_git_materialize(ctx, ".git"));
+    /* Not the literal ".git": an account can be a SUBDIRECTORY of a repository
+       (#44, #49), and there is no .git in it -- the repository's is above.
+       Passing ".git" there failed with "failed to resolve path '.git'", the
+       account was built empty, and adopt still said it had succeeded.
+       No prefix is set with it: adopt hands in the account's OWN subtree, whose
+       root is the account, so the engine must not go looking under a prefix
+       that is already accounted for. */
+    char gdir[4096] = ".git";
+    {
+        FILE *g = popen("git rev-parse --absolute-git-dir 2>/dev/null", "r");
+        if (g) {
+            if (fgets(gdir, sizeof gdir, g)) {
+                char *gn = strpbrk(gdir, "\r\n");
+                if (gn) *gn = '\0';
+            }
+            pclose(g);
+        }
+        if (!gdir[0]) snprintf(gdir, sizeof gdir, ".git");
+    }
+    emit(rev && rev[0] ? mv_git_materialize_rev(ctx, gdir, rev)
+                       : mv_git_materialize(ctx, gdir));
     /* Detect changed indexes while the repo is readable, then close the InterCall
        session before touching them.  Do NOT rebuild automatically (#11): report
        the changes and ask; only on yes feed the script to a fresh `udt`. */
     int ncreate = 0, nfiles = 0;
     char *report = NULL;
-    char *ixscript = collect_index_changes(ctx, ".git", &ncreate, &nfiles,
+    char *ixscript = collect_index_changes(ctx, gdir, &ncreate, &nfiles,
                                            &report);
     mv_ctx_destroy(ctx);
     if (ixscript) {
