@@ -688,7 +688,27 @@ const char *mv_git_id_item(void) {
 #if defined(MVXGIT_D3)
     return "ID";
 #else
-    return "@ID";               /* MVX, UniData, UniVerse */
+    /* MVX, UniData, UniVerse -- and jBASE, deliberately.
+     *
+     * jBASE names no key item: a CREATE-FILE there leaves the dictionary EMPTY,
+     * where UniData and UniVerse each add their own and say so.  The obvious
+     * reading is that jBASE therefore wants @ID dropped -- and that is wrong,
+     * because it would silently discard an edited one.  @ID is not only the
+     * fact "this is the key": it carries a heading, a conversion and a width
+     * that somebody may have deliberately set, and a platform forgetting a
+     * change the user made is worse than carrying an item it does not generate.
+     *
+     * The hazard the rename exists to prevent is an account holding BOTH @ID and
+     * a local ID meaning the same thing -- two copies of one fact to keep in
+     * step.  That can only arise where the platform AUTO-CREATES its own key
+     * item, which is exactly what jBASE does not do.  With nothing to collide
+     * with, the canonical name is safe here: a checkout writes @ID, a commit
+     * reads it back, and an edit survives the crossing in both directions
+     * (mv_git#114).
+     *
+     * So a fresh jBASE file simply has no key item and commits none, which is a
+     * legitimate state -- and a clone from UniData gives it one. */
+    return "@ID";
 #endif
 }
 
