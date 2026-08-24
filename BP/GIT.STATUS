@@ -118,7 +118,18 @@ UNTRACKED:
          READNEXT UVID FROM UVLIST ELSE EXIT
          READ UVREC FROM UVOCF, UVID THEN
             UVT = TRIM(FIELD(UVREC<1>, " ", 1))
-            IF UVT = "F" OR UVT = "DIR" THEN UCAND<-1> = UVID : VM : UVT
+            IF UVT = "F" OR UVT = "DIR" THEN
+               UCAND<-1> = UVID : VM : UVT
+*              A file's DICTIONARY is furniture whenever the file is, and the
+*              engine already says so -- but only if it is ASKED.  Candidates
+*              came from VOC entries alone, and a VOC entry never names a
+*              dictionary in the open form, so VOC.DICT was never offered.  Its
+*              fifty-odd stock records then reported untracked for ever on an
+*              account nobody had touched, with nothing anyone could do about
+*              them: add would not stage them and status would not stop
+*              mentioning them (mv_git#108, and #95 one level down).
+               UCAND<-1> = UVID : ".DICT" : VM : UVT
+            END
          END
       REPEAT
    END
@@ -268,8 +279,25 @@ OPENREC:
    END
    RETURN
 SAMEREC:
+*  A record with a NUL in it is compared as-is and always reported same: it is
+*  binary, so it has no dictionary projection to ask for.
    IF INDEX(LV, CHAR(0), 1) > 0 THEN SAME = 1 ; RETURN
-   GLV = LV ; CONVERT AM TO LF IN GLV
+   PLV = LV
+*  A dictionary record is not stored the way it is held.  `add` stages the
+*  CANONICAL form -- the attribute remap, and for an I-type the canonical
+*  expression -- so comparing the live record against the committed blob says
+*  "modified" about an item nobody has touched (mv_git#108).
+*
+*  The projection is not reimplemented here.  Reimplementing status is what put
+*  the CLI and the verb into disagreement in the first place, so this asks the
+*  engine for the same answer `add` would use.  If the platform has no PROJECT
+*  arm the compare simply falls back -- worse, but not wrong-in-a-new-way.
+   IF LEN(FN) > 5 AND FN[LEN(FN)-4, 5] = ".DICT" THEN
+      PJ = ""
+      CALL GIT.OBJ("PROJECT", 4, REPO, FN, RID, LV, "", PJ)
+      IF PJ # "" AND PJ[1, 5] # "GIT: " THEN PLV = PJ
+   END
+   GLV = PLV ; CONVERT AM TO LF IN GLV
    GCB = CB ; CONVERT AM TO LF IN GCB
    SAME = (GLV = GCB)
    RETURN

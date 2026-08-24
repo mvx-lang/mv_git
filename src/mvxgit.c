@@ -792,6 +792,8 @@ static int git_path_ignored(git_repository *repo, const char *path) {
    no CLI at all) did not — so read it straight from .git/config here.  Only ever
    SETS (never clears), leaving an explicit env from the CLI untouched.  Call at
    the top of a sub, before any mv_openaccount() (which reads the env, uncached). */
+static const char *rp_or_dot(const char *r) { return r && r[0] ? r : ".git"; }
+
 static void openaccount_sync(const char *rp) {
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) return;
@@ -1336,6 +1338,58 @@ int mv_account_furniture(const char *name, size_t len) {
  *
  * `list` is @AM-separated `name<VM>type`; the kept entries come back whole.
  */
+/* The canonical form a dictionary record is STAGED in -- the attribute remap
+ * and, for an I-type, the canonical expression.
+ *
+ * This exists because UniData and UniVerse run status in BASIC rather than in
+ * the engine (BP/GIT.STATUS), and that copy compared the LIVE record against the
+ * committed blob directly.  For a dictionary item the two are not meant to
+ * match: `add` stages the projected form.  So every associated item and every
+ * I-type read modified for ever, on an account nobody had touched (mv_git#108).
+ *
+ * Rather than teach a second implementation how to project -- which is how the
+ * two drifted in the first place -- it is exposed, and the BASIC asks.
+ * Returns the projected bytes, or a copy of the input when nothing changes. */
+char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
+                     const char *id, const char *rec) {
+    (void)ctx;
+    size_t rl = rec ? strlen(rec) : 0;
+    if (!file || !rl) return strdup(rec ? rec : "");
+    /* Before dict_of_open_account, which asks mv_openaccount, which reads the
+       env.  The CLI exports it; a verb inherits a plain UniData session where
+       nothing did, so without this the engine decides the open account is not
+       one and projects nothing -- which is precisely the bug (mv_git#108). */
+    openaccount_sync(rp_or_dot(repo));
+    if (!dict_of_open_account(file)) return strdup(rec);
+
+    char *cur = NULL;
+    const char *p = rec;
+    int64_t l = (int64_t)rl, pl = 0;
+    char *proj = open_dict_project(p, l, &pl);
+    if (proj) { cur = proj; p = proj; l = pl; }
+
+#ifdef MVXGIT_OPENDICT
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, repo && repo[0] ? repo : ".git") == 0) {
+        git_index *ix = NULL;
+        if (git_repository_index(&ix, r) == 0) {
+            int64_t il;
+            char *isp = open_dict_ispec(r, ix, file, id ? id : "", p, l, &il);
+            if (isp) { free(cur); cur = isp; p = isp; l = il; }
+            git_index_free(ix);
+        }
+        git_repository_free(r);
+    }
+#endif
+    char *out = malloc((size_t)l + 1);
+    if (!out) { free(cur); return NULL; }
+    memcpy(out, p, (size_t)l);
+    out[l] = '\0';
+    free(cur);
+    return out;
+}
+
 char *mv_git_filter_furniture(const char *list) {
     size_t n = list ? strlen(list) : 0;
     char *out = malloc(n + 1);
