@@ -32,6 +32,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The source package carries the tag's version too, so a tarball and a
+      # binary release of the same tag never disagree about what they are.
+      - name: Stamp the manifests with the tag
+        run: . ./version.sh && mv_git_stamp_manifests . "${GITHUB_REF_NAME}"
       - uses: mvx-lang/mvx/.github/actions/publish-source@main
         with:
           package: mvx-lang/git
@@ -92,6 +96,10 @@ jobs:
           # bundled cmd fallback, no BASIC source.  Native -> os/arch-locked.
           DIST="dist/$BASE"; rm -rf "$DIST"; mkdir -p "$DIST"
           cp -a LIB bin PKG mvpkg.json LICENSE README.md "$DIST/"
+          # The manifests carry the TAG, not whatever the tree happened to say:
+          # 2.0.0 shipped declaring itself 2.0.0-rc5, so MVPKG would install the
+          # stable release and report a release candidate.
+          . ./version.sh && mv_git_stamp_manifests "$DIST" "$VER"
           # CATALOG carries the COMPILED VERBS, and was missing from this list:
           # VOC/GIT is a "V" record pointing at CATALOG/GIT, so the package
           # registered a verb whose executable it did not ship.  Every mvx
