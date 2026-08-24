@@ -1455,6 +1455,81 @@ char *mv_git_filter_furniture(const char *list) {
  * MVX a real `.mvx`, so on those the descriptor is an ordinary file the walk
  * already stages, and writing a second copy here would fight with it.
  */
+/* The VOC flavour this account was created with, from the COMMITTED descriptor.
+ *
+ * UniVerse fixes the flavour when an account is created and will not say what
+ * it is afterwards, so it is the one fact about a UniVerse account that cannot
+ * be regenerated -- it has to be carried.  It is carried in the git objects,
+ * like everything else about the account: `.mv-account` in the open form, `.uv`
+ * in the native one, and GIT ATTR edits it there.
+ *
+ * It used to be read out of a `.uv` FILE, which is why uv-git wrote one.  That
+ * made the flavour depend on a file nothing else needs and the account
+ * descriptor a real file on a platform that should not have one (mv_git#122). */
+/* Drop a native descriptor a PLAIN `git checkout` left in the working tree.
+ *
+ * git writes whatever the tree holds, and a natively-committed repository holds
+ * one -- so adopting such a checkout leaves a .mvx (or .udt, or .uv) sitting in
+ * an account whose platform never reads it, and the next commit carries it
+ * forward as an ordinary file.  Off MVX the descriptor is virtual, so adopting
+ * has to remove it (mv_git#122).
+ *
+ * `.mv-account` is deliberately NOT removed: it is the open-form indicator, and
+ * the adopt path itself reads it to decide whether this is an open account.
+ *
+ * A no-op on MVX by construction -- there the file is the real thing. */
+void mv_git_drop_native_desc(void) {
+#ifndef MVXGIT_DESC_ON_DISK
+    static const char *const names[] = { ".mvx", ".udt", ".uv", ".jbase", NULL };
+    for (int i = 0; names[i]; i++) (void)remove(names[i]);
+#endif
+}
+
+static int uv_flavour_committed(char *out, size_t cap) {
+    out[0] = '\0';
+#ifdef MVXGIT_GITD
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, ".git") != 0) return 0;
+    git_tree *t = head_tree(r);
+    if (t) {
+        static const char *names[] = { ".mv-account", ".uv", NULL };
+        for (int i = 0; names[i] && !out[0]; i++) {
+            git_tree_entry *te = NULL;
+            if (git_tree_entry_bypath(&te, t, names[i]) != 0) continue;
+            git_blob *b = NULL;
+            if (git_blob_lookup(&b, r, git_tree_entry_id(te)) == 0) {
+                mv_git_desc_field(git_blob_rawcontent(b),
+                                  (size_t)git_blob_rawsize(b),
+                                  "flavour", out, cap);
+                git_blob_free(b);
+            }
+            git_tree_entry_free(te);
+        }
+        git_tree_free(t);
+    }
+    /* Not committed yet: a clone told --flavour for a repository whose history
+       does not record one.  git's own config carries it until the next `add`
+       stages a descriptor that does -- which is the point at which it reaches
+       the git objects and stops needing to be supplied again.  Config, not a
+       file in the account: the account holds records, not mv_git's notes. */
+    if (!out[0]) {
+        git_config *cfg = NULL;
+        if (git_repository_config(&cfg, r) == 0) {
+            git_buf v = GIT_BUF_INIT;
+            if (git_config_get_string_buf(&v, cfg, "mvx.flavour") == 0 && v.ptr)
+                snprintf(out, cap, "%s", v.ptr);
+            git_buf_dispose(&v);
+            git_config_free(cfg);
+        }
+    }
+    git_repository_free(r);
+#else
+    (void)cap;
+#endif
+    return out[0] != '\0';
+}
+
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
                     const char *prefix, int open) {
     const char *pfx = prefix ? prefix : "";
@@ -1485,7 +1560,11 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
         {
             char fl[128];
             fl[0] = '\0';
-            FILE *u = fopen(".uv", "rb");
+            /* The committed descriptor is the source of truth.  A `.uv` FILE is
+               read only if one is already there, so an account that predates
+               mv_git#122 keeps working; nothing writes a new one. */
+            uv_flavour_committed(fl, sizeof fl);
+            FILE *u = fl[0] ? NULL : fopen(".uv", "rb");
             if (u) {
                 char line[512];
                 while (fgets(line, sizeof line, u)) {

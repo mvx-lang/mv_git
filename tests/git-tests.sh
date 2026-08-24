@@ -514,13 +514,11 @@ else
   # and the rest of what an account is configured with).  Everywhere else it
   # lives in the git objects, and its job THERE is to be the indicator that
   # tells a clone to build an ACCOUNT rather than just a directory of files.
-  # There is no exception.  UniVerse still writes .uv today, and should not:
-  # the VOC flavour belongs in the git objects like everything else about the
-  # account, where GIT ATTR can edit it.  It already travels there -- the
-  # descriptor carries `flavour = ...` and uv-git reads it from the committed
-  # tree -- so the file is a local cache on top of the real answer.  Asserted
-  # as-is below ONLY so the suite records the deviation instead of hiding it;
-  # flip it to "" in the change that stops uv-git writing the file.
+  # There is no exception.  UniVerse used to write .uv for the VOC flavour --
+  # the one fact about a UniVerse account that cannot be regenerated, since it
+  # is fixed at creation and readable nowhere afterwards.  It belongs in the git
+  # objects like everything else about the account, where GIT ATTR can edit it,
+  # not in a file beside the records.
   #
   # None of this was tested, and all four write sites spelled the name ".mvx"
   # outright -- so every platform wrote MVX's descriptor into the account and
@@ -539,14 +537,21 @@ else
                 printf '%s' "$out"; }
   case "$PLATFORM" in
     mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
-    uv)    # TODO: should be "" -- uv-git still writes .uv (see the note above)
-           te "descriptor file (uv: known deviation)" ".uv" "$(descfiles "$B")" ;;
+    uv)    te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
     *)     te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
   esac
   # ...and the indicator is in the COMMIT, which is what a clone reads to know
   # this is an account at all.
   t  "indicator is committed" ".mv-account" \
      "$(git --git-dir="$B/.git" ls-tree --name-only HEAD 2>/dev/null)"
+
+  # The flavour is what the file used to be FOR, so removing the file has to
+  # leave it reachable: git's config carries it until the next `add` stages a
+  # descriptor that does, and the git objects from then on.
+  if [ "$PLATFORM" = uv ]; then
+    t "flavour survives the clone" "PICK" \
+      "$(git --git-dir="$B/.git" config mvx.flavour 2>/dev/null)$(git --git-dir="$B/.git" show HEAD:.mv-account 2>/dev/null | grep flavour)"
+  fi
 
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null

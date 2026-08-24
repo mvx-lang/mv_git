@@ -890,23 +890,33 @@ static int run_account(int argc, char **argv, int i) {
                     if (fi < 0) fprintf(stderr, "  not a flavour: %s\n", line);
                 }
             }
-            FILE *f = fopen(".uv", "wb");
-            if (f) {
-                fprintf(f, "# UV account descriptor\nname = %s\nversion = 1\n", nm);
-                if (fi >= 0) fprintf(f, "flavour = %s\n", uv_flavours[fi].name);
-                fclose(f);
-                if (fi >= 0)
-                    fprintf(stderr, "uv-git: wrote .uv (flavour %s)\n",
+            /* No `.uv` written: the descriptor is virtual off MVX
+               (mv_git#122), and the account holds records rather than mv_git's
+               notes.  The flavour goes into git's config, and the next `add`
+               stages a descriptor that carries it into the git objects, where
+               GIT ATTR can edit it. */
+            (void)nm;
+            if (fi >= 0) {
+                char c[256];
+                snprintf(c, sizeof c, "git config mvx.flavour '%s'",
+                         uv_flavours[fi].name);
+                if (system(c) == 0)
+                    fprintf(stderr, "uv-git: recorded flavour %s\n",
                             uv_flavours[fi].name);
-                else
-                    fprintf(stderr,
-                        "uv-git: wrote .uv — it names NO FLAVOUR, so the stock "
-                        "VOC baseline cannot be\n"
-                        "        built and a commit will carry this account's "
-                        "stock VOC records.\n"
-                        "        Add `flavour = <name>` to .uv, or re-run with "
-                        "--flavour=<name>.\n");
+            } else {
+                fprintf(stderr,
+                    "uv-git: NO FLAVOUR recorded, so the stock VOC baseline "
+                    "cannot be built and a\n"
+                    "        commit will carry this account's stock VOC "
+                    "records.  Re-run with\n"
+                    "        --flavour=<name>, or set one with GIT ATTR.\n");
             }
+            /* A plain `git checkout` of a natively-committed repository
+               leaves its descriptor in the working tree.  Off MVX that file is
+               virtual, so adopting the checkout removes it -- otherwise it sits
+               in the account unread and the next commit carries it forward as
+               an ordinary file (mv_git#122). */
+            mv_git_drop_native_desc();
             {
                 char gd2[4096], pfx2[4096];
                 if (repo_place(gd2, sizeof gd2, pfx2, sizeof pfx2) == 0)
@@ -1640,22 +1650,17 @@ static int clone_cmd(int argc, char **argv, int i) {
      * flavour forward, and --flavour becomes a thing you supply once for a
      * lineage rather than every time.  adopt already does this; clone did not. */
     if (fi >= 0) {
-        char have[64];
-        char cur[4096];
-        size_t curlen = 0;
-        FILE *r = fopen(".uv", "rb");
-        if (r) { curlen = fread(cur, 1, sizeof cur - 1, r); fclose(r); }
-        cur[curlen] = '\0';
-        if (!mv_git_desc_field(cur, curlen, "flavour", have, sizeof have)) {
-            FILE *f = fopen(".uv", "ab");
-            if (f) {
-                if (curlen && cur[curlen - 1] != '\n') fputc('\n', f);
-                fprintf(f, "flavour = %s\n", uv_flavours[fi].name);
-                fclose(f);
-                printf("uv-git: recorded flavour %s in .uv — commit it and no "
-                       "later clone need be told\n", uv_flavours[fi].name);
-            }
-        }
+        /* Into git's config, not a `.uv` in the account.  The account holds
+           records; the descriptor is virtual everywhere but MVX (mv_git#122).
+           The next `add` stages a descriptor carrying the flavour, and from
+           then on it is in the git objects where GIT ATTR can edit it and no
+           later clone need be told. */
+        char c[256];
+        snprintf(c, sizeof c, "git config mvx.flavour '%s'",
+                 uv_flavours[fi].name);
+        if (system(c) == 0)
+            printf("uv-git: recorded flavour %s — commit and no later clone "
+                   "need be told\n", uv_flavours[fi].name);
     }
 
     printf("cloned into %s as a UniVerse account (%s flavour)\n",
