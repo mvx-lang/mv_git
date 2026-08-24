@@ -187,6 +187,8 @@
 *     IXCAT answers through the same side channel as CAT, and for the same
 *     reason: what comes back is blob content, not a message.
       CASE OP = "IXCAT"      ; R = CALLC GITIXCAT(REPO, A2) ; ISCAT = 1
+*     PROJECT is a record, not a message -- the same channel as CAT.
+      CASE OP = "PROJECT"    ; R = CALLC GITPROJECT(REPO, A2, A3, A4) ; ISCAT = 1
 *     UDIFF returns diff TEXT, which is content-shaped and can be long — the
 *     side channel CAT uses, not the message one.
       CASE OP = "UDIFF"      ; R = CALLC GITUDIFF(REPO, A2, A3, A4) ; ISCAT = 1

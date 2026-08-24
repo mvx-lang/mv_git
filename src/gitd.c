@@ -302,7 +302,33 @@ static opres op_stage(const args *g) {
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", A(g, 1), A(g, 2));
     mv_git_batch_begin(rp(A(g, 0)));      /* idempotent */
-    mv_git_batch_add(path, g->a[3], g->l[3], 1);
+    /* Through the SAME projection the CLI stages with (mv_git#108).  Without
+       it the verb committed dictionary records in the native layout while
+       `udt-git add` committed the canonical one, so the two produced different
+       blobs from identical records -- each self-consistent, and each reporting
+       the other's account as modified for ever.
+       Only a dictionary, and only when strlen measures the whole record: the
+       projection is a string operation, and a record with a NUL in it is
+       binary and has no dictionary form to project to. */
+    const char *rec = g->a[3];
+    int64_t rl = g->l[3];
+    char *pj = NULL, *nt = NULL;
+    /* The projection is a string operation, so it needs the record NUL
+       terminated at exactly rl -- the wire buffer is not, and measuring it with
+       strlen instead is what silently skipped this on UniVerse.  A record with
+       a NUL INSIDE it is binary: no dictionary form, so leave it alone. */
+    if (rec && rl > 0 && memchr(rec, '\0', (size_t)rl) == NULL
+        && (nt = malloc((size_t)rl + 1)) != NULL) {
+        memcpy(nt, rec, (size_t)rl);
+        nt[rl] = '\0';
+        mv_ctx *ctx = mv_ctx_create();
+        pj = mv_git_project(ctx, rp(A(g, 0)), A(g, 1), A(g, 2), nt);
+        mv_ctx_destroy(ctx);
+        free(nt);
+        if (pj) { rec = pj; rl = (int64_t)strlen(pj); }
+    }
+    mv_git_batch_add(path, rec, rl, 1);
+    free(pj);
     return ok(NULL);
 }
 
@@ -366,6 +392,10 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 /* String matching only — mvgitd cannot read the account, and does not need to
    in order to say what is furniture (mv_git#81). */
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
+/* The record arrives measured by strlen, which is safe only because the caller
+   never sends a record with a NUL in it: BP/GIT.STATUS answers "same" for those
+   before it ever asks (a binary record has no dictionary projection). */
+BRIDGE1(op_project,    mv_git_project(ctx, rp(A(g,0)), A(g,1), A(g,2), A(g,3)))
 /* Answered by mvgitd itself, so the version is the one doing the work. */
 BRIDGE1(op_version,    mv_git_versions("mvgitd " GITD_VERSION))
 static opres op_stagedesc(const args *g) {
@@ -431,6 +461,7 @@ static const struct {
     { "BRANCH",      2, op_branch     },
     { "FILES",       1, op_files      },
     { "FURNITURE",   2, op_furniture  },
+    { "PROJECT",     4, op_project    },
     { "VERSION",     1, op_version    },
     { "STAGEDESC",   3, op_stagedesc  },
     { "CAT",         2, op_cat        },

@@ -120,8 +120,16 @@ char *GITSTAGE(char *repo, char *file, char *id, char *record) {
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", file ? file : "", id ? id : "");
     mv_git_batch_begin(rp(repo));       /* idempotent */
-    mv_git_batch_add(path, record ? record : "",
-                     record ? (int64_t)strlen(record) : 0, 1);
+    /* Through the SAME projection the CLI stages with -- see op_stage in
+       gitd.c for why the verb must not carry its own idea of the stored form
+       (mv_git#108). */
+    mv_ctx *sctx = mv_ctx_create();
+    char *pj = mv_git_project(sctx, rp(repo), file ? file : "",
+                              id ? id : "", record ? record : "");
+    mv_ctx_destroy(sctx);
+    const char *body = pj ? pj : (record ? record : "");
+    mv_git_batch_add(path, body, (int64_t)strlen(body), 1);
+    free(pj);
     /* Write the channel even with nothing to say (mv_git#58): an op that
        leaves it alone is read back as this op's result, so `add` echoed the
        ids a previous INDEXIDS had left there.  Every op owns the channel for
@@ -287,6 +295,22 @@ char *GITFILES(char *repo) {
 /* GITCAT(repo, path) — the committed record at `path` (attribute marks
    restored) written to <repo>/gitcat, which the verb OSREADs and WRITEs.  A
    separate file from gitmsg since the content is a raw record (marks/binary). */
+/* GITPROJECT(repo, file, id, rec) -- the form `add` would stage this record in.
+   Content-shaped, so it answers through the gitcat side channel like CAT: a
+   record is bytes with marks in it, not a message. */
+char *GITPROJECT(char *repo, char *file, char *id, char *rec) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_project(ctx, rp(repo), file ? file : "", id ? id : "",
+                             rec ? rec : "");
+    mv_ctx_destroy(ctx);
+    char p[1300];
+    snprintf(p, sizeof p, "%s/gitcat", rp(repo));
+    FILE *f = fopen(p, "wb");
+    if (f) { if (r) fwrite(r, 1, strlen(r), f); fclose(f); }
+    free(r);
+    return "";
+}
+
 char *GITCAT(char *repo, char *path) {
     mv_ctx *ctx = mv_ctx_create();
     char *r = mv_git_catpath(ctx, rp(repo), path ? path : "");
