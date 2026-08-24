@@ -29,9 +29,9 @@ $IFDEF MVX
 CALL GIT.CMD.HAS("all", ALLF)
 CALL GIT.CMD.ARG(1, A1)
 IF ALLF OR A1 = "." THEN
-   OUT = ""
-   CALL GITADDALL(".git", OUT)
-   PRINT OUT
+   GOUT = ""
+   CALL GITADDALL(".git", GOUT)
+   PRINT GOUT
    RETURN
 END
 IF A1 = "DICT" THEN
@@ -46,9 +46,9 @@ IF FN = ".DICT" OR FN = "" THEN
    PRINT "usage: GIT ADD {DICT} file {record}"
    RETURN
 END
-OUT = ""
-CALL GITADD(".git", FN, ID, OUT)
-PRINT OUT
+GOUT = ""
+CALL GITADD(".git", FN, ID, GOUT)
+PRINT GOUT
 $ELSE
 * Inlined from GITUDT.ADD, which had exactly one caller — this one.  Its
 * parameters were (REPO, S), the same names the caller already uses, so the body

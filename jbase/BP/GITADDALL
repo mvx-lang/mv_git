@@ -1,0 +1,6 @@
+* GITADDALL - see BP/GITSTATUS for why these shims exist.
+      SUBROUTINE GITADDALL(REPO, ANS)
+      DEFC VAR JBGITADDALL(VAR, VAR)
+      ANS = ""
+      X = JBGITADDALL(REPO, ANS)
+      RETURN

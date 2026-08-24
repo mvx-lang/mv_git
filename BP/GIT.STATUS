@@ -20,11 +20,15 @@ SUBROUTINE GIT.STATUS
 * now DEPENDS on the define being right rather than merely preferring it, and a
 * handler that silently compiles to nothing is the failure that cost an
 * afternoon on GIT CLONE (mv_git#52).  DECISIONS.md records the rule.
-$IFDEF MVX
-OUT = ""
-CALL GITSTATUS(".git", OUT)
-FOR I = 1 TO DCOUNT(OUT, @AM)
-   PRINT OUT<I>
+$IFDEF ENGINE
+* ENGINE, not MVX: the question this arm asks is whether the engine can be
+* CALLed here, which is true of MVX and of jBASE (BP/GITSTATUS wraps its DEFC
+* function to give it MVX's signature) and false of UniData and UniVerse,
+* where the work has to be done in BASIC below (mv_git#114).
+GOUT = ""
+CALL GITSTATUS(".git", GOUT)
+FOR I = 1 TO DCOUNT(GOUT, @AM)
+   PRINT GOUT<I>
 NEXT I
 $ELSE
 * Inlined from GITUDT.STATUS, which had exactly one caller — this one.

@@ -11,8 +11,8 @@
 *  * @file GIT.CMD.USAGE
 *  * @version 1.0
 *  */
-SUBROUTINE GIT.CMD.USAGE(SPEC, OUT)
-OUT = "" ; N = 0 ; IF SPEC # "" THEN N = DCOUNT(SPEC, @AM)
+SUBROUTINE GIT.CMD.USAGE(SPEC, GOUT)
+GOUT = "" ; N = 0 ; IF SPEC # "" THEN N = DCOUNT(SPEC, @AM)
 FOR I = 1 TO N
    SH = SPEC<I,1> ; LG = SPEC<I,2> ; TV = SPEC<I,3> ; HP = SPEC<I,5>
    FLG = ""
@@ -22,6 +22,6 @@ FOR I = 1 TO N
       FLG = FLG : "--" : LG
    END
    IF TV THEN FLG = FLG : " <value>"
-   OUT<-1> = "  " : FMT(FLG, "L#22") : HP
+   GOUT<-1> = "  " : FMT(FLG, "L#22") : HP
 NEXT I
 RETURN

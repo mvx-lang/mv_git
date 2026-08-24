@@ -21,7 +21,7 @@ SUBROUTINE GIT.CLONE
 * and the whole body disappeared at compile time.  The symptom was a handler
 * that was entered, parsed its arguments, and then did nothing at all.
 CALL GIT.SENT(S)
-* --flavour=<name> is pulled OUT of the sentence before the positional fields are
+* --flavour=<name> is pulled GOUT of the sentence before the positional fields are
 * read, so it may be typed anywhere and never lands in REF.
 *
 * A UniVerse account is created WITH a flavour and the choice is unrecoverable
@@ -81,9 +81,9 @@ BEGIN CASE
    CASE PLAT = "MVX"
 $IFDEF MVX
 *     The engine's own clone: MVX materialises straight from the git objects.
-      OUT = ""
-      CALL GITCLONE(URL, DIR, REF, OUT)
-      PRINT OUT
+      GOUT = ""
+      CALL GITCLONE(URL, DIR, REF, GOUT)
+      PRINT GOUT
 $ENDIF
    CASE PLAT = "UV"
 *     CLONE IS THE ONE OPERATION A SESSION CANNOT DO FOR ITSELF.  Every other
