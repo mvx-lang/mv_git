@@ -41,9 +41,12 @@ esac
 CFLAGS="$(pkg-config --cflags libgit2 2>/dev/null || echo -I/opt/homebrew/include)"
 LDFLAGS="$(pkg-config --libs libgit2 2>/dev/null || echo -L/opt/homebrew/lib -lgit2)"
 
+. "$PKG/version.sh"
+UGVER="${MV_GIT_VERSION:-$(mv_git_version "$PKG")}"
+
 mkdir -p "$PKG/LIB"
 cc -O2 -fPIC -shared $UNDEF \
-   -I"$MVXINC" $CFLAGS \
+   -I"$MVXINC" $CFLAGS -DMVXGIT_VERSION="\"$UGVER\"" \
    "$PKG/src/mvxgit.c" $LDFLAGS \
    -o "$PKG/LIB/libmvxgit.$EXT"
 echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
@@ -54,7 +57,7 @@ echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
 # non-record-git command it just execs the real git, so no runtime is needed at
 # run time in that path — but the link is unconditional.
 mkdir -p "$PKG/bin"
-cc -O2 -I"$MVXINC" -I"$PKG/src" $CFLAGS \
+cc -O2 -I"$MVXINC" -I"$PKG/src" $CFLAGS -DMVXGIT_VERSION="\"$UGVER\"" \
    "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" \
    -L"$MVXLIB" -lmvxrt $LDFLAGS \
    -Wl,-rpath,"$RPATH" -Wl,-rpath,"$MVXLIB" \

@@ -28,7 +28,8 @@ STAGE="${1:?usage: build-udt.sh <stagedir>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/src"
 CC="${CC:-cc}"
-UGVER="${UDTGIT_VERSION:-${GITHUB_REF_NAME:-0}}"   # stamped for MVPKG self-registration
+. "$HERE/version.sh"
+UGVER="${UDTGIT_VERSION:-$(mv_git_version)}"   # stamped for MVPKG self-registration
 
 # libgit2 build flags.  Two ways to supply them:
 #   * explicit LIBGIT2_CFLAGS / LIBGIT2_LIBS — for a distro/EPEL versioned lib

@@ -15,6 +15,8 @@ set -eu
 
 OUT="${1:-bin}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$(dirname "$0")/version.sh"
+UGVER="${MV_GIT_VERSION:-$(mv_git_version "$(dirname "$0")")}"
 SRC="$HERE/src"
 CC="${CC:-cc}"
 PREFIX="${LIBGIT2_PREFIX:-/usr/local}"
@@ -52,6 +54,7 @@ sh "$HERE/embed-agent.sh"
 $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD -DMVXGIT_NORECORDS \
     -I"$SRC" $LG2_CFLAGS \
     "$SRC/gitd.c" "$SRC/gitd_rt.c" "$SRC/mvxgit.c" \
+    -DGITD_VERSION="\"$UGVER\"" \
     -o "$OUT/mvgitd" $LG2_LIBS
 
 echo "built $OUT/mvgitd"
@@ -72,6 +75,7 @@ $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
     -I"$SRC" $LG2_CFLAGS \
     "$SRC/uv-git.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/mvxgit.c" \
     "$SRC/agentcmd.c" "$SRC/agentseed.c" \
+    -DUVGIT_VERSION="\"$UGVER\"" \
     -o "$OUT/uv-git" $LG2_LIBS
 
 echo "built $OUT/uv-git"
