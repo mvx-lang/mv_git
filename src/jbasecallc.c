@@ -4,8 +4,8 @@
  * jBASE reaches C with DEFC, which declares a FUNCTION rather than a
  * subroutine, and hands it the session:
  *
- *     DEFC VAR GITSTATUS(VAR, VAR)
- *     X = GITSTATUS(".git", OUT.TXT)
+ *     DEFC VAR JBGITSTATUS(VAR, VAR)
+ *     X = JBGITSTATUS(".git", OUT.TXT)
  *
  * An argument VAR written by the C side IS visible to the caller (verified), so
  * output travels back through an argument exactly as it does for the engine's
@@ -15,6 +15,11 @@
  * DPSTRUCT, and mv_jbase_use_session() hands it to the record layer so the verb
  * reads the records of the session that called it rather than opening a second
  * one -- which is what makes an in-session `GIT ADD` see uncommitted work.
+ *
+ * The entry points are named JBGIT* rather than GIT*, so that BP/GIT<op> can be
+ * a BASIC SUBROUTINE of the same name as MVX's -- one line of glue each -- and
+ * every handler's engine arm then works here unchanged.  DEFC declares a
+ * function, which cannot satisfy a CALL.
  *
  * This layer is DELIBERATELY WIDER than UniData's (src/gitcallcb.c), which has
  * no GITSTATUS or GITADD at all: there, C cannot read records, so status and
@@ -86,18 +91,18 @@ static void give(DPSTRUCT *dp, VAR *out, char *answer) {
         return Result;                                                        \
     }
 
-JB_OP0(GITINIT,     mv_git_init(ctx, sfb(dp, Repo)))
-JB_OP0(GITSTATUS,   mv_git_status(ctx, sfb(dp, Repo)))
-JB_OP0(GITADDALL,   mv_git_addall(ctx, sfb(dp, Repo)))
-JB_OP0(GITVERSION,  mv_git_versions("jb-git " MVXGIT_VERSION))
+JB_OP0(JBGITINIT,     mv_git_init(ctx, sfb(dp, Repo)))
+JB_OP0(JBGITSTATUS,   mv_git_status(ctx, sfb(dp, Repo)))
+JB_OP0(JBGITADDALL,   mv_git_addall(ctx, sfb(dp, Repo)))
+JB_OP0(JBGITVERSION,  mv_git_versions("jb-git " MVXGIT_VERSION))
 
-JB_OP1(GITCOMMIT,   mv_git_commit(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(GITLOG,      mv_git_log(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(GITDIFF,     mv_git_diff(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(GITBRANCH,   mv_git_branch(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(GITCHECKOUT, mv_git_checkout(ctx, sfb(dp, Repo), sfb(dp, A1)))
-JB_OP1(GITRESTORE,  mv_git_restore(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITCOMMIT,   mv_git_commit(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITLOG,      mv_git_log(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITDIFF,     mv_git_diff(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITBRANCH,   mv_git_branch(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITCHECKOUT, mv_git_checkout(ctx, sfb(dp, Repo), sfb(dp, A1)))
+JB_OP1(JBGITRESTORE,  mv_git_restore(ctx, sfb(dp, Repo), sfb(dp, A1)))
 
-JB_OP2(GITADD,      mv_git_add(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
-JB_OP2(GITSHOW,     mv_git_show(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
-JB_OP2(GITRM,       mv_git_rm(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
+JB_OP2(JBGITADD,      mv_git_add(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
+JB_OP2(JBGITSHOW,     mv_git_show(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))
+JB_OP2(JBGITRM,       mv_git_rm(ctx, sfb(dp, Repo), sfb(dp, A1), sfb(dp, A2)))

@@ -1,0 +1,6 @@
+* GITCOMMIT - see BP/GITSTATUS for why these shims exist.
+      SUBROUTINE GITCOMMIT(REPO, MSG, ANS)
+      DEFC VAR JBGITCOMMIT(VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITCOMMIT(REPO, MSG, ANS)
+      RETURN

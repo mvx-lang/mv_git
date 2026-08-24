@@ -100,14 +100,14 @@ IF DSTAGED THEN
    RETURN
 END
 $IFDEF MVX
-OUT = ""
+GOUT = ""
 IF DUNI THEN
-   CALL GITDIFFU(".git", FN, OUT)
+   CALL GITDIFFU(".git", FN, GOUT)
 END ELSE
-   CALL GITDIFF(".git", FN, OUT)
+   CALL GITDIFF(".git", FN, GOUT)
 END
-FOR I = 1 TO DCOUNT(OUT, @AM)
-   PRINT OUT<I>
+FOR I = 1 TO DCOUNT(GOUT, @AM)
+   PRINT GOUT<I>
 NEXT I
 $ELSE
 * Inlined from GITUDT.DIFF, which had exactly one caller — this one.  Its

@@ -1,0 +1,6 @@
+* GITLOG - see BP/GITSTATUS for why these shims exist.
+      SUBROUTINE GITLOG(REPO, CNT, ANS)
+      DEFC VAR JBGITLOG(VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITLOG(REPO, CNT, ANS)
+      RETURN

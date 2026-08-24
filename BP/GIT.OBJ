@@ -43,9 +43,9 @@
 * Opcodes are the shared vocabulary of the two transports (gitcallcb.c's CallC
 * entry points and gitd.c's dispatch table), which is why they carry the same
 * names and arity on both sides.
-      SUBROUTINE GIT.OBJ(OP, NARGS, A1, A2, A3, A4, A5, OUT)
+      SUBROUTINE GIT.OBJ(OP, NARGS, A1, A2, A3, A4, A5, GOUT)
       $INCLUDE BP.INC PLATFORM.H
-      OUT = ""
+      GOUT = ""
 *
       $IFDEF MVX
 *     ---- MVX: the engine is in this process --------------------------------
@@ -53,30 +53,30 @@
 *     rather than quietly answering "", because an op that silently produced
 *     nothing here would read as an empty attribute set rather than as a bug.
       BEGIN CASE
-      CASE OP = "CAT"      ; CALL GITCAT(A1, A2, OUT)
-      CASE OP = "IXCAT"    ; CALL GITIXCAT(A1, A2, OUT)
-      CASE OP = "STAGED"   ; CALL GITSTAGED(A1, OUT)
+      CASE OP = "CAT"      ; CALL GITCAT(A1, A2, GOUT)
+      CASE OP = "IXCAT"    ; CALL GITIXCAT(A1, A2, GOUT)
+      CASE OP = "STAGED"   ; CALL GITSTAGED(A1, GOUT)
 *     DIFFU is the MVX unstaged diff with hunk headers.  It has no arm on the
 *     session platforms and needs none: there the unstaged diff is the BASIC
 *     body below, which renders through UDIFF like the staged one does.
-      CASE OP = "DIFFU"    ; CALL GITDIFFU(A1, A2, OUT)
-      CASE OP = "UDIFF"    ; CALL GITUDIFF(A2, A3, A4, OUT)
-      CASE OP = "PUTDESC"  ; CALL GITPUTDESC(A1, A2, A3, OUT)
-      CASE OP = "FILES"    ; CALL GITFILES(A1, OUT)
-      CASE OP = "FURNITURE" ; CALL GITFURNITURE(A2, OUT)
-      CASE OP = "VOCDROP"  ; CALL GITVOCDROP(A2, OUT)
-      CASE OP = "ISOPEN"   ; CALL GITISOPEN(REPO, OUT)
-      CASE OP = "ADDDISK"  ; CALL GITADDDISKFOR(REPO, A2, OUT)
-      CASE OP = "MATACCT"  ; CALL GITMATERIALISEACCT(A2, OUT)
-      CASE OP = "VERSION"  ; CALL GITVERSION(A1, OUT)
-      CASE OP = "STAGEDESC" ; CALL GITSTAGEDESC(A1, A2, A3, OUT)
+      CASE OP = "DIFFU"    ; CALL GITDIFFU(A1, A2, GOUT)
+      CASE OP = "UDIFF"    ; CALL GITUDIFF(A2, A3, A4, GOUT)
+      CASE OP = "PUTDESC"  ; CALL GITPUTDESC(A1, A2, A3, GOUT)
+      CASE OP = "FILES"    ; CALL GITFILES(A1, GOUT)
+      CASE OP = "FURNITURE" ; CALL GITFURNITURE(A2, GOUT)
+      CASE OP = "VOCDROP"  ; CALL GITVOCDROP(A2, GOUT)
+      CASE OP = "ISOPEN"   ; CALL GITISOPEN(REPO, GOUT)
+      CASE OP = "ADDDISK"  ; CALL GITADDDISKFOR(REPO, A2, GOUT)
+      CASE OP = "MATACCT"  ; CALL GITMATERIALISEACCT(A2, GOUT)
+      CASE OP = "VERSION"  ; CALL GITVERSION(A1, GOUT)
+      CASE OP = "STAGEDESC" ; CALL GITSTAGEDESC(A1, A2, A3, GOUT)
 *     Staging ops produce no output, here as everywhere else.
       CASE OP = "STAGECTL"
          SOUT = ""
          CALL GITSTAGECTL(A1, A2, A3, SOUT)
-         OUT = ""
+         GOUT = ""
       CASE 1
-         OUT = "GIT: unknown git-object operation '" : OP : "'"
+         GOUT = "GIT: unknown git-object operation '" : OP : "'"
       END CASE
       RETURN
       $ENDIF
@@ -88,8 +88,8 @@
 *     it as the output rather than swallowing it, so the caller's own error
 *     reporting shows the reason instead of an empty result.
       ST = 0
-      CALL GIT.RPC(OP, NARGS, A1, A2, A3, A4, A5, ST, OUT)
-      IF ST # 0 THEN OUT = "GIT: " : OUT
+      CALL GIT.RPC(OP, NARGS, A1, A2, A3, A4, A5, ST, GOUT)
+      IF ST # 0 THEN GOUT = "GIT: " : GOUT
       RETURN
       $ENDIF
 *
@@ -104,14 +104,14 @@
 *     branch does the same two things: call, then read the result back.
 *     Arguments arrive as plain scalars rather than a dimensioned array, which
 *     is not a style choice: UniData cannot subscript a MAT parameter at all —
-*     `OUT = ARGV(1)` off `SUBROUTINE X(MAT ARGV)` is "redefined variable ARGV",
+*     `GOUT = ARGV(1)` off `SUBROUTINE X(MAT ARGV)` is "redefined variable ARGV",
 *     and putting the dimension in the signature is a syntax error.  UniVerse
 *     accepts the matrix form happily, so this only shows up on UniData.
       REPO = A1
       ISCAT = 0
 *     CLEAR THE SIDE CHANNEL FIRST.  The result comes back through files —
 *     REPO/gitmsg, or REPO/gitcat for CAT — and an opcode that produces no
-*     message never writes one.  So OUT came back holding the PREVIOUS call's
+*     message never writes one.  So GOUT came back holding the PREVIOUS call's
 *     text, and the caller printed it as its own: `GIT ADD VOC ZZPULL` answered
 *     "1 record(s) staged" and then echoed the whole dictionary id list left by
 *     an INDEXIDS, which UniData then PAGINATED — "Enter <New line> to
@@ -213,16 +213,16 @@
       CASE OP = "PULL"       ; R = CALLC GITPULL(REPO, A2, A3)
       CASE OP = "PULLREF"    ; R = CALLC GITPULLREF(REPO, A2, A3)
       CASE 1
-         OUT = "GIT: unknown git-object operation '" : OP : "'"
+         GOUT = "GIT: unknown git-object operation '" : OP : "'"
          RETURN
       END CASE
 *
 *     CAT returns record content, which is why it has a file of its own — a raw
 *     record, marks and all, kept apart from the message stream.
       IF ISCAT THEN
-         OSREAD OUT FROM REPO : "/gitcat" ELSE OUT = ""
+         OSREAD GOUT FROM REPO : "/gitcat" ELSE GOUT = ""
       END ELSE
-         OSREAD OUT FROM REPO : "/gitmsg" ELSE OUT = ""
+         OSREAD GOUT FROM REPO : "/gitmsg" ELSE GOUT = ""
       END
       $ENDIF
 *

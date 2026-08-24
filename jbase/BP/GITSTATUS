@@ -1,0 +1,14 @@
+* GITSTATUS - the engine's status, as a SUBROUTINE.
+* Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+* jBASE reaches C with DEFC, which declares a FUNCTION -- so the engine's entry
+* points cannot be CALLed directly the way MVX's can.  This is the one line of
+* glue that fixes that: a subroutine with MVX's exact signature, wrapping the
+* DEFC function.  With it, every handler's engine arm works here unchanged,
+* which is why the guard can be $IFDEF ENGINE rather than a second copy of the
+* body under $IFDEF JBASE (mv_git#114).
+      SUBROUTINE GITSTATUS(REPO, ANS)
+      DEFC VAR JBGITSTATUS(VAR, VAR)
+      ANS = ""
+      X = JBGITSTATUS(REPO, ANS)
+      RETURN
