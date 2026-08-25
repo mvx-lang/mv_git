@@ -1495,66 +1495,59 @@ char *mv_git_filter_furniture(const char *list) {
  * Refuses when the tree is DIRTY, because "every byte is in HEAD" is only true
  * then; otherwise this would delete work nobody committed.  Returns 0 on
  * success, or -1 with the first offending line in `why`. */
-/* Write the WORKING TREE into a tree object and return its id.
+/* Put the account's working tree in the STASH and return the tree-ish to build
+ * the account from.
  *
- * This is how `adopt` takes the data from disk.  A plain checkout may have been
- * edited, and adopting it should carry those edits into the account -- so the
- * tree is captured first, the checkout is cleared, and the account is built
- * from the captured tree.  Nothing is committed: the index is left holding the
- * captured state, so the edits show as STAGED afterwards and the person who
- * made them decides whether to commit.
+ * `adopt` has to take the data from disk: a plain checkout may have been edited,
+ * and adopting it should carry those edits into the account rather than silently
+ * prefer the committed version of a record.  git already has a command for
+ * "set this work aside, safely, and give me back a clean tree" -- so this is
+ * `git stash push -u -- .` rather than a hand-rolled capture:
  *
- * `git add -A` rather than a libgit2 walk, so .gitignore, mode bits and
- * deletions are handled exactly as git handles them -- adopt must not have its
- * own opinion about what is in a working tree (mv_git#124). */
-int mv_git_worktree_capture(char *oid, size_t ocap) {
-    if (!oid || !ocap) return -1;
-    oid[0] = '\0';
-    /* `-- .` so only THIS account is staged.  A bare `git add -A` stages the
-       whole worktree wherever it is run from, which in a repository holding
-       several accounts (#44, #49) means the others too. */
-    if (system("git add -A -- . >/dev/null 2>&1") != 0) return -1;
+ *   - it SCOPES to the account with `-- .`, which matters in a repository
+ *     holding several accounts (#44, #49).  A bare capture stages the whole
+ *     worktree wherever it runs.
+ *   - it is RECOVERABLE.  If adopt dies halfway the work is in `git stash list`,
+ *     named and visible, instead of only reachable as a loose object.
+ *   - it reverts the tree as a side effect, which is most of the clearing.
+ *
+ * What it does NOT do is get popped afterwards.  Popping would write the OPEN
+ * FORM back over a native account -- on a hash-file backend those paths are not
+ * files at all -- which is the collision adopt exists to avoid.  The stash's
+ * own tree is materialised instead, so the edits arrive as records.
+ *
+ * `rev` comes back as a tree-ish for THIS account: the stash's subtree at the
+ * prefix, or HEAD's when nothing was stashed (an unedited checkout).  The stash
+ * is left in place; adopt drops it once the account is built. */
+int mv_git_worktree_stash(char *rev, size_t rcap, int *stashed) {
+    if (!rev || !rcap) return -1;
+    rev[0] = '\0';
+    if (stashed) *stashed = 0;
 
-    char line[128];
-    FILE *wt = popen("git write-tree 2>/dev/null", "r");
-    if (!wt) return -1;
-    int got = fgets(line, sizeof line, wt) != NULL;
-    pclose(wt);
-    if (!got) return -1;
-    char *nl = strpbrk(line, "\r\n");
-    if (nl) *nl = '\0';
-    if (!line[0]) return -1;
+    char before[128] = "", after[128] = "";
+    FILE *f = popen("git rev-parse -q --verify 'stash@{0}' 2>/dev/null", "r");
+    if (f) { if (fgets(before, sizeof before, f)) { char *n = strpbrk(before, "\r\n"); if (n) *n = 0; } pclose(f); }
 
-    /* write-tree writes the whole INDEX, so in a subdirectory account that tree
-       is the repository's root, not the account's.  Materialising it would build
-       every OTHER account's files inside this one.  Peel to the subtree at the
-       prefix, which is the account. */
+    /* -u so an uncommitted record file is adopted too, not left behind. */
+    (void)system("git stash push -u -q -- . >/dev/null 2>&1");
+
+    f = popen("git rev-parse -q --verify 'stash@{0}' 2>/dev/null", "r");
+    if (f) { if (fgets(after, sizeof after, f)) { char *n = strpbrk(after, "\r\n"); if (n) *n = 0; } pclose(f); }
+
+    /* A stash is only created when there was something to stash -- an unedited
+       checkout makes none, and then HEAD is what to build from. */
+    int made = after[0] && strcmp(before, after) != 0;
+    if (stashed) *stashed = made;
+
     char pfx[1024] = "";
-    FILE *sp = popen("git rev-parse --show-prefix 2>/dev/null", "r");
-    if (sp) {
-        if (fgets(pfx, sizeof pfx, sp)) {
-            char *pn = strpbrk(pfx, "\r\n");
-            if (pn) *pn = '\0';
-        }
-        pclose(sp);
-    }
+    f = popen("git rev-parse --show-prefix 2>/dev/null", "r");
+    if (f) { if (fgets(pfx, sizeof pfx, f)) { char *n = strpbrk(pfx, "\r\n"); if (n) *n = 0; } pclose(f); }
     size_t pl = strlen(pfx);
     while (pl && pfx[pl - 1] == '/') pfx[--pl] = '\0';
-    if (pl) {
-        char cmd[1400], sub[128];
-        snprintf(cmd, sizeof cmd, "git rev-parse '%s:%s' 2>/dev/null", line, pfx);
-        FILE *rp = popen(cmd, "r");
-        if (!rp) return -1;
-        int ok = fgets(sub, sizeof sub, rp) != NULL;
-        pclose(rp);
-        if (!ok) return -1;
-        char *sn = strpbrk(sub, "\r\n");
-        if (sn) *sn = '\0';
-        if (!sub[0]) return -1;
-        snprintf(oid, ocap, "%s", sub);
-        return 0;
-    }
-    snprintf(oid, ocap, "%s", line);
+
+    const char *base = made ? "stash@{0}^{tree}" : "HEAD^{tree}";
+    if (pl) snprintf(rev, rcap, "%s:%s", base, pfx);
+    else    snprintf(rev, rcap, "%s", base);
     return 0;
 }
 

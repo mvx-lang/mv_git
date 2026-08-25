@@ -777,17 +777,30 @@ static int do_adopt(int argc, char **argv, int i) {
        working tree is captured into a tree object, the checkout is cleared --
        its open form occupies the names the native files want -- and the account
        is built from what was captured. */
-    char tree[128] = "";
-    if (mv_git_worktree_capture(tree, sizeof tree) != 0) {
+    char tree[192] = "";
+    int stashed = 0;
+    if (mv_git_worktree_stash(tree, sizeof tree, &stashed) != 0) {
         fprintf(stderr, "udt-git adopt: could not read the working tree\n");
         return 1;
     }
+    if (stashed)
+        fprintf(stderr, "udt-git adopt: your uncommitted changes are in the "
+                        "stash and will be built into the account\n");
     {
         char why[512];
         (void)mv_git_worktree_clear(why, sizeof why);
     }
 
-    return provision(".", 1, tree);
+    int rc = provision(".", 1, tree);
+    /* The stash was safety, not storage: once the records are in the account it
+       has served its purpose.  Kept on failure, so the work is still there. */
+    if (rc == 0 && stashed) {
+        (void)system("git stash drop -q >/dev/null 2>&1");
+    } else if (stashed) {
+        fprintf(stderr, "udt-git adopt: your changes are still in `git stash "
+                        "list` -- adopt did not finish\n");
+    }
+    return rc;
 }
 
 /* Copy a file byte-for-byte.  Returns 0 on success. */

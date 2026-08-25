@@ -150,9 +150,12 @@ int mv_agent_cataloged(void);
    MVX, where the descriptor is a real file; elsewhere it is virtual. */
 /* Clear a plain-git checkout so an account can be built from HEAD in its place.
    Refuses (-1, with the offending line in `why`) when the tree is dirty. */
-/* Write the working tree into a tree object (via `git add -A` + write-tree) and
-   return its id.  Nothing is committed; the index keeps the captured state. */
-int mv_git_worktree_capture(char *oid, size_t ocap);
+/* Stash the account's working tree (`git stash push -u -- .`) and return the
+   tree-ish to build the account from -- the stash's subtree, or HEAD's when
+   there was nothing to stash.  Recoverable: the work stays in `git stash list`
+   until adopt drops it.  Never popped: that would write the open form back over
+   a native account. */
+int mv_git_worktree_stash(char *rev, size_t rcap, int *stashed);
 
 int mv_git_worktree_clear(char *why, size_t wcap);
 
