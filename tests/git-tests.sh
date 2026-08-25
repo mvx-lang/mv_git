@@ -35,7 +35,23 @@ t()    { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
 # tn NAME UNWANTED ACTUAL — asserts the output does NOT contain UNWANTED.
 # For "it should not ask": a question nobody should be asked cannot be checked
 # by looking for the right words, only by their absence.
-tn()   { case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
+#
+# AN ABSENCE ASSERTED AGAINST NOTHING IS NOT AN ASSERTION.  If ACTUAL is empty
+# this passes no matter what, so it passes just as well when the command under
+# test did nothing at all -- and these shims fail QUIETLY on a path that is not
+# an account, so "did nothing" is the common case, not a rare one.  Three tests
+# in this file were found doing exactly that, each of them green against a build
+# with the fix deliberately removed (mv_git#134).
+#
+# The cure is always the same: put a positive CONTROL in the same output -- some
+# record that MUST be there -- so emptiness cannot pass for success.  This says
+# so out loud rather than trusting anyone to remember.
+tn()   { if [ -z "$3" ]; then
+             printf '  VACUOUS %s — asserted "not %s" against EMPTY output;\n' "$1" "$2"
+             printf '          add a positive control that must appear.\n'
+             FAIL=$((FAIL+1)); return
+         fi
+         case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
 
 # te NAME EXPECTED ACTUAL — exact-equality assertion
 te()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
@@ -535,7 +551,13 @@ else
   #
   # So both halves are asserted: what is on DISK, and what is in GIT.  Testing
   # only one of them is how this survived.
+  # "" IS THE EXPECTED ANSWER ON THREE OF FOUR PLATFORMS, so this function has to
+  # be able to say something OTHER than "" when it is asked the wrong question.
+  # Without the directory check it returned "" for a path that did not exist at
+  # all, and `te "no descriptor file on disk" ""` then passed for a clone that
+  # had never happened -- an assertion that cannot fail (mv_git#134).
   descfiles() { local d="$1" out="" n
+                [ -d "$d" ] || { printf 'NO-SUCH-DIR:%s' "$d"; return; }
                 for n in .mvx .udt .uv .jbase; do
                     [ -f "$d/$n" ] && out="$out$n"
                 done
@@ -732,17 +754,50 @@ version = 1
     "$MVXGIT" clone "$OA" "$WORK/oa-yes" >/dev/null 2>&1
     te "clone open: opt-in by default" "true" \
       "$(git -C "$WORK/oa-yes" config --get mvx.openaccount 2>&1)"
+    # DECLINING AND NOT CLONING AT ALL LOOK THE SAME to `config --get`: both
+    # answer nothing, so `te "" ...` passed either way and the two negative cases
+    # were asserting nothing (mv_git#134).  Reporting whether the clone landed
+    # alongside the flag makes the difference visible -- a clone that failed now
+    # says `no-clone` and the assertion fails.
+    declined() { local d="$1"
+                 [ -d "$d/.git" ] || { printf 'no-clone'; return; }
+                 printf 'cloned:%s' "$(git -C "$d" config --get mvx.openaccount 2>&1)"; }
     "$MVXGIT" clone --no-open-account "$OA" "$WORK/oa-no" >/dev/null 2>&1
-    te "clone open: --no-open-account declines" "" \
-      "$(git -C "$WORK/oa-no" config --get mvx.openaccount 2>&1)"
+    te "clone open: --no-open-account declines" "cloned:" "$(declined "$WORK/oa-no")"
     MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$OA" "$WORK/oa-env" >/dev/null 2>&1
-    te "clone open: env declines" "" \
-      "$(git -C "$WORK/oa-env" config --get mvx.openaccount 2>&1)"
+    te "clone open: env declines" "cloned:" "$(declined "$WORK/oa-env")"
     ;;
   esac
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- an X record is data, not a pointer, so it travels (mv_git#136) --"
+# X is UniVerse's miscellaneous-DATA type: RELLEVEL (14.2.1 / PICK), INTR.KEY,
+# QUIT.KEY -- values, not references.  It was grouped with Q and R as an
+# "account/remote pointer" and so dropped in the open interchange, which silently
+# lost the settings a site keeps in its own VOC.  Nothing points anywhere and
+# nothing on the far side recreates it, so it is the account's own and travels.
+#
+# In the OPEN form deliberately: that is the only form it was ever lost in, and
+# the stock X records are subtracted as furniture (#46) either way, so this can
+# only be tested with one the account put there itself.
+case "$PLATFORM" in
+udt|uv)
+  XA="$WORK/xrec"; ACCT "$XA"; LINK "$XA"
+  SEED "$XA" 'OPEN "VOC" TO V ELSE STOP
+X = ""
+X<1> = "X"
+X<2> = "our-site-setting-42"
+WRITE X ON V, "SITECFG"'
+  ( cd "$XA" && git init -q . >/dev/null 2>&1
+    git config mvx.openaccount true
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add VOC >/dev/null 2>&1 )
+  t  "the site's own X record travels" "VOC/SITECFG" \
+     "$( cd "$XA" && git diff --cached --name-only )"
+  ;;
+esac
+
 say "-- a catalogued item is recreated by cataloguing, so it does not travel (mv_git#137) --"
 # The same rule as a file's own pointer: what the platform writes for you when
 # you catalogue is plumbing, and cataloguing on the far side writes it again.
@@ -774,8 +829,20 @@ udt|uv)
   ( cd "$CATA" && git init -q . >/dev/null 2>&1
     "$MVXGIT" init >/dev/null 2>&1
     "$MVXGIT" add VOC >/dev/null 2>&1 )
-  tn "but its VOC entry stays out" "VOC/CATPROG" \
-     "$( cd "$CATA" && git diff --cached --name-only )"
+  # A CONTROL THAT MUST BE STAGED.  `add VOC` on a fresh account stages nothing
+  # else -- every other record is stock -- so the absence of VOC/CATPROG was
+  # being asserted against EMPTY output, which an `add` that did nothing at all
+  # would also produce.  MYPARA is the account's own and has to come through, so
+  # emptiness can no longer pass for success (mv_git#134).
+  SEED "$CATA" 'OPEN "VOC" TO V ELSE STOP
+P = ""
+P<1> = "PA"
+P<2> = "HELLO"
+WRITE P ON V, "MYPARA"'
+  ( cd "$CATA" && "$MVXGIT" add VOC >/dev/null 2>&1 )
+  cstaged="$( cd "$CATA" && git diff --cached --name-only )"
+  t  "the account's own record is staged" "VOC/MYPARA"  "$cstaged"
+  tn "but its VOC entry stays out"        "VOC/CATPROG" "$cstaged"
   ;;
 esac
 

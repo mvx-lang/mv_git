@@ -325,7 +325,15 @@ int mv_voc_class(const char *type, int64_t len) {
            shared U2 table can carry it. */
         {"C", 1},                                        /* udt local catalog */
         {"F", 2}, {"LF", 2}, {"DF", 2}, {"DIR", 2},      /* file definitions */
-        {"Q", 2}, {"X", 2}, {"R", 2},                    /* account/remote ptrs */
+        /* X IS NOT A POINTER, and grouping it here dropped the account's own
+           configuration in the open form.  Measured on a stock UniVerse VOC it
+           is the miscellaneous-DATA type -- RELLEVEL (14.2.1 / PICK),
+           INTR.KEY (ACLQD), QUIT.KEY (ACLQ) -- values, not references.  Nothing
+           points anywhere, nothing on the far side recreates it, and a site that
+           keeps its own settings there was losing them silently (mv_git#136).
+           The stock ones are subtracted by #46 anyway, so this only ever bit the
+           case that mattered.  Class 0: the user's own, travels in both forms. */
+        {"Q", 2}, {"R", 2},                              /* account/remote ptrs */
         {NULL, 0}
     };
     if (!type || len <= 0) return 0;
