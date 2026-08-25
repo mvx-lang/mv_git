@@ -32,6 +32,11 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: %s\n     actual:   
 skip() { SKIP=$((SKIP+1)); printf '  skip %s (%s)\n' "$1" "$2"; }
 # t NAME EXPECTED ACTUAL  — substring assertion (EXPECTED must appear in ACTUAL)
 t()    { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
+# tn NAME UNWANTED ACTUAL — asserts the output does NOT contain UNWANTED.
+# For "it should not ask": a question nobody should be asked cannot be checked
+# by looking for the right words, only by their absence.
+tn()   { case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
+
 # te NAME EXPECTED ACTUAL — exact-equality assertion
 te()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
@@ -507,6 +512,52 @@ else
   # (menu 3).  Harmless on the platforms that do not need it.
   clone_out="$(GITV "$A" GIT CLONE "$REM" "$B" --flavour=PICK)"
   t  "clone"         "cloned"        "$clone_out"
+
+  # --- the account descriptor -------------------------------------------
+  #
+  # It is a FILE only on MVX, where it carries local state (permit/deny policy
+  # and the rest of what an account is configured with).  Everywhere else it
+  # lives in the git objects, and its job THERE is to be the indicator that
+  # tells a clone to build an ACCOUNT rather than just a directory of files.
+  # There is no exception.  UniVerse used to write .uv for the VOC flavour --
+  # the one fact about a UniVerse account that cannot be regenerated, since it
+  # is fixed at creation and readable nowhere afterwards.  It belongs in the git
+  # objects like everything else about the account, where GIT ATTR can edit it,
+  # not in a file beside the records.
+  #
+  # None of this was tested, and all four write sites spelled the name ".mvx"
+  # outright -- so every platform wrote MVX's descriptor into the account and
+  # the suite stayed green.  On UniData the stray turned out to be LOAD-BEARING:
+  # materialise wrote it, the walk staged it as an ordinary file, and the
+  # open-form conversion turned that into the committed .mv-account.  Removing
+  # the stray -- which is right -- silently stopped the indicator travelling,
+  # and a freshly cloned account reported ` M .mv-account` with nothing to fix.
+  #
+  # So both halves are asserted: what is on DISK, and what is in GIT.  Testing
+  # only one of them is how this survived.
+  descfiles() { local d="$1" out="" n
+                for n in .mvx .udt .uv .jbase; do
+                    [ -f "$d/$n" ] && out="$out$n"
+                done
+                printf '%s' "$out"; }
+  case "$PLATFORM" in
+    mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
+    uv)    te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
+    *)     te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
+  esac
+  # ...and the indicator is in the COMMIT, which is what a clone reads to know
+  # this is an account at all.
+  t  "indicator is committed" ".mv-account" \
+     "$(git --git-dir="$B/.git" ls-tree --name-only HEAD 2>/dev/null)"
+
+  # The flavour is what the file used to be FOR, so removing the file has to
+  # leave it reachable: git's config carries it until the next `add` stages a
+  # descriptor that does, and the git objects from then on.
+  if [ "$PLATFORM" = uv ]; then
+    t "flavour survives the clone" "PICK" \
+      "$(git --git-dir="$B/.git" config mvx.flavour 2>/dev/null)$(git --git-dir="$B/.git" show HEAD:.mv-account 2>/dev/null | grep flavour)"
+  fi
+
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null
   GITV "$B" GIT CONFIG user.email test@example.com >/dev/null
@@ -517,6 +568,148 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   GITV "$A" GIT PUSH origin main >/dev/null 2>&1 || GITV "$A" GIT PUSH origin master >/dev/null 2>&1
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin main 2>&1 || GITV "$B" GIT PULL origin master 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
+
+  # --- adopt: a PLAIN-GIT checkout becomes a live account ----------------
+  #
+  # The path nobody had tested, and the one that was broken.  `git` gives you
+  # files; adopt gives you an account.  A plain checkout puts the OPEN FORM on
+  # disk -- CLIENTS lands as a DIRECTORY of record files -- and those are the
+  # names the native files want, so creating them failed and the records went
+  # nowhere: 4 materialised instead of 118, while `status` read clean because
+  # it was comparing the open form against itself.
+  #
+  # So the assertion is NOT "status is clean".  It is that adopt and clone
+  # produce the SAME ACCOUNT: same record count, dictionary present, records
+  # readable, and no descriptor left on disk off MVX (mv_git#122).
+  # Every platform that HAS adopt, because the point is that they AGREE: an
+  # adopted account and a cloned one must be the same account, and two CLIs
+  # building accounts differently is #108 waiting to happen.  Scoping these to
+  # one platform is how that would go unnoticed -- and while they were scoped,
+  # uv-git failed four of them.
+  case "$PLATFORM" in
+    udt|uv)
+      P="$WORK/plainco"
+      git clone -q "$REM" "$P" 2>/dev/null
+      t  "plain checkout has the open form" "CUST" \
+         "$(ls "$P" 2>/dev/null | tr '\n' ' ')"
+      adopt_flav=""; [ "$PLATFORM" = uv ] && adopt_flav="--flavour=PICK"
+      adopt_out="$( cd "$P" && "$MVXGIT" adopt $adopt_flav 2>&1 )"
+      t  "adopt reports an account"    "account"  "$adopt_out"
+      # The record itself, not CT's whole output: the session banner carries
+      # each account's own path, so two good accounts never match exactly.
+      t  "adopt materialises records"  "Oslo"     "$(CT "$P" CUST C3)"
+      te "adopt leaves no descriptor"  ""         "$(descfiles "$P")"
+      # ...and an EDIT ON DISK is what gets adopted.  This is the whole point:
+      # 99 times in 100 the checkout matches HEAD, and when it does not it is
+      # because somebody edited a record -- they expect their edit in the
+      # account, not the committed version of it.  Taking HEAD would silently
+      # prefer the wrong one, and nothing would say so.
+      Q="$WORK/plainedit"
+      git clone -q "$REM" "$Q" 2>/dev/null
+      printf 'EDITED ON DISK\n' > "$Q/CUST/C1"
+      ( cd "$Q" && "$MVXGIT" adopt $adopt_flav >/dev/null 2>&1 )
+      t  "adopt carries a disk edit in" "EDITED ON DISK" "$(CT "$Q" CUST C1)"
+
+      # ...and an account that is a SUBDIRECTORY of a repository (#44, #49).
+      # There is no .git in it -- the repository's is above -- and adopt passed
+      # the literal ".git", so the account was built EMPTY and adopt reported
+      # success anyway.  The sibling assertion is the important one: `git add -A`
+      # stages the whole worktree wherever it is run, and write-tree writes the
+      # whole index, so without scoping adopt would have built acctB's files
+      # inside acctA and cleared what it did not own.
+      M="$WORK/adoptmulti"   # NOT $WORK/multi: the several-accounts test owns that
+      mkdir -p "$M" && ( cd "$M" && git init -q . )
+      for A in acctA acctB; do
+          mkdir -p "$M/$A/CUST" "$M/$A/CUST.DICT"
+          printf '%s-one\n' "$A" > "$M/$A/CUST/C1"
+          printf 'DIR' > "$M/$A/CUST.DICT/%FILE%"
+          printf '# .mv-account - open (portable) account descriptor\nname = %s\nversion = 1\nopenaccount = 1\n' \
+                 "$A" > "$M/$A/.mv-account"
+      done
+      ( cd "$M" && git add -A >/dev/null 2>&1 &&
+        git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
+      ( cd "$M/acctA" && MVXGIT_OPEN_ACCOUNT=1 "$MVXGIT" adopt $adopt_flav >/dev/null 2>&1 )
+      t  "adopt in a subdirectory"     "acctA-one" "$(CT "$M/acctA" CUST C1)"
+      te "the sibling account is untouched" "acctB-one" \
+         "$(head -1 "$M/acctB/CUST/C1" 2>/dev/null)"
+
+      # --- what adopt ASKS -------------------------------------------------
+      #
+      # Three rules, and the wording matters as much as the trigger:
+      #
+      #   open form, flag off   ask to ENABLE.  The data is already portable;
+      #                         the flag is what is missing, and it does not
+      #                         travel with a clone (#88).  Asking to "convert"
+      #                         something that already IS open is nonsense to
+      #                         whoever answers.
+      #   native to ANOTHER MV  ask to CONVERT.  It is being converted either
+      #                         way to be usable here, so that is the one moment
+      #                         "should it also be portable?" is fair.
+      #   native to THIS MV     say nothing.  Nothing is being converted, and
+      #                         asking invites converting a working account for
+      #                         no reason.
+      #
+      # None of this was covered until now; it lived in one CLI and in one
+      # person's hand-testing.
+      askdir() { local d="$1" desc="$2" body="$3"
+                 rm -rf "$d"; mkdir -p "$d/CUST" "$d/CUST.DICT"
+                 printf 'x\n' > "$d/CUST/C1"; printf 'DIR' > "$d/CUST.DICT/%FILE%"
+                 printf '%s' "$body" > "$d/$desc"
+                 ( cd "$d" && git init -q . && git add -A >/dev/null 2>&1 &&
+                   git -c user.email=t@t -c user.name=t commit -qm x >/dev/null 2>&1 ); }
+      OPENDESC='# .mv-account - open (portable) account descriptor
+name = t
+version = 1
+openaccount = 1
+'
+      # 1. open form, flag NOT set -> asks to ENABLE
+      askdir "$WORK/ask1" ".mv-account" "$OPENDESC"
+      t "asks to ENABLE when the flag is off" "flag" \
+        "$( cd "$WORK/ask1" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
+      # 2. native to ANOTHER system -> asks to CONVERT
+      case "$PLATFORM" in udt) FOREIGN=".uv" ;; *) FOREIGN=".udt" ;; esac
+      askdir "$WORK/ask2" "$FOREIGN" "# native descriptor
+name = t
+version = 1
+"
+      t "asks to CONVERT a foreign-native account" "convert" \
+        "$( cd "$WORK/ask2" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
+      # 3. native to THIS system -> silent about the open form
+      case "$PLATFORM" in udt) OWN=".udt" ;; *) OWN=".uv" ;; esac
+      askdir "$WORK/ask3" "$OWN" "# native descriptor
+name = t
+version = 1
+"
+      tn "silent for an account already native here" "open account" \
+         "$( cd "$WORK/ask3" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
+
+      # A SUBMODULE account takes its account type from its OWN repository.
+      #
+      # mvx.openaccount lives in .git/config, so it is a property of the
+      # repository: two accounts under one repo share one flag (#44, #49).  A
+      # submodule is the exception, and for the right reason -- it HAS its own
+      # repository, so it has its own config and its own answer, independent of
+      # whatever contains it.  That is a real shape, not a hypothetical: it is
+      # how packages/git sits inside mvx.
+      #
+      # libgit2 resolves a submodule's gitlink `.git` FILE to the submodule's
+      # own repository, which is what makes this work.  Untested until now, and
+      # the kind of thing that gets "simplified" into reading the parent's
+      # config by someone who has not hit the case.
+      S="$WORK/subm"
+      mkdir -p "$S/inner" && ( cd "$S" && git init -q . )
+      ( cd "$S/inner" && git init -q . &&
+        git config mvx.openaccount true &&
+        printf 'x\n' > f && git add -A >/dev/null 2>&1 &&
+        git -c user.email=t@t -c user.name=t commit -qm inner >/dev/null 2>&1 )
+      # the parent says NOT open; the submodule says open
+      ( cd "$S" && git config mvx.openaccount false )
+      te "submodule keeps its own account type" "true" \
+         "$( cd "$S/inner" && git config --get mvx.openaccount )"
+      te "the parent keeps its own"             "false" \
+         "$( cd "$S" && git config --get mvx.openaccount )"
+      ;;
+  esac
 
   # Cloning an OPEN-format repo sets mvx.openaccount in the cloner's own config
   # and that decides how every later commit here is written, so the CLI asks

@@ -177,13 +177,16 @@ static int account_from_cwd(char *out, size_t cap) {
  * files from a cloned/checked-out legible directory.  Found via $MVXCONVERT or
  * PATH.  This is the only place mvx-git needs convert — never on its own
  * record-git add/commit/checkout. */
-static void convert_import(const char *acct) {
+static int convert_import(const char *acct) {
     fprintf(stderr, "mvx-git: rebuilding account %s\n", acct);
     const char *tool = getenv("MVXCONVERT");
     if (!tool || !tool[0]) tool = "mvx-git-adopt";
     char *rargv[3] = {(char *)tool, (char *)acct, NULL};
-    if (run(rargv) != 0)
+    if (run(rargv) != 0) {
         fprintf(stderr, "mvx-git: account rebuild failed\n");
+        return -1;
+    }
+    return 0;
 }
 
 /* True if the cloned HEAD tree carries the descriptor `name` — checked in the
@@ -771,6 +774,72 @@ int main(int argc, char **argv) {
        `mvx-git textconv <tempfile>` to render a record blob legibly for the
        diff view (the blob is untouched).  Handle it before any account
        detection so it works from anywhere. */
+    /* `adopt` — build the live account from a checkout somebody made with plain
+       git.  MVX has done this since before the subcommand existed, but only as
+       a side effect of clone: convert_import() runs mvx-git-adopt after the
+       records land.  Reaching it by hand meant knowing that tool's name, and
+       `mvx-git adopt` answered "unknown command" -- which reads as "this does
+       not exist" rather than "this is over there" (mv_git#124). */
+    if (sub && !strcmp(sub, "adopt")) {
+        char aacct[PATH_MAX];
+        const char *dir = (subidx + 1 < argc && argv[subidx + 1][0] != '-')
+                          ? argv[subidx + 1] : ".";
+        if (!realpath(dir, aacct)) {
+            fprintf(stderr, "mvx-git adopt: no such directory: %s\n", dir);
+            return 1;
+        }
+        /* The same question udt-git and uv-git ask, from the same engine
+           decision (mv_git#124) -- so a foreign-native checkout is offered the
+           open form here too, and one already in it is offered the FLAG.
+           What MVX does NOT need is their stash/clear dance: that exists
+           because on U2 records live behind a session, so the open form on disk
+           is not the account and has to be got out of the way.  Here the
+           directory IS the account and mvx-git-adopt reads it -- clearing it
+           would delete the very thing being adopted. */
+        {
+            static const char *const names[] = { ".mv-account", ".mvx", ".udt",
+                                                 ".uv", ".jbase", NULL };
+            const char *found = NULL;
+            for (int k = 0; names[k] && !found; k++) {
+                char probe[PATH_MAX];
+                snprintf(probe, sizeof probe, "%s/%s", aacct, names[k]);
+                if (access(probe, F_OK) == 0) found = names[k];
+            }
+            switch (mv_git_adopt_question(found, open_config_on(aacct))) {
+            case MV_ADOPT_ASK_ENABLE:
+                fprintf(stderr,
+                    "mvx-git adopt: %s is already in the open account format, "
+                    "but this repository\n        does not have the flag set -- "
+                    "without it the next commit writes the native form.\n",
+                    aacct);
+                if (ask_open_account(aacct)) {
+                    char *cfg[] = {"git", "-C", (char *)aacct, "config",
+                                   "mvx.openaccount", "true", NULL};
+                    run(cfg);
+                }
+                break;
+            case MV_ADOPT_ASK_CONVERT:
+                fprintf(stderr,
+                    "mvx-git adopt: %s is a native %s account and will be "
+                    "converted to an MVX one.\n", aacct, found);
+                if (ask_open_account(aacct)) {
+                    char *cfg[] = {"git", "-C", (char *)aacct, "config",
+                                   "mvx.openaccount", "true", NULL};
+                    run(cfg);
+                }
+                break;
+            default:
+                break;          /* native to MVX: nothing to convert, nothing to ask */
+            }
+        }
+
+        /* The status matters: `mvx-git adopt` that printed "account rebuild
+           failed" and still exited 0 is a script that carries on as though it
+           had an account.  convert_import was void because its only caller was
+           a clone that had already reported its own result. */
+        return convert_import(aacct) == 0 ? 0 : 1;
+    }
+
     if (sub && !strcmp(sub, "textconv"))
         return mv_git_textconv(subidx + 1 < argc ? argv[subidx + 1] : "-");
 
