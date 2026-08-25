@@ -1558,6 +1558,32 @@ char *mv_git_is_open(const char *repo) {
     return strdup(mv_openaccount() ? "1" : "0");
 }
 
+/* The class of a master-file record, from attribute 1 of its content.
+ *
+ * ATTRIBUTE 1 IS NOT ALWAYS THE TYPE ALONE.  UniVerse appends the file
+ * description given at CREATE.FILE time, so a described file reads
+ * "F Customer master" -- and an EMPTY description still leaves "F ", with the
+ * trailing space.  `CT` trims it on the way to the screen, which is what makes
+ * this so easy to look straight past.
+ *
+ * The engine matched the whole of attribute 1, so on UniVerse `mv_voc_class`
+ * was handed "F " and answered 0 -- class 0, the user's own, keep.  Every
+ * class-2 exclusion was therefore skipped for every file in the account:
+ * measured on 14.2.1, `uv-git add -A` staged VOC/BP, VOC/BP.O, VOC/VOCLIB,
+ * VOC/&SAVEDLISTS& and VOC/OWN -- furniture and derived pointers alike -- while
+ * the in-session verb dropped all six, because BP/GIT.AGENT and BP/GIT.MASTER
+ * both take the first TOKEN (mv_git#142).
+ *
+ * One helper, because the two call sites that had this idiom inline are add and
+ * status, and those two disagreeing is the bug this whole area keeps having. */
+static int voc_class_of(const char *rec, int64_t len) {
+    int64_t f1 = 0;
+    while (f1 < len && (unsigned char)rec[f1] != 0xFE) f1++;
+    int64_t t = 0;
+    while (t < f1 && rec[t] != ' ') t++;
+    return mv_voc_class(rec, t);
+}
+
 /* Which of `list` a wholesale add must drop BY TYPE.
  *
  * `list` is @AM-separated `id<VM>attribute-1`, and the answer is the @AM
@@ -2180,8 +2206,6 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 const char *vp;
                 char vnb[40];
                 int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
-                int64_t f1 = 0;
-                while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
                 /* The platform classifies its own VOC type codes (they differ
                    across UniData / MVX / UniVerse): 1 = always drop (system
                    verb/keyword the target supplies), 2 = drop in the open
@@ -2192,7 +2216,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    (`add VOC SORT`) is a deliberate act and overrides every one
                    of them: the user has said they want this record versioned,
                    and second-guessing that is how a tool becomes untrustworthy. */
-                int cls = mv_voc_class(vp, f1);
+                int cls = voc_class_of(vp, vl);
                 /* Class 1 only -- see mv_git_filter_vocdrop().  A class-2
                    pointer is dropped by whether its file is HERE (#131, just
                    below), which is the question the open form was really asking
@@ -3899,9 +3923,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     const char *vp;
                     char vnb[40];
                     int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
-                    int64_t f1 = 0;
-                    while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
-                    int cls = mv_voc_class(vp, f1);
+                    int cls = voc_class_of(vp, vl);
                     if (cls == 1) continue;      /* mv_git#132, as add */
                     /* A POINTER TO FURNITURE IS FURNITURE, and `add` has always
                        known that (mv_git#78) -- this side did not.  So in a

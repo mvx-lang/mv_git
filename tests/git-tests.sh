@@ -793,6 +793,47 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- the CLI and the verb stage the same wholesale set (mv_git#141, #142) --"
+# TWO WAYS TO SKIP THE EXCLUSIONS, and UniVerse hit both:
+#
+#   #141  BP/GIT.ADD set BLANKET only for -A, so `add VOC` turned every
+#         wholesale exclusion off -- while the ENGINE treats a file-only add as
+#         wholesale.  Naming a FILE is not naming a record.
+#   #142  the engine matched the WHOLE of attribute 1 against the type table,
+#         and UniVerse writes an empty CREATE.FILE description as "F " -- with
+#         the trailing space -- so `mv_voc_class` answered 0 for every file in
+#         the account and the class-2 rules never fired at all.  `CT` trims that
+#         space on the way to the screen, which is what makes it easy to miss.
+#
+# Neither showed as a wrong ANSWER, only as the two routes disagreeing -- so the
+# assertion is that they agree, on a set that exercises both: furniture (the
+# account's own work file), a derived pointer, and a record that must survive.
+case "$PLATFORM" in
+udt|uv)
+  WSA="$WORK/wholesale"; ACCT "$WSA"; LINK "$WSA"; CF "$WSA" OWN
+  SEED "$WSA" 'OPEN "VOC" TO V ELSE STOP
+P = "" ; P<1> = "PA" ; P<2> = "HELLO"
+WRITE P ON V, "MYPARA"'
+  ( cd "$WSA" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$WSA" GIT INIT >/dev/null
+  vocof() { ( cd "$1" && git diff --cached --name-only ) | grep '^VOC/' | sort | tr '\n' ' '; }
+  GITV "$WSA" GIT ADD VOC >/dev/null
+  wverb="$(vocof "$WSA")"
+  ( cd "$WSA" && git reset -q >/dev/null 2>&1; "$MVXGIT" add VOC >/dev/null 2>&1 )
+  wcli="$(vocof "$WSA")"
+  # ASSERTED PER ROUTE rather than by comparing the two sets outright.  They are
+  # not identical on UniVerse for a reason that has nothing to do with either
+  # bug: the stock baseline (#46) is built lazily by uv-git, so a verb-only
+  # account has none and keeps the records a CLI-touched one subtracts.  What
+  # #141 and #142 are about is whether the EXCLUSIONS run at all, and that is
+  # what these four say.
+  t  "a file-only add keeps the account's own record" "VOC/MYPARA" "$wverb"
+  tn "and drops the derived pointer"                  "VOC/OWN"    "$wverb"
+  t  "the CLI keeps it too"                           "VOC/MYPARA" "$wcli"
+  tn "and drops the derived pointer too"              "VOC/OWN"    "$wcli"
+  ;;
+esac
+
 say "-- a pointer to what the repository does NOT carry travels too (mv_git#132) --"
 # CLASS 2 MEANS "a pointer to a file THIS REPOSITORY CARRIES", and nothing else.
 # Such a pointer is derived -- CREATE.FILE writes it and <file>.DICT/%FILE%
