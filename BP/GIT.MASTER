@@ -97,10 +97,28 @@ $IFNDEF MVX
 *     on the same account (mv_git#114, #133).  The op reads no records, so
 *     mvgitd can answer it on UniVerse just as CallC does on UniData.
       CALL GIT.OBJ("VOCDROP", 2, REPO, FITYPE, "", "", "", TYPEDROP)
+*     ...and an OBJECT FILE, which UniVerse keeps beside the source: compiling
+*     BP/GIT writes BP.O/GIT.  `BP.O` is an ordinary F record in the master file,
+*     so this walk saw it as a file like any other and staged all 61 compiled
+*     objects in it.  Nothing caught that except the NUL-content guess in `add`,
+*     which is why removing that guess -- the correct thing to do, since it also
+*     drops legitimate records -- broke UniVerse outright (mv_git#145).
+*
+*     The rule is the engine's: a file named <X>.O whose <X> is ALSO a file here
+*     is an object file, and none of its records are content.  Named, not
+*     guessed: an account may own a file called SOMETHING.O with no SOMETHING
+*     beside it, and that one is theirs.
       FINR = DCOUNT(FIRAW, AM)
       FOR FIK = 1 TO FINR
          FIID = FIELD(FIRAW<FIK>, VM, 1)
          FIDROP = 0
+         FIL = LEN(FIID)
+         IF FIL > 2 AND FIID[FIL-1, 2] = ".O" THEN
+            FIBASE = FIID[1, FIL-2]
+            FOR FIJ = 1 TO FINR
+               IF FIELD(FIRAW<FIJ>, VM, 1) = FIBASE THEN FIDROP = 1
+            NEXT FIJ
+         END
          IF FIFURN # "" THEN
             LOCATE(FIID, FIFURN; FIFP) THEN FIDROP = 1
          END
