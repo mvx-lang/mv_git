@@ -219,6 +219,17 @@ ADDALL:
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
    FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
    CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
+*  THE ORDINARY FILES -- a README, notes, a script, .gitignore itself.  This
+*  walk stages RECORDS and had no pass for anything else, so `GIT ADD -A` in a
+*  session committed none of them while the CLI did (mv_git#148).
+*
+*  The file names go WITH the call: the pass has to know which top-level names
+*  are MV files so it can leave their records to the walk below, and on UniVerse
+*  the engine is mvgitd, which cannot look.  FILEIDS is exactly that list and is
+*  already in hand -- the same "the caller supplies what the engine cannot see"
+*  the furniture and VOCDROP asks are built on (mv_git#133).
+   DKOUT = ""
+   CALL GIT.OBJ("ADDDISK", 2, REPO, FILEIDS, "", "", "", DKOUT)
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
