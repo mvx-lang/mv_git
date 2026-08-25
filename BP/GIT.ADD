@@ -62,7 +62,23 @@ CALL GIT.REPO(REPO)
 *  two accounts in one repository cannot both claim CUST/C1.
    CALL GIT.PREFIX(PFX)
    ARG3 = FIELD(S, " ", 3)
+*  THE FORM IS A PROPERTY OF THE ACCOUNT, not of the sentence.  This read the
+*  command line and nothing else, so an account marked open by `mvx.openaccount`
+*  committed as NATIVE through the verb while `udt-git add -A` committed it as
+*  open -- the same account, two different commits, decided by which way you came
+*  in.  That is what #81 settled must not happen (mv_git#135).
+*
+*  It had gone internally inconsistent too: since #133 the master-file type drops
+*  come from the VOCDROP op, which reads the config, so ONE `add -A` was dropping
+*  pointers as an open account and stamping a native descriptor.
+*
+*  The engine answers from .git/config -- no records, so mvgitd serves it on
+*  UniVerse the same way it serves furniture and VOCDROP.  `-o`/`--open` stays as
+*  an explicit override for a one-off commit in the other form.
    OPENFMT = 0
+   OFOUT = ""
+   CALL GIT.OBJ("ISOPEN", 1, REPO, "", "", "", "", OFOUT)
+   IF TRIM(OFOUT) = "1" THEN OPENFMT = 1
    IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
    IF ARG3 = "-A" OR ARG3 = "." OR ARG3 = "--all" THEN
       SKIPOBJ = 1

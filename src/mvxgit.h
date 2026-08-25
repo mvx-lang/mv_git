@@ -145,6 +145,8 @@ char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
                      const char *id, const char *rec);
 char *mv_git_filter_furniture(const char *list);
 char *mv_git_filter_vocdrop(const char *repo, const char *list);
+/* "1" when this repository is an open account, else "0" (mv_git#135). */
+char *mv_git_is_open(const char *repo);
 char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);
 /* Remove a native descriptor a plain `git checkout` left behind.  A no-op on
