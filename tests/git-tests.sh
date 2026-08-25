@@ -738,6 +738,27 @@ version = 1
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- catalog: an account's object directories are not content (mv_git#130) --"
+# A catalogued program is BUILT from the source beside it: the account gets its
+# own copy back by compiling, and a clone that carried one would carry a binary
+# for whatever host committed it.  So the directory it lands in is plumbing --
+# CATALOG, LIB and bin on MVX, bin and lib on jBASE, CTLG on UniData -- and a
+# wholesale add leaves the file, its dictionary AND its VOC pointer out.
+#
+# STATUS IS ASSERTED, not just the index, and that is the point of testing them
+# together: a record `add` will never stage is a record `status` must never
+# report, or the account is untracked for ever and no commit can clear it.  That
+# asymmetry is what #51 and #95 both were, and it is what this found on the
+# native form -- add skipped the pointer, status named it.
+CF "$A" CATALOG
+SEED "$A" 'OPEN "CATALOG" TO F ELSE STOP
+WRITE "objectcode" ON F, "PROG"'
+GITV "$A" GIT ADD -A >/dev/null
+tn "catalog stays out entirely" "CATALOG" "$(GITV "$A" GIT STATUS)"
+# The escape hatch every other exclusion has: naming it is a deliberate act.
+GITV "$A" GIT ADD CATALOG >/dev/null
+t  "an explicit add still stages it" "CATALOG/PROG" "$(GITV "$A" GIT STATUS)"
+
 # One repo, one index, one commit, with accounts as subdirectories beside
 # ordinary files.  uv-git has walked such a repository for some time; mvx-git
 # fell through to plain git, which cannot see records and staged the backend

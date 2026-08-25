@@ -1341,6 +1341,49 @@ int mv_account_furniture(const char *name, size_t len) {
 #endif
     for (const char *const *sf = sysfile; *sf; sf++)
         if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    /* THE CATALOG AREA, and it is the same question on every system, which is
+       why this list is shared rather than one more per-platform arm.  A
+       catalogued program is BUILT from the source beside it: the account gets
+       its own copy back by compiling, a clone that carried one would carry a
+       binary for whatever host committed it, and the object is not what anybody
+       wrote.  So the directory it lands in is plumbing, not content.
+
+       Each system spells the directory differently and every one of them is
+       here, because a repository is shared BETWEEN systems: an MVX account's
+       `CATALOG/` reaching a jBASE checkout is the same mistake in the other
+       direction, and testing only the local platform's spelling lets each
+       system commit the others' object code.  That is the rule mv_git already
+       applies to the .so/.dll/.dylib extensions (mv_git#114).
+
+         CATALOG, LIB, bin   MVX names all three itself, in the runtime's own
+                             infra() (mvx runtime/src/mvx_acct.c)
+         bin, lib            a jBASE account is born with them, and its file
+                             list is a DIRECTORY SCAN with no master file in the
+                             way -- so nothing else was stopping them.  Nor were
+                             they even the account's: JediOpen("bin") resolves
+                             through $JBCDEV_BIN, which defaults to $HOME/bin,
+                             so `add -A` staged the OPERATOR'S home directory
+                             (mv_git#130).
+         CTLG                UniData's, named in its own list above as well --
+                             it is a stock FILE there, not only a catalog.
+
+       CROSS-APPLIED DELIBERATELY, and it is the opposite call to the vendor
+       data-file names above.  MENUFILE and CTLG are not cross-applied because a
+       site may legitimately own a file by those names and dropping it would
+       lose their data.  These four cannot be somebody's data file: the family
+       reserves them, and MVX refuses to treat them as files at all.  The escape
+       hatch is the same as every other exclusion's -- naming the file
+       explicitly (`add CATALOG`) stages it regardless -- so the cost of being
+       wrong here is one argument, not lost records.
+
+       Matched CASE-SENSITIVELY, like the list above and for the same reason:
+       `bin` is jBASE's binary directory and `BIN` could be anybody's file. */
+    {
+        static const char *const catalog[] = {
+            "CATALOG", "LIB", "CTLG", "bin", "lib", NULL };
+        for (const char *const *c = catalog; *c; c++)
+            if (len == strlen(*c) && memcmp(name, *c, len) == 0) return 1;
+    }
     /* The work-file shapes are common to the family rather than to any one
        platform: names wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_,
        _REPORT_, _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH&,
@@ -1368,6 +1411,13 @@ int mv_account_furniture(const char *name, size_t len) {
        another dictionary. */
     if (len > 2 && name[0] == 'D' && name[1] == '_' &&
         mv_account_furniture(name + 2, len - 2)) return 1;
+    /* ...and MVX and jBASE keep it beside the data as `<name>.DICT`, which is
+       also the name it travels under in the open form.  Same rule, the other
+       spelling: `CATALOG` was skipped and `CATALOG.DICT/%FILE%` staged, so a
+       wholesale add committed the geometry of a directory it had deliberately
+       left out (mv_git#130).  One level, as above. */
+    if (len > 5 && memcmp(name + len - 5, ".DICT", 5) == 0 &&
+        mv_account_furniture(name, len - 5)) return 1;
     return 0;
 }
 
@@ -2264,12 +2314,13 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        (wrapped in & or _); the plain-file pass must skip them too, because on
        UniVerse they are real directories on disk and git would otherwise sweep
        them up. */
-    {
-        size_t tl = strlen(top);
-        if (tl >= 2 && ((top[0] == '&' && top[tl - 1] == '&') ||
-                        (top[0] == '_' && top[tl - 1] == '_')))
-            return 1;
-    }
+    /* ASKED, NOT RESTATED.  This test used to spell the &…&/_…_ shapes out
+       again, which meant the plain-file pass and the account scan carried two
+       copies of one rule -- and the catalog directories, which only the scan
+       knew about, were swept up here as ordinary blobs: `CATALOG.DICT/%FILE%`
+       reached the index from disk however carefully pass 2 left CATALOG out
+       (mv_git#130). */
+    if (mv_account_furniture(top, strlen(top))) return 1;
     /* only a path INSIDE a file is a record; the file's own entry is not */
     if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
         return 1;
@@ -2907,6 +2958,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         snprintf(p, sizeof p, "%s/%s", acct, n);
         if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
         if (!addall_is_mv_file(acct, n)) continue;
+        if (mv_account_furniture(n, strlen(n))) continue;
         if (git_path_ignored(repo, n)) continue;
         const char *a[] = {rp, n, ""};
         addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -2946,6 +2998,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     }
                 }
                 if (!is_obj && !addall_was_seen(&seen, name) &&
+                    !mv_account_furniture(name, strlen(name)) &&
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -3587,6 +3640,17 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
                     int cls = mv_voc_class(vp, f1);
                     if (cls == 1 || (cls == 2 && voc_open)) continue;
+                    /* A POINTER TO FURNITURE IS FURNITURE, and `add` has always
+                       known that (mv_git#78) -- this side did not.  So in a
+                       NATIVE account, where the class-2 skip just above does not
+                       fire, status named every one of them: `?? VOC/bin`,
+                       `?? VOC/LIB`, `?? VOC/_HOLD_`, for files no add will ever
+                       stage.  Untracked forever, and no commit could clear it --
+                       the same shape of bug as #51 and #95, and the reason the
+                       two sides are supposed to ask the same questions in the
+                       same order (mv_git#130). */
+                    if (cls == 2 && mv_account_furniture(idb, strlen(idb)))
+                        continue;
                     /* An object FILE is not committed, so neither is its VOC
                        pointer — and reporting the pointer would leave it
                        untracked forever, since no add will ever stage it. */
