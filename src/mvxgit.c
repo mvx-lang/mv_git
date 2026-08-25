@@ -230,6 +230,8 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
  * what identifies a natively-committed descriptor in a tree, so every build
  * needs to be able to say it.  The four sites that wrote or matched one spelled
  * ".mvx" outright, which is right on exactly one platform. */
+static const char *voc_local_name(void);   /* defined below */
+
 static const char *desc_native_name(void) {
 #if defined(MVXGIT_UDT)
     return ".udt";
@@ -1246,7 +1248,7 @@ static int stock_build_udt(mv_ctx *ctx, const char *master, const char *mdict,
     mv_value voc, ptr, id, rec, stk;
     mv_init(&voc); mv_init(&ptr); mv_init(&id); mv_init(&rec); mv_init(&stk);
     int n = -1;
-    if (!open_named(ctx, "VOC", &voc)) goto done;
+    if (!open_named(ctx, voc_local_name(), &voc)) goto done;
 
     char body[9000];
     int bl = snprintf(body, sizeof body, "F%c%s%c%s", 0xFE, master, 0xFE, mdict);
@@ -1820,6 +1822,26 @@ int mv_git_worktree_clear(char *why, size_t wcap) {
 /* This platform's native descriptor name, for a driver that has to tell whether
    a checkout is native to THIS system or another one -- which is what decides
    whether `adopt` asks about the open form (mv_git#124). */
+/* The account's master file, under the name THIS platform gives it.
+ *
+ * In git it is always `VOC`: the open form has one portable spelling, the way
+ * the descriptor is always `.mv-account` there.  On disk it is whatever the
+ * platform calls it -- and jBASE calls it MD, in an account that also has a
+ * bin and a lib, all created by CREATE-ACCOUNT.  A bare directory has no master
+ * file at all, which is why opening "VOC" there simply failed.
+ *
+ * So a checkout onto jBASE writes the committed VOC records into MD, and a
+ * commit from jBASE writes MD's records out as VOC (mv_git#114). */
+static const char *voc_local_name(void) {
+#ifdef MVXGIT_JBASE
+    return "MD";
+#else
+    return "VOC";
+#endif
+}
+
+const char *mv_git_voc_local_name(void) { return voc_local_name(); }
+
 const char *mv_git_desc_native_name(void) { return desc_native_name(); }
 
 /* What, if anything, should `adopt` ask about the open form?

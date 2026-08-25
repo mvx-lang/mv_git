@@ -171,6 +171,10 @@ int mv_git_worktree_stash(char *rev, size_t rcap, int *stashed);
 int mv_git_worktree_clear(char *why, size_t wcap);
 
 /* This platform's native descriptor name (".mvx", ".udt", ".uv", ".jbase"). */
+/* The account's master file under this platform's name: "VOC", or "MD" on
+   jBASE.  In git it is always "VOC" -- the open form has one spelling. */
+const char *mv_git_voc_local_name(void);
+
 const char *mv_git_desc_native_name(void);
 
 /* What `adopt` should ask about the open form, given the descriptor found in the

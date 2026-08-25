@@ -41,6 +41,37 @@
    loud, because erroring would break every scripted clone. */
 static int g_open_flag;
 
+/* Make the directory a real jBASE ACCOUNT.
+ *
+ * CREATE-ACCOUNT gives it an MD (its dictionary is MD]D), a bin and a lib.  A
+ * bare directory has none of those, so it has nowhere for a Q pointer to live,
+ * cannot run SET-FILE, and gives a catalogued verb no account bin -- it is a
+ * directory with files in it, not an account.  udt-git runs newacct and uv-git
+ * creates its account for the same reason; jb-git did neither (mv_git#114).
+ *
+ * Idempotent: an account that already has an MD is left alone. */
+static void jb_make_account(const char *dir) {
+    char md[4200];
+    snprintf(md, sizeof md, "%s/MD]D", dir);
+    if (access(md, F_OK) == 0) return;          /* already an account */
+    /* CREATE-ACCOUNT refuses a directory that is not empty -- "Unable to create
+       the account; the directory is not empty!" -- and by the time we are here
+       the clone has already put .git and the records in it.  So the account is
+       created in an empty place and its furniture moved in, which uses the
+       product's own idea of what an account is rather than reimplementing it. */
+    char tmp[4300], cmd[9000];
+    snprintf(tmp, sizeof tmp, "%s/.jbacct.tmp", dir);
+    snprintf(cmd, sizeof cmd,
+             "rm -rf '%s' && CREATE-ACCOUNT '%s' >/dev/null 2>&1 && "
+             "for f in '%s'/* '%s'/.[!.]*; do [ -e \"$f\" ] && mv \"$f\" '%s'/ ; done; "
+             "rmdir '%s' 2>/dev/null",
+             tmp, tmp, tmp, tmp, dir, tmp);
+    if (system(cmd) != 0 || access(md, F_OK) != 0)
+        fprintf(stderr, "jb-git: could not make %s a jBASE account "
+                        "(CREATE-ACCOUNT); it will hold files but not an MD\n",
+                dir);
+}
+
 static int ask_open_account(void) {
     if (g_open_flag) return g_open_flag > 0;
     const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
@@ -330,6 +361,7 @@ int main(int argc, char **argv) {
            virtual (#122). */
         mv_git_drop_native_desc();
 
+        jb_make_account(".");
         char acctpath2[4096];
         if (getcwd(acctpath2, sizeof acctpath2))
             setenv("MVXACCOUNT", acctpath2, 1);
@@ -408,6 +440,7 @@ int main(int argc, char **argv) {
             mv_ctx_destroy(ctx);
             return 1;
         }
+        jb_make_account(".");
         char acctpath[4096];
         if (getcwd(acctpath, sizeof acctpath))
             setenv("MVXACCOUNT", acctpath, 1);

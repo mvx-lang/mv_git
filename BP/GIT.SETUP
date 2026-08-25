@@ -45,6 +45,15 @@ $ENDIF
       IF OCONV(FIELD(S, " ", 1), "MCU") = "RUN" THEN BPFILE = FIELD(S, " ", 2)
       IF BPFILE = "" THEN BPFILE = "GIT.BP"
 *
+$IFDEF JBASE
+*     jBASE has no VOC.  An account is a directory and a file is a PATH, so the
+*     mv_git BP is named directly rather than pointed at -- there is nothing to
+*     put a Q-pointer in, and nothing to look one up in.  Run inside the mv_git
+*     account the default is simply its own BP; from elsewhere, pass the path:
+*        RUN BP GIT.SETUP /opt/mv_git/BP
+      IF BPFILE = "GIT.BP" THEN BPFILE = "BP"
+      PKGACC = BPFILE
+$ELSE
       OPEN "VOC" TO VOCF ELSE
          PRINT "cannot open VOC"
          STOP
@@ -77,6 +86,7 @@ $ENDIF
          STOP
       END
       PRINT
+$ENDIF
       PRINT "mv_git BP: " : PKGACC
       PRINT
 $IFDEF MVX
@@ -100,6 +110,11 @@ $ELSE
 *        include headers, and the generated include DIRECTORY.
          IF ID[1, 1] = "_" THEN SKIP = 1
          IF ID[LEN(ID) - 1, 2] = ".H" THEN SKIP = 1
+*        Build artefacts, not source: jBASE writes <ID>.so and <ID>.so.el beside
+*        the item it just cataloged, so a second run would try to catalog its
+*        own output.
+         IF ID[LEN(ID) - 2, 3] = ".so" THEN SKIP = 1
+         IF ID[LEN(ID) - 2, 3] = ".el" THEN SKIP = 1
          IF ID = "BP.INC" THEN SKIP = 1
          IF NOT(SKIP) THEN IDS<-1> = ID
       REPEAT
@@ -111,7 +126,14 @@ $ELSE
 *        nobody answers it: the prompt takes the next command as its keystroke
 *        (mv_git#58).  Re-running setup after an upgrade is the normal case,
 *        not the exception.
+$IFDEF JBASE
+*        jBASE's CATALOG takes neither keyword: it reads them as record names
+*        and answers "Record LOCAL is not on file".  It also overwrites without
+*        asking, so there is nothing for FORCE to suppress.
+         EXECUTE "CATALOG " : BPFILE : " " : ID
+$ELSE
          EXECUTE "CATALOG " : BPFILE : " " : ID : " LOCAL FORCE"
+$ENDIF
          PRINT "  " : ID
          N += 1
       NEXT I

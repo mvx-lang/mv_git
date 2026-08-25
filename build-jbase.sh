@@ -75,6 +75,30 @@ PLATEOF
 echo "  wrote PLATFORM.H (MV, JBASE, ENGINE)"
 cp "$HERE/bin/jb-git" "$HERE/bin/libjbgit.so" "$STAGE/mv_git/"
 mkdir -p "$STAGE/mv_git/BP"
+
+# The GIT verb and its whole handler set -- the thing the shims exist to SERVE.
+#
+# This staged only jbase/BP/ (the 32 DEFC shims) and not BP/ (the verb itself),
+# so the package had GITADD and GITCAT and no GIT.  An account built from it had
+# nothing to catalog, and every verb-mode test failed with "GIT: No such file or
+# directory" -- not a symbol-resolution problem, which is what it looked like,
+# but a verb that had never shipped (mv_git#114).  The CLI path was carrying the
+# whole suite.
+#
+# FILES only: a plain `cp BP/*` would take the D_BP directory with it, the trap
+# build-udt.sh hit.  And every item gets a trailing newline if it lacks one --
+# jBASE compiles BASIC through C, and an unterminated last line is the kind of
+# thing that fails on one compiler and not another; uv needs this outright, and
+# doing it here costs nothing and removes the question.
+for f in "$HERE"/BP/*; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    cp "$f" "$STAGE/mv_git/BP/$b"
+    [ -n "$(tail -c 1 "$STAGE/mv_git/BP/$b")" ] && printf '\n' >> "$STAGE/mv_git/BP/$b"
+done
+
+# ...then the shims on top.  They cannot collide: a shim is GITSTATUS, a handler
+# is GIT.STATUS.
 cp "$HERE/jbase/BP/"* "$STAGE/mv_git/BP/" 2>/dev/null || true
 cp "$HERE/jbase/install.sh" "$STAGE/mv_git/"; chmod +x "$STAGE/mv_git/install.sh"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/mv_git/"

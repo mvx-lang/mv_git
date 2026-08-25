@@ -220,7 +220,18 @@ elif [ "$PLATFORM" = jbase ]; then
   # a DEFC function without the library being forced into the process -- which is
   # jBASE's behaviour for DEFC generally, not something mv_git does (mv_git#114).
   # Driving the verb here would test that packaging question rather than mv_git.
-  ACCT() { mkdir -p "$1"
+  # CREATE-ACCOUNT, not mkdir.  A jBASE account has an MD (its dictionary is
+  # MD]D), a bin and a lib, and `mkdir` gives none of them -- so a bare
+  # directory has nowhere for a Q pointer to live, cannot run SET-FILE, and has
+  # no account bin for a catalogued verb.  Every test here used to run against
+  # one, which meant the suite was green about something no user would have
+  # (mv_git#114).
+  #
+  # JEDIFILENAME_MD is how a session finds the MD, and CREATE-ACCOUNT sets it to
+  # the account's own directory; the tests drive jsh directly rather than
+  # logging in, so they have to set it themselves.
+  ACCT() { rm -rf "$1"
+           CREATE-ACCOUNT "$1" >/dev/null 2>&1 || mkdir -p "$1"
            ( cd "$1" && printf 'CREATE-FILE BP 1 11 TYPE=UD\n' | "$MVX" ) >/dev/null 2>&1
            printf '# jBASE account descriptor\nname = %s\nversion = 1\n' \
                   "$(basename "$1")" > "$1/.jbase"; }
