@@ -1,0 +1,94 @@
+*  GIT.FILEIDS(REPO, FILES, IDS) — the files this account carries, as itself.
+*  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+*  ONE PLACE THAT ASKS THE QUESTION, the same reason GIT.FURNIDS and
+*  GIT.FILECLASS exist: `add` and `status` have to agree exactly, or the account
+*  never reads clean.  When add stopped staging a file's own VOC pointer
+*  (mv_git#131) and status did not know to, every one came back as
+*  `?? VOC/PTRTEST` — untracked forever, because the thing reporting them was
+*  the thing that would never stage them.  That is #51, #78 and #95 again.
+*
+*  AND IT HAS TO BE BASIC, not an engine op.  On UniVerse the engine is the
+*  background process and has NO RECORD ACCESS AT ALL — mv_open, mv_read and
+*  mv_filelist are fatal there (MVXGIT_NORECORDS: "an opcode that needs record
+*  I/O must be served in BASIC instead").  So a rule the engine can answer from
+*  its arguments belongs behind GIT.OBJ, as furniture does, and a rule that has
+*  to READ THE ACCOUNT belongs here.  Both halves are one-place-only; only the
+*  place differs (mv_git#133).
+*
+*  STATUS CANNOT DERIVE THIS FROM WHAT GIT TRACKS.  Its UFILES comes from the
+*  index, so it holds the files already committed — which is a different set,
+*  and the difference is exactly the interesting cases: a file created but not
+*  yet committed is absent from it, and so is BP.O, whose records are never
+*  staged at all.  Asked of the index, both looked like "not a file here" and
+*  their pointers were reported.
+*
+*  FILES is `id<VM>type` for the caller that wants the type; IDS is the bare
+*  ids, for a LOCATE inside a record loop; FURN is the furniture ids among the
+*  candidates, which the caller needs anyway -- a master-file pointer to a file
+*  the filter excluded points at nothing and must not be staged (mv_git#78).
+*  Returned from here so the candidate list is built once, not twice.
+      SUBROUTINE GIT.FILEIDS(REPO, FILES, IDS, FURN)
+      $INCLUDE BP.INC PLATFORM.H
+      AM = CHAR(254) ; VM = CHAR(253)
+      FILES = "" ; IDS = "" ; FURN = ""
+*  NOT COMPILED ON MVX, and that is the same split the rest of this package
+*  makes: on MVX `add` and `status` are the ENGINE (GITADDALL / the status walk
+*  in mvxgit.c), which asks mv_filelist directly and needs nothing from here.
+*  The BASIC walk exists for UniVerse and UniData, where the engine has no
+*  record access at all.  A plain IFNDEF around the body, never an $ELSE arm:
+*  a guard nested in an $ELSE is the case the preprocessor gets wrong.
+$IFNDEF MVX
+*     The master file, whatever this system calls it.
+      OPEN "VOC" TO FIMF ELSE
+         OPEN "MD" TO FIMF ELSE RETURN
+      END
+      FIALL = ""
+      FIRAW = ""
+*     A select-list VARIABLE and the LOOP/ELSE EXIT form — the spelling
+*     GIT.STATUS and GITUDT.CHECKOUT settled on, which both platforms accept.
+      FILIST = ""
+      SELECT FIMF TO FILIST
+      LOOP
+         READNEXT FIVID FROM FILIST ELSE EXIT
+         READ FIVREC FROM FIMF, FIVID THEN
+*           Attribute 1 is the TYPE, but not always the type ALONE: UniVerse
+*           appends the description a user may give at CREATE.FILE time, so a
+*           described file reads "F Customer master" and an exact match against
+*           "F" makes it invisible.  Take the first token, and trim.
+            FIVT = TRIM(FIELD(FIVREC<1>, " ", 1))
+            IF FIVT = "F" OR FIVT = "DIR" THEN
+               FIDP = FIVREC<2> ; FIDD = FIVREC<3> ; FILOC = 1
+               IF INDEX(FIDP, "/", 1) OR FIDP[1,1] = "@" THEN FILOC = 0
+               IF INDEX(FIDD, "/", 1) OR FIDD[1,1] = "@" THEN FILOC = 0
+*              Every file-type id is a CANDIDATE for the furniture question,
+*              local or not: the master file points at furniture that has no
+*              file here (_ENCINFO_, _KEYSTORE_) and those pointers are
+*              furniture too.  Only the local ones are files this account has.
+               FIALL<-1> = FIVID : VM : FIVT
+               IF FILOC THEN FIRAW<-1> = FIVID : VM : FIVT
+            END
+         END
+      REPEAT
+      CLEARSELECT
+*     The furniture rules themselves are NOT here — they live in
+*     mv_account_furniture() in the engine, one table per MV system, and
+*     GIT.FURNIDS is the one place that asks for them (mv_git#81).
+      FIFURN = ""
+      CALL GIT.FURNIDS(REPO, FIALL, FIFURN)
+      FURN = FIFURN
+      FINR = DCOUNT(FIRAW, AM)
+      FOR FIK = 1 TO FINR
+         FIID = FIELD(FIRAW<FIK>, VM, 1)
+         FIDROP = 0
+         IF FIFURN # "" THEN
+            LOCATE(FIID, FIFURN; FIFP) THEN FIDROP = 1
+         END
+         IF NOT(FIDROP) THEN
+            FILES<-1> = FIRAW<FIK>
+            IDS<-1> = FIID
+         END
+      NEXT FIK
+$ENDIF
+      RETURN
+      END

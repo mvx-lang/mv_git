@@ -140,56 +140,27 @@ CALL GIT.REPO(REPO)
 *  select before opening any file), then stage each file's data + dictionary (+
 *  open-form controls when -o).
 ADDALL:
-   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0 ; ALLF = ""
+   NSTAGED = 0 ; NFILES = 0 ; BLANKET = 1 ; NSKIP = 0
+*  THE ACCOUNT'S OWN FILES, from the one place that answers that question.
+*
+*  This walk used to be HERE, and status derived its own answer from the index
+*  instead -- which is a different set, and the difference is exactly the
+*  interesting cases (mv_git#131).  Two answers to one question is how #51, #78
+*  and #95 all happened: `add` skips a record, `status` does not know to, and it
+*  is reported untracked forever because the thing reporting it is the thing
+*  that will never stage it.
+*
+*  It stays in BASIC rather than moving behind GIT.OBJ because it READS THE
+*  ACCOUNT, and on UniVerse the engine is the background process with no record
+*  access at all -- mv_open/mv_read/mv_filelist are fatal there.  Furniture goes
+*  the other way for the same reason: it matches strings and reads nothing, so
+*  the engine can own it (mv_git#81, #133).
+*  The master file is still opened here: STOCKOPEN writes its %GITSTOCK%
+*  pointer into it, and an account with no master file is broken rather than
+*  empty -- so that stays a reported error and not a quiet zero-file add.
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
-   SELECT VOCF
-   LOOP WHILE READNEXT VID DO
-      READ VREC FROM VOCF, VID THEN
-*        Attribute 1 is the TYPE, but it is not always the type ALONE: UniVerse
-*        appends the file description a user may give at CREATE.FILE time, so a
-*        described file reads "F Customer master" and an exact match against
-*        "F" makes it invisible to this scan — the file is simply never staged,
-*        with no error.  Take the first token, and trim, so a description (or a
-*        trailing space from an empty one) cannot hide a file from GIT ADD -A.
-         VT = TRIM(FIELD(VREC<1>, " ", 1))
-         IF VT = "F" OR VT = "DIR" THEN
-            DP = VREC<2> ; DD = VREC<3> ; LOC = 1
-            IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
-            IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
-*           Every file-type id is a candidate, local or not: VOC points at
-*           furniture that has no file here (_ENCINFO_, _KEYSTORE_) and those
-*           pointers are furniture too.  The local ones are what gets staged.
-            ALLF<-1> = VID : VM : VT
-            IF LOC THEN FILES<-1> = VID : VM : VT
-         END
-      END
-   REPEAT
-*  ONE set of furniture rules, for the verb and the CLI alike, and one place
-*  that asks for them — GIT.FURNIDS, which `status` calls too.  This walk has to
-*  be here (mvgitd has no record backend, so on UniVerse the enumeration must
-*  happen in the session), but what the walk FINDS and what counts as FURNITURE
-*  are different questions and only the first needs BASIC.  GIT.ADD used to test
-*  `_X_` and `&X&` inline and know none of the names, so the verb committed the
-*  whole SQL catalogue while the CLI did not: 944 blobs against 76 for the same
-*  stock account (mv_git#81).
-   FURNIDS = ""
-   CALL GIT.FURNIDS(REPO, ALLF, FURNIDS)
-   IF FURNIDS # "" THEN
-      KEPT = ""
-      NRAW = DCOUNT(FILES, AM)
-      FOR RK = 1 TO NRAW
-         LOCATE(FIELD(FILES<RK>, VM, 1), FURNIDS; FPOS) ELSE KEPT<-1> = FILES<RK>
-      NEXT RK
-      FILES = KEPT
-   END
-*  The same list as bare ids, for the derived-pointer test in STAGEDATA.  A
-*  LOCATE cannot see past the VM that carries each entry's type, and building it
-*  once here is what keeps that test a lookup rather than a scan per record.
-   FILEIDS = ""
-   NIDS = DCOUNT(FILES, AM)
-   FOR IK = 1 TO NIDS
-      FILEIDS<-1> = FIELD(FILES<IK>, VM, 1)
-   NEXT IK
+   FILES = "" ; FILEIDS = "" ; FURNIDS = ""
+   CALL GIT.FILEIDS(REPO, FILES, FILEIDS, FURNIDS)
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
