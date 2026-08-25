@@ -744,7 +744,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   # one platform is how that would go unnoticed -- and while they were scoped,
   # uv-git failed four of them.
   case "$PLATFORM" in
-    udt|uv)
+    udt|uv|jbase)
       P="$WORK/plainco"
       git clone -q "$REM" "$P" 2>/dev/null
       t  "plain checkout has the open form" "CUST" \

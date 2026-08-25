@@ -36,7 +36,29 @@
  * not, so the engine decided an open account was not one and staged the NATIVE
  * descriptor: every commit deleted .mv-account and added .mvx, on a clone that
  * had just been reported clean.  (The same missing seed was half of #108.) */
-static int g_open_flag;          /* 1 = --open-account, -1 = --no-open-account */
+/* "Make this an open account?" -- the same question, defaults and env override
+   the other CLIs use (mv_git#88).  With no terminal the answer is yes, said out
+   loud, because erroring would break every scripted clone. */
+static int g_open_flag;
+
+static int ask_open_account(void) {
+    if (g_open_flag) return g_open_flag > 0;
+    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+    if (env && env[0])
+        return !(env[0] == '0' || !strcasecmp(env, "no") ||
+                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "jb-git: keeping the open account format "
+                        "(--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, "
+                        "declines)\n");
+        return 1;
+    }
+    char line[16];
+    fprintf(stderr, "Make it an open account? [Y/n] ");
+    fflush(stderr);
+    if (!fgets(line, sizeof line, stdin)) return 1;
+    return !(line[0] == 'n' || line[0] == 'N');
+}          /* 1 = --open-account, -1 = --no-open-account */
 
 static int open_account_on(void) {
     FILE *f = fopen(".git/config", "r");
@@ -71,7 +93,7 @@ static int engine_sub(const char *sub) {
            sends the projected records and a pull has to re-materialise them
            into live files.  Forwarded to git these looked like they worked and
            left the account untouched. */
-        "remote", "fetch", "push", "pull", "clone", NULL};
+        "remote", "fetch", "push", "pull", "clone", "adopt", NULL};
     for (int i = 0; ops[i]; i++)
         if (strcmp(sub, ops[i]) == 0) return 1;
     return 0;
@@ -137,7 +159,7 @@ int main(int argc, char **argv) {
         fputs("usage: jb-git [-a <account>] <command> [args]\n"
               "  init | add | rm | commit | status | log | diff | show\n"
               "  branch | checkout | restore | tag | config | version\n"
-              "  remote | fetch | push | pull | clone\n"
+              "  remote | fetch | push | pull | clone | adopt\n"
               "anything else is passed to git.\n", stdout);
         return i >= argc ? 1 : 0;
     }
@@ -235,6 +257,109 @@ int main(int argc, char **argv) {
                                                         p0 ? p0 : "",
                                                         p1 ? p1 : "",
                                                         p2 ? p2 : "");
+    else if (!strcmp(sub, "adopt")) {
+        /* Take a checkout somebody made with plain git and build the account
+           from it.  git gives you files; this gives you an account.
+           This is `clone` minus the fetching, and it shares every piece with
+           udt-git and uv-git (mv_git#124, #125) -- a jBASE account is just a
+           directory, so unlike UniData there is nothing to create first. */
+        const char *dir = p0 ? p0 : ".";
+        if (chdir(dir) != 0) {
+            fprintf(stderr, "jb-git adopt: cannot enter %s: %s\n",
+                    dir, strerror(errno));
+            mv_ctx_destroy(ctx);
+            return 1;
+        }
+        /* A descriptor is the checkout's own statement that it IS an account;
+           without one this is an ordinary repository and adopting it would
+           build an account around files that never were one. */
+        static const char *const dnames[] = { ".mv-account", ".mvx", ".udt",
+                                              ".uv", ".jbase", NULL };
+        const char *found = NULL;
+        for (int k = 0; dnames[k] && !found; k++)
+            if (access(dnames[k], F_OK) == 0) found = dnames[k];
+        if (!found) {
+            fprintf(stderr,
+                "jb-git adopt: %s carries no MV account descriptor "
+                "(.mv-account, .mvx, .udt, .uv or .jbase),\n"
+                "        so there is no account here to adopt.\n", dir);
+            mv_ctx_destroy(ctx);
+            return 1;
+        }
+
+        /* The same question the other CLIs ask, from the same engine decision. */
+        switch (mv_git_adopt_question(found, open_account_on())) {
+        case MV_ADOPT_ASK_ENABLE:
+            fprintf(stderr,
+                "jb-git adopt: %s is already in the open account format, but "
+                "this repository\n        does not have the flag set -- without "
+                "it the next commit writes the native form.\n", dir);
+            if (ask_open_account())
+                (void)system("git config mvx.openaccount true");
+            break;
+        case MV_ADOPT_ASK_CONVERT:
+            fprintf(stderr, "jb-git adopt: %s is a native %s account and will "
+                            "be converted to a jBASE one.\n", dir, found);
+            if (ask_open_account())
+                (void)system("git config mvx.openaccount true");
+            break;
+        default:
+            break;              /* native to jBASE: nothing to convert or ask */
+        }
+
+        /* Stash the tree so an EDIT in the checkout is what gets adopted rather
+           than the committed version of it, clear what git left behind -- the
+           open form sits on the names the native files want -- and build from
+           what was stashed.  Never popped: that would put the open form back
+           over a native account. */
+        char captured[192] = "";
+        int stashed = 0;
+        if (mv_git_worktree_stash(captured, sizeof captured, &stashed) != 0) {
+            fprintf(stderr, "jb-git adopt: could not read the working tree\n");
+            mv_ctx_destroy(ctx);
+            return 1;
+        }
+        if (stashed)
+            fprintf(stderr, "jb-git adopt: your uncommitted changes are in the "
+                            "stash and will be built into the account\n");
+        {
+            char why[512];
+            (void)mv_git_worktree_clear(why, sizeof why);
+        }
+        /* A descriptor plain git checked out must not survive: off MVX it is
+           virtual (#122). */
+        mv_git_drop_native_desc();
+
+        char acctpath2[4096];
+        if (getcwd(acctpath2, sizeof acctpath2))
+            setenv("MVXACCOUNT", acctpath2, 1);
+        if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+
+        /* Not the literal ".git": an account can be a SUBDIRECTORY of a
+           repository (#44, #49), and there is no .git in it -- the repository's
+           is above.  udt-git had the same bug: materialise failed with "failed
+           to resolve path '.git'", the account was built empty, and adopt
+           reported success anyway. */
+        char gdir[4096] = ".git";
+        {
+            FILE *g = popen("git rev-parse --absolute-git-dir 2>/dev/null", "r");
+            if (g) {
+                if (fgets(gdir, sizeof gdir, g)) {
+                    char *gn = strpbrk(gdir, "\r\n");
+                    if (gn) *gn = '\0';
+                }
+                pclose(g);
+            }
+            if (!gdir[0]) snprintf(gdir, sizeof gdir, ".git");
+        }
+        mv_ctx_destroy(ctx);
+        ctx = mv_ctx_create();
+        out = mv_git_materialize_rev(ctx, gdir, captured);
+        print_out(out);
+        out = NULL;
+        if (stashed) (void)system("git stash drop -q >/dev/null 2>&1");
+        printf("adopted %s as a jBASE account\n", dir);
+    }
     else if (!strcmp(sub, "clone")) {
         /* Forwarded, this ran a PLAIN git clone: it produced a directory of
            files and no account at all, and still read as a pass because git's
@@ -294,13 +419,7 @@ int main(int argc, char **argv) {
            open account committed .mvx over .mv-account on its very first
            commit, having just reported itself clean. */
         if (system("git cat-file -e HEAD:.mv-account >/dev/null 2>&1") == 0) {
-            const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-            int open = 1;
-            if (g_open_flag)  open = g_open_flag > 0;
-            else if (env && env[0])
-                open = !(env[0] == '0' || !strcasecmp(env, "no") ||
-                         !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-            if (open) {
+            if (ask_open_account()) {
                 if (system("git config mvx.openaccount true") != 0)
                     fprintf(stderr, "jb-git clone: could not set "
                                     "mvx.openaccount\n");
