@@ -793,6 +793,58 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- a pointer to what the repository does NOT carry travels too (mv_git#132) --"
+# CLASS 2 MEANS "a pointer to a file THIS REPOSITORY CARRIES", and nothing else.
+# Such a pointer is derived -- CREATE.FILE writes it and <file>.DICT/%FILE%
+# rebuilds it -- so it is dropped in every form (#131).  The open interchange
+# used to drop the whole CLASS instead, on that same reasoning applied to
+# pointers the reasoning does not fit:
+#
+#   Q       names a file in ANOTHER account
+#   R       names a program in another file
+#   F/DIR   whose path leaves the account
+#
+# No %FILE% describes any of them and no CREATE.FILE on the far side writes
+# them, so dropping them lost the account's own configuration -- silently, and
+# only in the portable form, which is the one that travels between systems.
+#
+# ASSERTED IN THE OPEN FORM, since that is the only form they were ever lost in,
+# and with a local pointer alongside as the CONTROL: if the derived rule stopped
+# working, VOC/OWN would appear and this test would say so.
+case "$PLATFORM" in
+udt|uv)
+  PTR="$WORK/ptrs"; ACCT "$PTR"; LINK "$PTR"; CF "$PTR" OWN
+  SEED "$PTR" 'OPEN "VOC" TO V ELSE STOP
+Q = "" ; Q<1> = "Q" ; Q<2> = "OTHERACCT" ; Q<3> = "SHARED"
+WRITE Q ON V, "QPTR"
+R = "" ; R<1> = "R" ; R<2> = "BP" ; R<3> = "MYPROG"
+WRITE R ON V, "RPTR"
+D = "" ; D<1> = "DIR" ; D<2> = "/tmp/elsewhere" ; D<3> = "/tmp/elsewhere"
+WRITE D ON V, "FARDIR"'
+  # THROUGH THE VERB, and `-A` rather than `add VOC`.  Both matter:
+  #
+  #   `add VOC` is not wholesale everywhere -- BP/GIT.ADD sets BLANKET only for
+  #   -A, while the engine treats a file-only add as wholesale, so the exclusions
+  #   apply on UniData and not on UniVerse (mv_git#141).
+  #
+  #   The CLI is not one route either.  On UniVerse it reaches records through
+  #   mvgitd, which has NO record access, so the derived-pointer test
+  #   (`is this file here?`) cannot fire and the control below fails for a
+  #   reason that has nothing to do with the rule under test (mv_git#142).
+  #
+  # The verb runs the shared policy on every platform, which is what this is
+  # about: the VOCDROP op decides it once for all of them (#133).
+  ( cd "$PTR" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$PTR" GIT INIT   >/dev/null
+  GITV "$PTR" GIT ADD -A >/dev/null
+  pst="$( cd "$PTR" && git diff --cached --name-only )"
+  t  "a Q pointer travels"              "VOC/QPTR"   "$pst"
+  t  "an R pointer travels"             "VOC/RPTR"   "$pst"
+  t  "a foreign DIR pointer travels"    "VOC/FARDIR" "$pst"
+  tn "but the account's own file pointer does not" "VOC/OWN" "$pst"
+  ;;
+esac
+
 say "-- an X record is data, not a pointer, so it travels (mv_git#136) --"
 # X is UniVerse's miscellaneous-DATA type: RELLEVEL (14.2.1 / PICK), INTR.KEY,
 # QUIT.KEY -- values, not references.  It was grouped with Q and R as an
