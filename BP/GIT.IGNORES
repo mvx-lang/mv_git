@@ -1,0 +1,31 @@
+*  GIT.IGNORES(IGL) — the account's ignore patterns, both lists, as one @AM list.
+*  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+*  TWO NAMESPACES AND BOTH COUNT.  The account's own bulk list is what
+*  `GIT IGNORE` writes; `.gitignore` is what a developer reaches for first and
+*  what a repository shared with plain git already has.  `status` read both and
+*  `add` read neither, so this is the loader they now share (mv_git#133).
+*
+*  Read through GIT.OSFILE rather than OSREAD directly: OSREAD is UniData-only,
+*  and this has to work on UniVerse too.
+      SUBROUTINE GIT.IGNORES(IGL)
+      AM = CHAR(254) ; LF = CHAR(10)
+      IGL = ""
+*  NOT COMPILED ON MVX, the same split BP/GIT.MASTER makes: there `add` and
+*  `status` are the ENGINE, which applies libgit2's own gitignore rules and
+*  needs nothing from here.  The body would not compile there anyway -- MVX has
+*  no `CONVERT ... IN` -- and a standalone subroutine is compiled on EVERY
+*  platform whether or not anything calls it, which is what makes that matter.
+$IFNDEF MVX
+      CALL GIT.OSFILE("READ", @PATH : "/GITIGNORE", IGL, IGOK)
+      IF NOT(IGOK) THEN IGL = ""
+      CONVERT LF TO AM IN IGL
+      IGL2 = ""
+      CALL GIT.OSFILE("READ", @PATH : "/.gitignore", IGL2, IG2OK)
+      IF IG2OK AND IGL2 # "" THEN
+         CONVERT LF TO AM IN IGL2
+         IF IGL = "" THEN IGL = IGL2 ELSE IGL := AM : IGL2
+      END
+$ENDIF
+      RETURN
+      END

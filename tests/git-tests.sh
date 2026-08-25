@@ -288,6 +288,16 @@ printf 'CUST/C9\n' > "$A/.gitignore"
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "x" ON F, "C9"'
 case "$(GITV "$A" GIT STATUS)" in *CUST/C9*) bad "ignore hides record" "no CUST/C9" "shown";; *) ok "ignore hides record";; esac
+# ...AND `add` MUST LEAVE IT OUT, which is the half that was never asserted.
+# `status` matched the ignore lists and `add` did not read them at all, so the
+# verb COMMITTED a record the user had gitignored while the CLI left it out --
+# one account, two different commits (mv_git#133).  Testing only status hid it:
+# once a record is staged it is tracked, and the ignore lists never apply to a
+# tracked path, so status went quiet about it for the opposite reason.
+GITV "$A" GIT ADD -A >/dev/null
+igst="$( cd "$A" && git ls-files )"   # the INDEX, not the diff: C1 is already committed
+t  "the ordinary record is staged" "CUST/C1"  "$igst"
+tn "but the ignored one is not"    "CUST/C9"  "$igst"
 
 say "-- a deleted RECORD leaves history too --"
 # Staging only ever ADDS, so a record deleted from the account used to stay in

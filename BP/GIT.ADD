@@ -80,6 +80,13 @@ CALL GIT.REPO(REPO)
    CALL GIT.OBJ("ISOPEN", 1, REPO, "", "", "", "", OFOUT)
    IF TRIM(OFOUT) = "1" THEN OPENFMT = 1
    IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
+*  THE IGNORE LISTS, which this program did not read AT ALL.  `status` matched
+*  them and `add` did not, so a record the user had gitignored was COMMITTED by
+*  the verb while the CLI left it out -- one account, two different commits
+*  (mv_git#133).  Loaded once here and matched by GIT.IGNORED, which is the
+*  matcher `status` uses too, so the two cannot drift apart again.
+   IGL = ""
+   CALL GIT.IGNORES(IGL)
    IF ARG3 = "-A" OR ARG3 = "." OR ARG3 = "--all" THEN
       SKIPOBJ = 1
       GOSUB ADDALL
@@ -276,20 +283,14 @@ STAGEDATA:
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DF, RID THEN
          DROP = 0
-*        A COMPILED OBJECT, and it is TWO tests, not one.
-*
-*        The NAMING rule is exact: UniData writes the object of <PROG> as
-*        _<PROG> in the SAME file, so an id starting "_" whose base id is really
-*        there is an object.  This arm did not have that rule at all -- it had
-*        only the CONTENT guess below, and got away with it because an object
-*        happens to be binary.
-*
-*        The CONTENT rule is a guess in both directions -- it drops a legitimate
-*        record that holds a NUL and keeps an object that does not -- which is
-*        why the engine keeps it behind a switch.  Applied here unconditionally,
-*        it silently dropped the user's data: measured on UniVerse, a record
-*        holding CHAR(0) was dropped by the verb and staged by the CLI, from the
-*        same account (mv_git#133).  So the switch is asked for.
+*        IGNORED?  Wholesale adds only: naming a record explicitly is a
+*        deliberate act and overrides the list, the rule every exclusion here
+*        follows.
+         IF WHOLE AND NOT(DROP) THEN
+            IGHIT = 0
+            CALL GIT.IGNORED(IGL, FILE : "/" : RID, FILE, IGHIT)
+            IF IGHIT THEN DROP = 1
+         END
 *        A COMPILED OBJECT, and it is TWO tests, not one.
 *
 *        The NAMING rule is exact: UniData writes the object of <PROG> as
