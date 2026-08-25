@@ -16,6 +16,9 @@
 # Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
 #
 # Tag the bare version to release, e.g.:  git tag 5.0 && git push origin 5.0
+#
+# NOTHING here publishes unless `ci.yml` concluded success for the tagged
+# commit, with a green job for every port.  See the ci-gate job (mv_git#159).
 name: release
 
 on:
@@ -25,10 +28,87 @@ on:
 
 permissions:
   contents: write
+  actions: read      # ci-gate reads the ci run for this commit
 
 jobs:
+  # ---- the gate: no green CI for this commit, no release ---------------------
+  # Every publishing job below takes `needs: ci-gate`, so a red port publishes
+  # nothing at all -- no source tarball, no binaries.  Before this existed the
+  # release ran no tests whatsoever and a tag published unconditionally.
+  #
+  # `ci.yml` does not run on tag pushes, and it does not need to: the tag names
+  # a commit that was pushed to main, and that push is the run this looks up by
+  # head_sha.  If the tag was pushed seconds after the merge the run is still
+  # going, so this waits for it rather than failing.
+  ci-gate:
+    name: CI must be green for this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Require a green ci run for this commit, on every port
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          now() { date +%s; }
+          api="repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=100"
+          appear_by=$(( $(now) + 600 ))    # 10 min for the run to show up
+          finish_by=$(( $(now) + 3600 ))   # 60 min for it to finish
+
+          while :; do
+            run="$(gh api "$api" --jq '.workflow_runs | sort_by(.run_started_at) | last // empty')"
+
+            # AN ABSENT RUN IS A FAILURE, NOT A PASS.  A gate that concludes
+            # "green" from finding nothing is not a gate.
+            if [ -z "$run" ]; then
+              if [ "$(now)" -ge "$appear_by" ]; then
+                echo "::error::no ci run for $SHA. Release only a commit CI has run on: push it to main, let ci finish, then tag it."
+                exit 1
+              fi
+              echo "no ci run for $SHA yet, waiting ..."; sleep 20; continue
+            fi
+
+            id="$(printf '%s' "$run" | jq -r .id)"
+            url="$(printf '%s' "$run" | jq -r .html_url)"
+            status="$(printf '%s' "$run" | jq -r .status)"
+
+            if [ "$status" != completed ]; then
+              if [ "$(now)" -ge "$finish_by" ]; then
+                echo "::error::ci run $url is still '$status' after 60 minutes. Not releasing on an unfinished run."
+                exit 1
+              fi
+              echo "ci run is '$status' ($url), waiting ..."; sleep 20; continue
+            fi
+
+            conclusion="$(printf '%s' "$run" | jq -r .conclusion)"
+            if [ "$conclusion" != success ]; then
+              echo "::error::ci concluded '$conclusion' for $SHA ($url). Nothing will be published."
+              exit 1
+            fi
+
+            # A run whose per-port job was renamed, removed or never scheduled
+            # still concludes 'success' overall.  A port that did not run is not
+            # a port that passed, so name them and check each one.
+            # no --paginate: with --jq that emits one array per page, and
+            # `index` on the first would silently ignore the rest.
+            jobs="$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                      --jq '[.jobs[] | select(.conclusion == "success") | .name]')"
+            for port in mvx udt uv; do
+              printf '%s' "$jobs" | jq -e --arg p "$port" 'index($p)' >/dev/null || {
+                echo "::error::ci run $url has no successful '$port' job."
+                exit 1
+              }
+            done
+
+            echo "ci is green for $SHA on every port (mvx, udt, uv): $url"
+            break
+          done
+
   # ---- source package --------------------------------------------------------
   source:
+    needs: ci-gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -47,6 +127,7 @@ jobs:
   # Uses a published mvx toolchain (setup-mvx) — it ships the runtime headers +
   # libmvxrt, which build-native.sh finds via $MVXHOME.  No from-source build.
   mvx-binary:
+    needs: ci-gate
     runs-on: ubuntu-24.04
     steps:
       - name: Check out mv_git
@@ -151,6 +232,7 @@ jobs:
   # libgit2 lives at the container default (/usr/local); the version is stamped
   # from GITHUB_REF_NAME, which udt-run forwards.
   udt-binary:
+    needs: ci-gate
     runs-on: [self-hosted, linux, udt]
     steps:
       - uses: actions/checkout@v5
@@ -168,6 +250,7 @@ jobs:
   # linked against the platform it will run on rather than whatever the runner
   # happens to have.
   uv-binary:
+    needs: ci-gate
     runs-on: [self-hosted, linux, uv]
     steps:
       - uses: actions/checkout@v5
