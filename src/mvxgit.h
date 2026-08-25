@@ -148,6 +148,28 @@ char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);
 /* Remove a native descriptor a plain `git checkout` left behind.  A no-op on
    MVX, where the descriptor is a real file; elsewhere it is virtual. */
+/* Clear a plain-git checkout so an account can be built from HEAD in its place.
+   Refuses (-1, with the offending line in `why`) when the tree is dirty. */
+/* Stash the account's working tree (`git stash push -u -- .`) and return the
+   tree-ish to build the account from -- the stash's subtree, or HEAD's when
+   there was nothing to stash.  Recoverable: the work stays in `git stash list`
+   until adopt drops it.  Never popped: that would write the open form back over
+   a native account. */
+int mv_git_worktree_stash(char *rev, size_t rcap, int *stashed);
+
+int mv_git_worktree_clear(char *why, size_t wcap);
+
+/* This platform's native descriptor name (".mvx", ".udt", ".uv", ".jbase"). */
+const char *mv_git_desc_native_name(void);
+
+/* What `adopt` should ask about the open form, given the descriptor found in the
+   checkout and whether this repository already has mvx.openaccount set.  One
+   implementation, because three CLIs ask it (mv_git#124). */
+#define MV_ADOPT_ASK_NOTHING 0
+#define MV_ADOPT_ASK_ENABLE  1   /* already open; the FLAG is missing */
+#define MV_ADOPT_ASK_CONVERT 2   /* native to another MV system */
+int mv_git_adopt_question(const char *desc, int flag_on);
+
 void mv_git_drop_native_desc(void);
 
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
@@ -271,6 +293,10 @@ char *mv_git_openform(mv_ctx *ctx, const char *repo);
    path): MV files -> backend, .mv-account/.mvx -> .mvx, plain files -> disk.
    The open form never touches disk; no external adopt tool is run. */
 char *mv_git_materialize(mv_ctx *ctx, const char *repo);
+/* Materialise a given tree-ish instead of HEAD: `adopt` builds the account from
+   the WORKING TREE, so an edit somebody made in a plain checkout is carried in
+   rather than silently replaced by the committed version. */
+char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev);
 char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id);
 char *mv_git_commit(mv_ctx *ctx, const char *repo, const char *msg);

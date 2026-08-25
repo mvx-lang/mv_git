@@ -436,6 +436,27 @@ static int repo_place(char *gitdir, size_t gcap, char *prefix, size_t pcap) {
     return 0;
 }
 
+/* "Make this an open account?" -- the same question, defaults and env override
+   udt-git and mvx-git use (mv_git#88).  With no terminal the answer is yes,
+   said out loud, because erroring would break every scripted adopt. */
+static int ask_open_account(void) {
+    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
+    if (env && env[0])
+        return !(env[0] == '0' || !strcasecmp(env, "no") ||
+                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "uv-git adopt: keeping it in the open account format "
+                        "(--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, "
+                        "declines)\n");
+        return 1;
+    }
+    char line[16];
+    fprintf(stderr, "Make it an open account? [Y/n] ");
+    fflush(stderr);
+    if (!fgets(line, sizeof line, stdin)) return 1;
+    return !(line[0] == 'n' || line[0] == 'N');
+}
+
 static int adopt(int argc, char **argv, int i) {
     const char *dir = NULL, *want_flavour = NULL;
     int open_form = -1;                       /* -1 = ask */
@@ -539,23 +560,59 @@ static int adopt(int argc, char **argv, int i) {
     /* An account already committed in the portable form stays portable — there
        is nothing to decide, and asking would invite an answer that silently
        demotes it. */
-    if (open_form < 0 && !strcmp(desc_name, ".mv-account"))
-        open_form = 1;
-    if (open_form < 0) {
-        char line[16];
+    /* --- what to ask about the open form ---------------------------------
+     *
+     * The ENGINE's decision, identical to udt-git's (mv_git#124).  uv-git asked
+     * its own differently-shaped question here -- "Also make this an open
+     * account?" for every checkout including ones that already were one, and it
+     * ERRORED with no terminal rather than defaulting, so every scripted adopt
+     * had to pass a flag.  #88 says the non-interactive answer is yes, said out
+     * loud. */
+    switch (mv_git_adopt_question(desc_name, open_form == 1)) {
+    case MV_ADOPT_ASK_ENABLE:
         fprintf(stderr,
-            "\nAlso make this an open account?\n"
-            "  The portable descriptor (.mv-account) is what lets the account "
-            "travel to\n"
-            "  another MV platform; the native one (.uv) describes this system "
-            "alone.\n");
-        if (!ask("Open account? [Y/n]: ", line, sizeof line)) {
-            fprintf(stderr,
-                "uv-git adopt: no terminal to ask on — pass --open-account or "
-                "--no-open-account.\n");
-            return 1;
-        }
-        open_form = !(line[0] == 'n' || line[0] == 'N');
+            "uv-git adopt: this is already in the open account format, but the "
+            "repository does not\n"
+            "        have the flag set -- without it the next commit writes the "
+            "native form over it.\n");
+        if (open_form < 0) open_form = ask_open_account();
+        break;
+    case MV_ADOPT_ASK_CONVERT:
+        fprintf(stderr,
+            "uv-git adopt: this is a native %s account and will be converted to "
+            "a UniVerse one.\n", desc_name);
+        if (open_form < 0) open_form = ask_open_account();
+        break;
+    default:
+        /* Native to this system, or already open with the flag set: nothing is
+           being converted, so there is nothing to ask. */
+        if (open_form < 0) open_form = !strcmp(desc_name, ".mv-account");
+        break;
+    }
+
+    /* --- take the data from DISK ------------------------------------------
+     *
+     * The same three steps udt-git adopt takes, for the same reasons
+     * (mv_git#124): stash the account's tree so an EDIT in the checkout is what
+     * gets adopted rather than the committed version of it, clear what git left
+     * behind -- the open form sits on the names the native files want -- and
+     * build the account from the stashed tree once it exists.
+     *
+     * Never popped: popping would write the open form back over a native
+     * account.  The stash is dropped when the account is built, kept if it is
+     * not. */
+    char captured[192] = "";
+    int stashed = 0;
+    if (mv_git_worktree_stash(captured, sizeof captured, &stashed) != 0) {
+        fprintf(stderr, "uv-git adopt: could not read the working tree\n");
+        return 1;
+    }
+    if (stashed)
+        fprintf(stderr, "uv-git adopt: your uncommitted changes are in the "
+                        "stash and will be built into the account\n");
+    {
+        char why[512];
+        (void)mv_git_worktree_clear(why, sizeof why);
     }
 
     /* --- create the account ---------------------------------------------- */
@@ -627,6 +684,30 @@ static int adopt(int argc, char **argv, int i) {
             }
             git_repository_free(repo);
         }
+    }
+
+    /* --- build the records from what was stashed --------------------------- */
+    /* An agent first.  Records are reached through the account I/O agent, and a
+       just-created account has none -- materialise answers "the account I/O
+       agent did not answer" and the account comes out empty.  clone seeds one
+       here for exactly this reason; adopt never needed to until it started
+       materialising (mv_git#124). */
+    if (!already && mv_agent_seed() != 0)
+        fprintf(stderr, "uv-git adopt: could not put an agent into the "
+                        "account; it exists but will hold no records\n");
+    {
+        char gitdir[4096] = "", prefix[4096] = "";
+        if (repo_place(gitdir, sizeof gitdir, prefix, sizeof prefix) != 0)
+            snprintf(gitdir, sizeof gitdir, ".git");
+        mv_ctx *mctx = mv_ctx_create();
+        char *m = mv_git_materialize_rev(mctx, gitdir, captured);
+        if (m) {
+            for (char *q = m; *q; q++) if ((unsigned char)*q == 0xFE) *q = '\n';
+            printf("%s\n", m);
+            free(m);
+        }
+        mv_ctx_destroy(mctx);
+        if (stashed) (void)system("git stash drop -q >/dev/null 2>&1");
     }
 
     printf("adopted as a UniVerse account%s%s%s\n",

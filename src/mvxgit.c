@@ -1478,6 +1478,141 @@ char *mv_git_filter_furniture(const char *list) {
  * the adopt path itself reads it to decide whether this is an open account.
  *
  * A no-op on MVX by construction -- there the file is the real thing. */
+/* Clear a plain-git checkout so an account can be built from HEAD in its place.
+ *
+ * `git checkout` writes the OPEN FORM, and those are exactly the names the
+ * native files want -- CLIENTS lands as a DIRECTORY of record files where a
+ * hash file belongs, so creating the file fails and the records go nowhere.
+ * Adopting a checkout of mvx-lang/demo materialised 4 records instead of 118
+ * that way, and reported success, because `status` then compared the open form
+ * against itself and read clean.
+ *
+ * The working tree is redundant: every byte of it is in HEAD, which is what
+ * materialise reads.  So it is removed -- which is what `clone` gets for free
+ * from --no-checkout.  Same input to the same code, so an adopted account and a
+ * cloned one are the same account (mv_git#124).
+ *
+ * Refuses when the tree is DIRTY, because "every byte is in HEAD" is only true
+ * then; otherwise this would delete work nobody committed.  Returns 0 on
+ * success, or -1 with the first offending line in `why`. */
+/* Put the account's working tree in the STASH and return the tree-ish to build
+ * the account from.
+ *
+ * `adopt` has to take the data from disk: a plain checkout may have been edited,
+ * and adopting it should carry those edits into the account rather than silently
+ * prefer the committed version of a record.  git already has a command for
+ * "set this work aside, safely, and give me back a clean tree" -- so this is
+ * `git stash push -u -- .` rather than a hand-rolled capture:
+ *
+ *   - it SCOPES to the account with `-- .`, which matters in a repository
+ *     holding several accounts (#44, #49).  A bare capture stages the whole
+ *     worktree wherever it runs.
+ *   - it is RECOVERABLE.  If adopt dies halfway the work is in `git stash list`,
+ *     named and visible, instead of only reachable as a loose object.
+ *   - it reverts the tree as a side effect, which is most of the clearing.
+ *
+ * What it does NOT do is get popped afterwards.  Popping would write the OPEN
+ * FORM back over a native account -- on a hash-file backend those paths are not
+ * files at all -- which is the collision adopt exists to avoid.  The stash's
+ * own tree is materialised instead, so the edits arrive as records.
+ *
+ * `rev` comes back as a tree-ish for THIS account: the stash's subtree at the
+ * prefix, or HEAD's when nothing was stashed (an unedited checkout).  The stash
+ * is left in place; adopt drops it once the account is built. */
+int mv_git_worktree_stash(char *rev, size_t rcap, int *stashed) {
+    if (!rev || !rcap) return -1;
+    rev[0] = '\0';
+    if (stashed) *stashed = 0;
+
+    char before[128] = "", after[128] = "";
+    FILE *f = popen("git rev-parse -q --verify 'stash@{0}' 2>/dev/null", "r");
+    if (f) { if (fgets(before, sizeof before, f)) { char *n = strpbrk(before, "\r\n"); if (n) *n = 0; } pclose(f); }
+
+    /* -u so an uncommitted record file is adopted too, not left behind. */
+    (void)system("git stash push -u -q -- . >/dev/null 2>&1");
+
+    f = popen("git rev-parse -q --verify 'stash@{0}' 2>/dev/null", "r");
+    if (f) { if (fgets(after, sizeof after, f)) { char *n = strpbrk(after, "\r\n"); if (n) *n = 0; } pclose(f); }
+
+    /* A stash is only created when there was something to stash -- an unedited
+       checkout makes none, and then HEAD is what to build from. */
+    int made = after[0] && strcmp(before, after) != 0;
+    if (stashed) *stashed = made;
+
+    char pfx[1024] = "";
+    f = popen("git rev-parse --show-prefix 2>/dev/null", "r");
+    if (f) { if (fgets(pfx, sizeof pfx, f)) { char *n = strpbrk(pfx, "\r\n"); if (n) *n = 0; } pclose(f); }
+    size_t pl = strlen(pfx);
+    while (pl && pfx[pl - 1] == '/') pfx[--pl] = '\0';
+
+    const char *base = made ? "stash@{0}^{tree}" : "HEAD^{tree}";
+    if (pl) snprintf(rev, rcap, "%s:%s", base, pfx);
+    else    snprintf(rev, rcap, "%s", base);
+    return 0;
+}
+
+int mv_git_worktree_clear(char *why, size_t wcap) {
+    if (why && wcap) why[0] = '\0';
+    /* No dirty check.  Adopt captures the working tree BEFORE clearing it, so
+       an edit is not lost -- it is what gets adopted.  Refusing here was the
+       right guard while adopt rebuilt from HEAD and the wrong one once it
+       stopped. */
+    FILE *ls = popen("git ls-tree --name-only HEAD 2>/dev/null", "r");
+    if (!ls) return 0;
+    char name[1024];
+    while (fgets(name, sizeof name, ls)) {
+        char *nl = strpbrk(name, "\r\n");
+        if (nl) *nl = '\0';
+        if (!name[0] || !strcmp(name, ".git")) continue;
+        char cmd[1200];
+        snprintf(cmd, sizeof cmd, "rm -rf -- '%s'", name);
+        (void)system(cmd);
+    }
+    pclose(ls);
+    return 0;
+}
+
+/* This platform's native descriptor name, for a driver that has to tell whether
+   a checkout is native to THIS system or another one -- which is what decides
+   whether `adopt` asks about the open form (mv_git#124). */
+const char *mv_git_desc_native_name(void) { return desc_native_name(); }
+
+/* What, if anything, should `adopt` ask about the open form?
+ *
+ * ONE implementation, because three CLIs ask it and an answer that differs by
+ * platform is a difference nobody intends -- the same reason open_dict_project
+ * and the furniture rules are single (#87, #95, #108).
+ *
+ *   MV_ADOPT_ASK_NOTHING   the checkout is native to THIS system.  Nothing is
+ *                          being converted, so there is nothing to ask; asking
+ *                          would invite converting a working native account for
+ *                          no reason.
+ *   MV_ADOPT_ASK_ENABLE    the checkout is already in the OPEN form but this
+ *                          repository does not have the flag.  The data is
+ *                          portable; the flag is what is missing, and it does
+ *                          not travel with a clone (#88).  Left off, the first
+ *                          commit writes the native form over it.  So the
+ *                          question is "enable", not "convert" -- nothing is
+ *                          being converted, and asking to convert something
+ *                          that already IS open reads as nonsense.
+ *   MV_ADOPT_ASK_CONVERT   the checkout is native to ANOTHER MV system.  It has
+ *                          to be converted to be usable here either way, so
+ *                          that is the one moment "should it also become
+ *                          portable?" is a fair question.  Declining still
+ *                          adopts; it just stays native.
+ *
+ * `desc` is the descriptor found in the checkout (".mv-account", ".udt", ...),
+ * or NULL.  The platform is not guessed from the repository's layout: the
+ * descriptor present says who wrote it, and desc_native_name() says who we are.
+ */
+int mv_git_adopt_question(const char *desc, int flag_on) {
+    if (!desc || !desc[0]) return MV_ADOPT_ASK_NOTHING;
+    if (strcmp(desc, ".mv-account") == 0)
+        return flag_on ? MV_ADOPT_ASK_NOTHING : MV_ADOPT_ASK_ENABLE;
+    if (strcmp(desc, desc_native_name()) == 0) return MV_ADOPT_ASK_NOTHING;
+    return MV_ADOPT_ASK_CONVERT;
+}
+
 void mv_git_drop_native_desc(void) {
 #ifndef MVXGIT_DESC_ON_DISK
     static const char *const names[] = { ".mvx", ".udt", ".uv", ".jbase", NULL };
@@ -4781,12 +4916,39 @@ static void checkout_plain_tree(git_repository *repo, git_tree *tree,
 void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 2) return;
     ensure_init();
+    /* run_sub appends the OUT slot after the inputs, so it is argv[argc-1] --
+       not argv[1], which is the first INPUT once there is more than one.  The
+       optional tree-ish went into argv[1] and the result was written over it,
+       so materialise silently found no tree and adopted an empty account. */
+    mv_value *res = argv[argc - 1];
+    char rev[128] = "";
+    if (argc >= 3) arg_str(argv[1], rev, sizeof rev);
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     git_repository *repo = NULL;
-    if (git_repository_open(&repo, rp) != 0) { fail(argv[1], "open"); return; }
-    git_tree *tree = head_tree(repo);
-    if (!tree) { git_repository_free(repo); mv_set_str(argv[1], "empty", 5); return; }
+    if (git_repository_open(&repo, rp) != 0) { fail(res, "open"); return; }
+    /* An optional tree-ish: materialise THAT instead of HEAD.
+     *
+     * `adopt` needs it.  A checkout somebody made with plain git may have been
+     * EDITED, and adopting it should carry the edits into the account -- taking
+     * HEAD instead would silently prefer the committed version of a record over
+     * the one on disk in front of them.  So adopt writes the working tree into
+     * a tree object and hands that in, and the whole materialise path is
+     * unchanged: same code builds a cloned account and an adopted one
+     * (mv_git#124). */
+    git_tree *tree = NULL;
+    if (rev[0]) {
+        git_object *o = NULL;
+        if (git_revparse_single(&o, repo, rev) == 0) {
+            git_object *t = NULL;
+            if (git_object_peel(&t, o, GIT_OBJECT_TREE) == 0)
+                tree = (git_tree *)t;
+            git_object_free(o);
+        }
+    } else {
+        tree = head_tree(repo);
+    }
+    if (!tree) { git_repository_free(repo); mv_set_str(res, "empty", 5); return; }
 
     int64_t nw = 0, nd = 0;
     materialize_tree_x(ctx, repo, tree, 1, &nw, &nd);   /* strict: MV files only */
@@ -4869,7 +5031,7 @@ void mvx_sub_GITMATERIALIZE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     git_repository_free(repo);
     char out[80];
     snprintf(out, sizeof out, "materialised %lld record(s)", (long long)nw);
-    mv_set_str(argv[1], out, (int64_t)strlen(out));
+    mv_set_str(res, out, (int64_t)strlen(out));
 }
 
 /* GITBRANCH(repo, name, out) — list branches, or create one at HEAD. */
@@ -6093,6 +6255,11 @@ char *mv_git_openform(mv_ctx *ctx, const char *repo) {
 char *mv_git_materialize(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
+}
+/* Materialise a given tree-ish rather than HEAD -- see GITMATERIALIZE. */
+char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev) {
+    const char *a[] = {repo, rev};
+    return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 2);
 }
 char *mv_git_rm(mv_ctx *ctx, const char *repo, const char *file,
                  const char *id) {
