@@ -291,6 +291,13 @@ char *GITVOCDROP(char *repo, char *list) {
     return emit(repo, mv_git_filter_vocdrop(rp(repo), list ? list : ""));
 }
 
+/* GITISOPEN(repo) — is this account open?  The verb used to decide from its
+   own command line, so the same account committed differently through the verb
+   and the CLI (mv_git#135). */
+char *GITISOPEN(char *repo) {
+    return emit(repo, mv_git_is_open(rp(repo)));
+}
+
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
    (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
 char *GITFILES(char *repo) {

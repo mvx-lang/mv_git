@@ -851,6 +851,15 @@ static int git_path_ignored(git_repository *repo, const char *path) {
 static const char *rp_or_dot(const char *r) { return r && r[0] ? r : ".git"; }
 
 static void openaccount_sync(const char *rp) {
+    /* libgit2 FIRST.  Every op that arrives through the engine's own entry
+       points has been through ensure_init(), but the ones the BASIC calls to ASK
+       a question -- ISOPEN, VOCDROP -- had not, and git_repository_open() on an
+       uninitialised libgit2 simply fails.  It fails SILENTLY here, because a
+       repository that will not open is indistinguishable from one with no
+       `mvx.openaccount` in it: the account looked native however the config was
+       set (mv_git#135).  Cheap and idempotent, so it belongs in the one function
+       that every one of those callers goes through. */
+    ensure_init();
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) return;
     git_config *cfg = NULL;
@@ -1524,6 +1533,31 @@ char *mv_git_filter_furniture(const char *list) {
     return out;
 }
 
+/* Is this repository an OPEN account?  "1" or "0".
+ *
+ * THE FORM IS A PROPERTY OF THE ACCOUNT, not of the sentence.  `mvx.openaccount`
+ * in .git/config is what marks it, and the ENGINE has always honoured it -- but
+ * the VERB read the form from its own command line and nothing else:
+ *
+ *     OPENFMT = 0
+ *     IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
+ *
+ * So the same account committed differently depending on which way you came in:
+ * `udt-git add -A` wrote `.mv-account`, `GIT ADD -A` at the TCL prompt wrote
+ * `.udt`, with the flag set to true either way.  That is what #81 settled must
+ * not happen (mv_git#135).
+ *
+ * It had also gone INTERNALLY inconsistent: since #133 the master-file type
+ * drops come from the VOCDROP op, which reads the config -- so one `add -A` was
+ * dropping pointers as an open account and stamping a native descriptor.
+ *
+ * Reads .git/config and no records, which is what lets mvgitd serve it on
+ * UniVerse exactly as furniture and VOCDROP are served (#133). */
+char *mv_git_is_open(const char *repo) {
+    openaccount_sync(rp_or_dot(repo));
+    return strdup(mv_openaccount() ? "1" : "0");
+}
+
 /* Which of `list` a wholesale add must drop BY TYPE.
  *
  * `list` is @AM-separated `id<VM>attribute-1`, and the answer is the @AM
@@ -1811,6 +1845,10 @@ static int uv_flavour_committed(char *out, size_t cap) {
     return out[0] != '\0';
 }
 
+/* Defined below, beside the descriptor schema it needs (mv_git#139). */
+static int desc_carry_open(const char *base, const char *path,
+                           char *out, size_t cap);
+
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
                     const char *prefix, int open) {
     const char *pfx = prefix ? prefix : "";
@@ -1823,8 +1861,21 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
         snprintf(base, sizeof base, "%s", (slash && slash[1]) ? slash + 1 : acct);
     }
     if (open) {
-        mv_git_desc_open(base, "1", NULL, NULL, desc, dcap);
+        /* THE COMMITTED DESCRIPTOR IS THE SOURCE OF TRUTH, exactly as it is for
+           the UniVerse flavour below.  This used to SYNTHESISE the whole thing
+           from the account's directory name and a hardcoded `version = 1`, so
+           every `add -A` threw away whatever the descriptor already said: an
+           account attribute set with `GIT ATTR --set version=2` was gone on the
+           next add, silently, and `GIT ATTR` reported the old value back.
+           Both entry points did it -- measured on UniData 8.3, `udt-git add -A`
+           lost the edit too -- which is why the suite never saw it: the verb was
+           taking the NATIVE path (mv_git#135) and only the open path was wrong
+           (mv_git#139).
+           Only the name is regenerated, and only when the descriptor carries
+           none: an account renamed by ATTR keeps the name it was given. */
         snprintf(path, pcap, "%s.mv-account", pfx);
+        if (!desc_carry_open(base, path, desc, dcap))
+            mv_git_desc_open(base, "1", NULL, NULL, desc, dcap);
     } else {
 #if defined(MVXGIT_UDT)
         snprintf(desc, dcap,
@@ -1941,6 +1992,17 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char *r = mv_git_filter_furniture(buf);
     free(buf);
     mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
+/* --- GITISOPEN(repo, out) --------------------------------------------- */
+void mvx_sub_GITISOPEN(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    char *r = mv_git_is_open(rp);
+    mv_set_str(argv[1], r ? r : "0", r ? (int64_t)strlen(r) : 1);
     free(r);
 }
 
@@ -2704,6 +2766,56 @@ int mv_git_desc_open(const char *name, const char *version,
     if (hash)        snprintf(d.hash, sizeof d.hash, "%s", hash);
     d.openaccount = 1;
     return desc_render_open(&d, out, cap);
+}
+
+/* The committed `.mv-account`, re-rendered so an add carries it FORWARD instead
+   of replacing it.  0 when there is nothing committed yet (the first add), and
+   the caller synthesises a fresh one.
+   Reads HEAD, not the working tree: the descriptor's home in the open form IS
+   the git objects, which is what makes GIT ATTR able to edit it at all. */
+static int desc_carry_open(const char *base, const char *path,
+                           char *out, size_t cap) {
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, ".git") != 0) return 0;
+
+    /* THE INDEX FIRST, then HEAD.  `GIT ATTR --set` STAGES the edited
+       descriptor; nothing commits in between, so an add that consulted only
+       HEAD read the value from before the edit and wrote it straight back over
+       the staged one.  Which is the whole bug: the edit was still sitting in the
+       index, and the add replaced it (mv_git#139). */
+    const git_oid *oid = NULL;
+    git_index *ix = NULL;
+    git_oid staged;
+    if (git_repository_index(&ix, r) == 0) {
+        const git_index_entry *e = git_index_get_bypath(ix, path, 0);
+        if (e) { git_oid_cpy(&staged, &e->id); oid = &staged; }
+    }
+    git_tree *t = NULL;
+    git_tree_entry *te = NULL;
+    git_oid committed;
+    if (!oid && (t = head_tree(r)) != NULL &&
+        git_tree_entry_bypath(&te, t, path) == 0) {
+        git_oid_cpy(&committed, git_tree_entry_id(te));
+        oid = &committed;
+    }
+
+    int done = 0;
+    git_blob *b = NULL;
+    if (oid && git_blob_lookup(&b, r, oid) == 0) {
+        acct_desc d;
+        desc_parse(git_blob_rawcontent(b), (size_t)git_blob_rawsize(b), &d);
+        if (!d.name[0] && base) snprintf(d.name, sizeof d.name, "%s", base);
+        d.openaccount = 1;              /* staging the open form says so */
+        desc_render_open(&d, out, cap);
+        done = 1;
+        git_blob_free(b);
+    }
+    if (te) git_tree_entry_free(te);
+    if (t)  git_tree_free(t);
+    if (ix) git_index_free(ix);
+    git_repository_free(r);
+    return done;
 }
 
 /* Public: adopt a descriptor onto this platform — see mvxgit.h for why this is a

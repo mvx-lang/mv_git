@@ -771,6 +771,28 @@ version = 1
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- the form belongs to the ACCOUNT, so the verb and the CLI agree (mv_git#135) --"
+# `mvx.openaccount` marks an account open.  The ENGINE honoured it; the VERB read
+# the form from its own command line and nothing else, so the same account
+# committed a `.mv-account` through the CLI and a native descriptor through
+# `GIT ADD -A` at the TCL prompt.  Two commits from one account, decided by which
+# way you came in -- exactly what #81 settled must not happen.
+#
+# ASSERTED AS PARITY, not just as "the verb is right": the failure mode is the
+# two DISAGREEING, and a test that only checked one of them would have passed
+# throughout -- the CLI was correct the whole time.
+PAR="$WORK/parity"; ACCT "$PAR"; LINK "$PAR"; CF "$PAR" CUST
+( cd "$PAR" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+GITV "$PAR" GIT INIT   >/dev/null
+GITV "$PAR" GIT ADD -A >/dev/null
+descof() { ( cd "$1" && git diff --cached --name-only ) \
+           | grep -E '^\.(mv-account|mvx|udt|uv|jbase)$' | tr '\n' ' '; }
+pverb="$(descof "$PAR")"
+( cd "$PAR" && git reset -q >/dev/null 2>&1; "$MVXGIT" add -A >/dev/null 2>&1 )
+pcli="$(descof "$PAR")"
+t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
+te "and the CLI stages the same"      "$pverb"      "$pcli"
+
 say "-- an X record is data, not a pointer, so it travels (mv_git#136) --"
 # X is UniVerse's miscellaneous-DATA type: RELLEVEL (14.2.1 / PICK), INTR.KEY,
 # QUIT.KEY -- values, not references.  It was grouped with Q and R as an
