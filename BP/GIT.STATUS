@@ -227,6 +227,24 @@ UNTRACKED:
                IF NOT(UDROP) AND UISVOC AND UFURN # "" THEN
                   LOCATE(URID, UFURN; UFPOS) THEN UDROP = 1
                END
+*              A FILE'S OWN POINTER IS DERIVED and `add` no longer stages it in
+*              any form (mv_git#131) -- so status must not report it either, or
+*              every account is untracked for ever with nothing that can clear
+*              it.  The two sides ask the same question in the same order, which
+*              is the whole reason they are written beside each other: every time
+*              they have drifted the result was this same bug (#51, #95, #108).
+*
+*              UFILES is already only the account's OWN files, so a Q, X or R
+*              pointer is not in it and is still reported (mv_git#132).
+               IF NOT(UDROP) AND UISVOC THEN
+                  LOCATE(URID, UFILES; UFLPOS) THEN
+                     READ UPREC FROM RV, URID THEN
+                        UPT = TRIM(FIELD(UPREC<1>, " ", 1))
+                        IF UPT="F" OR UPT="DIR" THEN UDROP = 1
+                        IF UPT="LF" OR UPT="DF" THEN UDROP = 1
+                     END
+                  END
+               END
                IF NOT(UDROP) AND USTK AND UISVOC THEN
                   READ USREC FROM USTKF, URID THEN UDROP = 1
                END

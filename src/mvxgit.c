@@ -910,6 +910,11 @@ static int record_is_object(mv_ctx *ctx, mv_value *fvar, const char *idb,
     return 0;
 }
 
+/* Declared here as well as beside its definition: the record passes ask it
+   about a VOC pointer's target long before the file-enumeration helpers are
+   defined (mv_git#131). */
+static int backend_has_file(mv_ctx *ctx, const char *name);
+
 static int is_provision_pointer(const char *file, const char *id) {
     if (strcasecmp(id, "CATALOG") != 0) return 0;
     return strcasecmp(file, "VOC") == 0 || strcasecmp(file, "MD") == 0;
@@ -2039,6 +2044,24 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                         skipped++;
                         continue;
                     }
+                    /* A FILE'S OWN POINTER IS DERIVED, so it is not content in
+                       ANY form -- native as much as open.  CREATE.FILE writes
+                       it, DELETE.FILE removes it, and `<file>.DICT/%FILE%`
+                       carries the geometry a checkout needs to write it again.
+                       Committing it as well means the same fact in two places,
+                       free to disagree: a file created on one platform showed
+                       up as a pointer diff that was pure noise, and a native
+                       repository carried a pointer spelled for the platform
+                       that made it and no use anywhere else (mv_git#131).
+
+                       ONLY A FILE THIS ACCOUNT CARRIES.  mv_filelist is already
+                       exactly that question -- an F/DIR record whose data AND
+                       dict paths are bare local names, furniture excluded -- so
+                       a Q, X or R pointer is not in it and still travels.  Those
+                       name another account's file: nothing here creates them, no
+                       %FILE% describes them, and dropping one would lose real
+                       configuration on every clone (mv_git#132). */
+                    if (cls == 2 && backend_has_file(ctx, fid)) { skipped++; continue; }
                 }
                 /* Identical to what a fresh account of this flavour holds, so
                    it is the system's record and not this account's (mv_git#46).
@@ -3651,6 +3674,25 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                        same order (mv_git#130). */
                     if (cls == 2 && mv_account_furniture(idb, strlen(idb)))
                         continue;
+                    /* A FILE'S OWN POINTER IS DERIVED, so it is not content in
+                       ANY form -- native as much as open.  CREATE.FILE writes
+                       it, DELETE.FILE removes it, and `<file>.DICT/%FILE%`
+                       carries the geometry a checkout needs to write it again.
+                       Committing it as well means the same fact in two places,
+                       free to disagree: a file created on one platform showed
+                       up as a pointer diff that was pure noise, and a native
+                       repository carried a pointer spelled for the platform
+                       that made it and no use anywhere else (mv_git#131).
+
+                       ONLY A FILE THIS ACCOUNT CARRIES.  mv_filelist is already
+                       exactly that question -- an F/DIR record whose data AND
+                       dict paths are bare local names, furniture excluded -- so
+                       a Q, X or R pointer is not in it and still travels.  Those
+                       name another account's file: nothing here creates them, no
+                       %FILE% describes them, and dropping one would lose real
+                       configuration on every clone (mv_git#132). */
+                    if (cls == 2 && backend_has_file(ctx, idb)) continue;
+
                     /* An object FILE is not committed, so neither is its VOC
                        pointer — and reporting the pointer would leave it
                        untracked forever, since no add will ever stage it. */

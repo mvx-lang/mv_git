@@ -619,12 +619,17 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       # inside acctA and cleared what it did not own.
       M="$WORK/adoptmulti"   # NOT $WORK/multi: the several-accounts test owns that
       mkdir -p "$M" && ( cd "$M" && git init -q . )
-      for A in acctA acctB; do
-          mkdir -p "$M/$A/CUST" "$M/$A/CUST.DICT"
-          printf '%s-one\n' "$A" > "$M/$A/CUST/C1"
-          printf 'DIR' > "$M/$A/CUST.DICT/%FILE%"
+      # AD, not A: `A` is the suite's own account, set once at the top and used
+      # by every block after this one.  A loop variable named `A` overwrote it
+      # with a bare relative name, so the next test to reach for $A got acctB --
+      # and since these shims fail quietly on a path that is not an account, it
+      # showed up as empty output rather than an error (mv_git#130).
+      for AD in acctA acctB; do
+          mkdir -p "$M/$AD/CUST" "$M/$AD/CUST.DICT"
+          printf '%s-one\n' "$AD" > "$M/$AD/CUST/C1"
+          printf 'DIR' > "$M/$AD/CUST.DICT/%FILE%"
           printf '# .mv-account - open (portable) account descriptor\nname = %s\nversion = 1\nopenaccount = 1\n' \
-                 "$A" > "$M/$A/.mv-account"
+                 "$AD" > "$M/$AD/.mv-account"
       done
       ( cd "$M" && git add -A >/dev/null 2>&1 &&
         git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
@@ -738,6 +743,36 @@ version = 1
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- a file's own pointer is derived, not content (mv_git#131) --"
+# CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
+# <file>.DICT/%FILE% carries the geometry to write it again -- so committing the
+# pointer is the same fact twice, free to disagree.  It is dropped in EVERY
+# form now, native as much as open.
+#
+# ASSERTED ON BOTH SIDES, because the engine and BP/GIT.ADD each carry a copy of
+# this rule and drift between them is the recurring bug here (#51, #95, #108).
+CF "$A" PTRTEST
+SEED "$A" 'OPEN "PTRTEST" TO F ELSE STOP
+WRITE "row" ON F, "R1"'
+GITV "$A" GIT ADD -A >/dev/null
+st="$(GITV "$A" GIT STATUS)"
+t  "the file's records travel"  "PTRTEST/R1"           "$st"
+t  "and its geometry"           "PTRTEST.DICT/%FILE%"  "$st"
+tn "but not its VOC pointer"    "VOC/PTRTEST"          "$st"
+GITV "$A" GIT COMMIT -m ptrtest >/dev/null
+# ...and the deletion still lands without the pointer to carry it: %FILE% and
+# the records both go.  This is what the pointer used to signal.
+DF "$A" PTRTEST
+st="$(GITV "$A" GIT STATUS)"
+# THE RECORDS are the portable assertion.  What accompanies them differs by
+# platform and neither spelling is wrong: on MVX %FILE% is a real record on disk
+# and goes with the file, so status reports `D PTRTEST.DICT/%FILE%`; on UniData
+# the control is SYNTHESISED at add time from mv_fileclass, which cannot
+# describe a file that is gone, so the dictionary's own `@ID` item carries the
+# deletion instead.  Asserting either one here would pass on one platform and
+# fail on the other while the behaviour was right on both.
+t  "deleting the file shows its records gone" "D PTRTEST/R1" "$st"
+
 say "-- catalog: an account's object directories are not content (mv_git#130) --"
 # A catalogued program is BUILT from the source beside it: the account gets its
 # own copy back by compiling, and a clone that carried one would carry a binary
@@ -750,14 +785,20 @@ say "-- catalog: an account's object directories are not content (mv_git#130) --
 # report, or the account is untracked for ever and no commit can clear it.  That
 # asymmetry is what #51 and #95 both were, and it is what this found on the
 # native form -- add skipped the pointer, status named it.
-CF "$A" CATALOG
-SEED "$A" 'OPEN "CATALOG" TO F ELSE STOP
+# LIB, not CATALOG, and the difference is the point of testing on more than one
+# platform: `CATALOG` is a stock VOC *verb* on UniData ("V" / CATALOG), so
+# CREATE.FILE refuses the name outright -- "CATALOG is a record in VOC file".
+# LIB is in the same shared list, is nobody's stock record on any of them, and
+# is one of the three MVX's own runtime reserves.
+CF "$A" LIB
+SEED "$A" 'OPEN "LIB" TO F ELSE STOP
 WRITE "objectcode" ON F, "PROG"'
 GITV "$A" GIT ADD -A >/dev/null
-tn "catalog stays out entirely" "CATALOG" "$(GITV "$A" GIT STATUS)"
+tn "catalog stays out entirely" "LIB/PROG" "$(GITV "$A" GIT STATUS)"
+tn "and so does its geometry"   "LIB.DICT" "$(GITV "$A" GIT STATUS)"
 # The escape hatch every other exclusion has: naming it is a deliberate act.
-GITV "$A" GIT ADD CATALOG >/dev/null
-t  "an explicit add still stages it" "CATALOG/PROG" "$(GITV "$A" GIT STATUS)"
+GITV "$A" GIT ADD LIB >/dev/null
+t  "an explicit add still stages it" "LIB/PROG" "$(GITV "$A" GIT STATUS)"
 
 # One repo, one index, one commit, with accounts as subdirectories beside
 # ordinary files.  uv-git has walked such a repository for some time; mvx-git
