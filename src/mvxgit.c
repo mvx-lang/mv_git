@@ -2590,6 +2590,26 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     /* only a path INSIDE a file is a record; the file's own entry is not */
     if (strcmp(top, rel) != 0 && caller_has_file((mv_ctx *)payload, top))
         return 1;
+    /* A FILE'S DICTIONARY IS NOT A BLOB.  UniVerse keeps it beside the data as
+       `D_<name>` -- a hash file of its own -- so this pass took `D_CUST` as 2KB
+       of opaque binary while `CUST.DICT/@ID` and `CUST.DICT/%FILE%` carried the
+       same dictionary as RECORDS.  The dictionary went into the commit twice:
+       once portably, once in a form no other MV system can read (mv_git#151).
+       Same shape as the mvxdata.lmdb rule at the top of this function -- a
+       platform's own binary, beside content it already carries properly.
+       Its OBJECT file's dictionary too: `BP.O` is excluded as a file (#145), so
+       caller_has_file() says no to it and `D_BP.O` would slip through the test
+       above on a technicality. */
+    if (top[0] == 'D' && top[1] == '_' && strcmp(top, rel) == 0) {
+        const char *base = top + 2;
+        if (caller_has_file((mv_ctx *)payload, base)) return 1;
+        size_t bl = strlen(base);
+        if (bl > 2 && strcmp(base + bl - 2, ".O") == 0) {
+            char stem[256];
+            snprintf(stem, sizeof stem, "%.*s", (int)(bl - 2), base);
+            if (caller_has_file((mv_ctx *)payload, stem)) return 1;
+        }
+    }
     /* A FILE'S CONTROL IS NEVER TAKEN FROM DISK.  <file>.DICT/%FILE% is
        create-time metadata, and on MVX it is also an ordinary file on disk — so
        git's own working-tree pass swept it up and staged the account's NATIVE
