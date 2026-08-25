@@ -89,7 +89,7 @@ jobs:
           GITPKG="$PWD" \
           MKACCOUNT="$GITHUB_WORKSPACE/.mvx-src/scripts/mkaccount.sh" \
           SKIP_NET=0 \
-            sh tests/git-tests.sh
+            bash tests/git-tests.sh
 
   # ---- UniData: build, install and test in one container invocation ----------
   # One `udt-run` for all three: each invocation is a separate container, and
@@ -134,7 +134,7 @@ jobs:
             MVX="$UDTHOME/bin/udt" \
             MVXGIT=/usr/local/bin/udt-git \
             SKIP_NET=0 \
-              sh tests/git-tests.sh'
+              bash tests/git-tests.sh'
 
   # ---- UniVerse: same shape, via uv-run --------------------------------------
   uv:
@@ -173,4 +173,4 @@ jobs:
             UVGIT="$ROOT/dist/mv_git/bin/uv-git" \
             MVXGIT="$ROOT/dist/mv_git/bin/uv-git" \
             SKIP_NET=0 \
-              sh tests/git-tests.sh'
+              bash tests/git-tests.sh'
