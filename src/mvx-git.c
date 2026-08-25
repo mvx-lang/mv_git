@@ -307,31 +307,34 @@ static void apply_open_env(const char *acct);
 
 static void materialize_clone(const char *acct) {
     fprintf(stderr, "mvx-git: materialising account %s\n", acct);
+    /* THE BODY OF THIS IS IN THE ENGINE now (mv_git_materialize_account): the
+       in-session GIT CLONE needs exactly the same thing and had none of it, so
+       `GIT CLONE` at the TCL prompt left a directory of checked-out open-form
+       files with no account in it (mv_git#138).  One implementation, so the two
+       ways in cannot disagree about what a clone IS.
+       It chdirs into the account and back on its own. */
+    mv_ctx *mctx = mv_ctx_create();
+    free(mv_git_materialize_account(mctx, acct));
+    mv_ctx_destroy(mctx);
+
+    /* WHAT STAYS HERE IS THE PART A VERB CANNOT DO: ask a question.  Rebuilding
+       an alternate-key index is optional (#11) -- the store already serves the
+       declared index, CREATE-INDEX builds the real LMDB one -- so it is offered
+       rather than assumed, and a session at the TCL prompt has no terminal of
+       its own to offer it on. */
     char cwd0[PATH_MAX];
     if (!getcwd(cwd0, sizeof cwd0)) cwd0[0] = '\0';
-    if (chdir(acct) != 0) {
-        fprintf(stderr, "mvx-git: cannot enter %s\n", acct);
-        return;
-    }
+    if (chdir(acct) != 0) return;              /* already reported above */
     setenv("MVXACCOUNT", ".", 1);
-    /* The open-account opt-in was just written to this clone's config; the
-       engine reads it from the environment, and materialise is where the open
-       form is translated back — the record-key item's name among it
-       (mv_git#96).  Without this the flag was set and unread. */
     apply_open_env(".");
     mv_ctx *ctx = mv_ctx_create();
-    char *r = mv_git_materialize(ctx, ".git");
-    free(r);
     int ncreate = 0, nfiles = 0;
     char *report = NULL;
     char *ixlist = collect_index_list(ctx, ".git", &ncreate, &nfiles, &report);
     mv_ctx_destroy(ctx);
-    const char *mvx = getenv("MVX");
-    if (!mvx || !mvx[0]) mvx = "mvx";
-    setenv("MVXPRIV", "developer", 1);          /* BUILD catalogs BP */
-    char *bargv[] = {(char *)mvx, "-a", ".", "-c", "BUILD", NULL};
-    run(bargv);
     if (ixlist) {
+        const char *mvx = getenv("MVX");
+        if (!mvx || !mvx[0]) mvx = "mvx";
         fflush(stdout);
         fprintf(stderr, "Indexes have changed for %d file(s):\n%s", nfiles,
                 report ? report : "");

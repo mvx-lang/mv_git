@@ -35,7 +35,23 @@ t()    { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
 # tn NAME UNWANTED ACTUAL — asserts the output does NOT contain UNWANTED.
 # For "it should not ask": a question nobody should be asked cannot be checked
 # by looking for the right words, only by their absence.
-tn()   { case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
+#
+# AN ABSENCE ASSERTED AGAINST NOTHING IS NOT AN ASSERTION.  If ACTUAL is empty
+# this passes no matter what, so it passes just as well when the command under
+# test did nothing at all -- and these shims fail QUIETLY on a path that is not
+# an account, so "did nothing" is the common case, not a rare one.  Three tests
+# in this file were found doing exactly that, each of them green against a build
+# with the fix deliberately removed (mv_git#134).
+#
+# The cure is always the same: put a positive CONTROL in the same output -- some
+# record that MUST be there -- so emptiness cannot pass for success.  This says
+# so out loud rather than trusting anyone to remember.
+tn()   { if [ -z "$3" ]; then
+             printf '  VACUOUS %s — asserted "not %s" against EMPTY output;\n' "$1" "$2"
+             printf '          add a positive control that must appear.\n'
+             FAIL=$((FAIL+1)); return
+         fi
+         case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
 
 # te NAME EXPECTED ACTUAL — exact-equality assertion
 te()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
@@ -535,7 +551,13 @@ else
   #
   # So both halves are asserted: what is on DISK, and what is in GIT.  Testing
   # only one of them is how this survived.
+  # "" IS THE EXPECTED ANSWER ON THREE OF FOUR PLATFORMS, so this function has to
+  # be able to say something OTHER than "" when it is asked the wrong question.
+  # Without the directory check it returned "" for a path that did not exist at
+  # all, and `te "no descriptor file on disk" ""` then passed for a clone that
+  # had never happened -- an assertion that cannot fail (mv_git#134).
   descfiles() { local d="$1" out="" n
+                [ -d "$d" ] || { printf 'NO-SUCH-DIR:%s' "$d"; return; }
                 for n in .mvx .udt .uv .jbase; do
                     [ -f "$d/$n" ] && out="$out$n"
                 done
@@ -619,12 +641,17 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       # inside acctA and cleared what it did not own.
       M="$WORK/adoptmulti"   # NOT $WORK/multi: the several-accounts test owns that
       mkdir -p "$M" && ( cd "$M" && git init -q . )
-      for A in acctA acctB; do
-          mkdir -p "$M/$A/CUST" "$M/$A/CUST.DICT"
-          printf '%s-one\n' "$A" > "$M/$A/CUST/C1"
-          printf 'DIR' > "$M/$A/CUST.DICT/%FILE%"
+      # AD, not A: `A` is the suite's own account, set once at the top and used
+      # by every block after this one.  A loop variable named `A` overwrote it
+      # with a bare relative name, so the next test to reach for $A got acctB --
+      # and since these shims fail quietly on a path that is not an account, it
+      # showed up as empty output rather than an error (mv_git#130).
+      for AD in acctA acctB; do
+          mkdir -p "$M/$AD/CUST" "$M/$AD/CUST.DICT"
+          printf '%s-one\n' "$AD" > "$M/$AD/CUST/C1"
+          printf 'DIR' > "$M/$AD/CUST.DICT/%FILE%"
           printf '# .mv-account - open (portable) account descriptor\nname = %s\nversion = 1\nopenaccount = 1\n' \
-                 "$A" > "$M/$A/.mv-account"
+                 "$AD" > "$M/$AD/.mv-account"
       done
       ( cd "$M" && git add -A >/dev/null 2>&1 &&
         git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
@@ -727,17 +754,191 @@ version = 1
     "$MVXGIT" clone "$OA" "$WORK/oa-yes" >/dev/null 2>&1
     te "clone open: opt-in by default" "true" \
       "$(git -C "$WORK/oa-yes" config --get mvx.openaccount 2>&1)"
+    # DECLINING AND NOT CLONING AT ALL LOOK THE SAME to `config --get`: both
+    # answer nothing, so `te "" ...` passed either way and the two negative cases
+    # were asserting nothing (mv_git#134).  Reporting whether the clone landed
+    # alongside the flag makes the difference visible -- a clone that failed now
+    # says `no-clone` and the assertion fails.
+    declined() { local d="$1"
+                 [ -d "$d/.git" ] || { printf 'no-clone'; return; }
+                 printf 'cloned:%s' "$(git -C "$d" config --get mvx.openaccount 2>&1)"; }
     "$MVXGIT" clone --no-open-account "$OA" "$WORK/oa-no" >/dev/null 2>&1
-    te "clone open: --no-open-account declines" "" \
-      "$(git -C "$WORK/oa-no" config --get mvx.openaccount 2>&1)"
+    te "clone open: --no-open-account declines" "cloned:" "$(declined "$WORK/oa-no")"
     MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$OA" "$WORK/oa-env" >/dev/null 2>&1
-    te "clone open: env declines" "" \
-      "$(git -C "$WORK/oa-env" config --get mvx.openaccount 2>&1)"
+    te "clone open: env declines" "cloned:" "$(declined "$WORK/oa-env")"
     ;;
   esac
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- an X record is data, not a pointer, so it travels (mv_git#136) --"
+# X is UniVerse's miscellaneous-DATA type: RELLEVEL (14.2.1 / PICK), INTR.KEY,
+# QUIT.KEY -- values, not references.  It was grouped with Q and R as an
+# "account/remote pointer" and so dropped in the open interchange, which silently
+# lost the settings a site keeps in its own VOC.  Nothing points anywhere and
+# nothing on the far side recreates it, so it is the account's own and travels.
+#
+# In the OPEN form deliberately: that is the only form it was ever lost in, and
+# the stock X records are subtracted as furniture (#46) either way, so this can
+# only be tested with one the account put there itself.
+case "$PLATFORM" in
+udt|uv)
+  XA="$WORK/xrec"; ACCT "$XA"; LINK "$XA"
+  SEED "$XA" 'OPEN "VOC" TO V ELSE STOP
+X = ""
+X<1> = "X"
+X<2> = "our-site-setting-42"
+WRITE X ON V, "SITECFG"'
+  ( cd "$XA" && git init -q . >/dev/null 2>&1
+    git config mvx.openaccount true
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add VOC >/dev/null 2>&1 )
+  t  "the site's own X record travels" "VOC/SITECFG" \
+     "$( cd "$XA" && git diff --cached --name-only )"
+  ;;
+esac
+
+say "-- a catalogued item is recreated by cataloguing, so it does not travel (mv_git#137) --"
+# The same rule as a file's own pointer: what the platform writes for you when
+# you catalogue is plumbing, and cataloguing on the far side writes it again.
+#
+# It bit hardest on UniData's LOCAL catalog, whose VOC record is type `C` and
+# holds an ABSOLUTE path into CTLG -- a directory that is furniture and never
+# committed -- so every clone got an entry naming a path from the machine that
+# made the commit.  UniVerse writes `V` for the same act, which was already
+# dropped; UniData's GLOBAL catalog writes no VOC record at all.
+#
+# Only where the platform puts catalogued items in the master file: on MVX the
+# verb is a `V` record the account owns, and that is a separate decision (#137).
+case "$PLATFORM" in
+udt|uv)
+  CATA="$WORK/catv"; ACCT "$CATA"; LINK "$CATA"
+  printf 'PRINT "hi"\n' > "$CATA/BP/CATPROG" 2>/dev/null || \
+    { mkdir -p "$CATA/BP"; printf 'PRINT "hi"\n' > "$CATA/BP/CATPROG"; }
+  if [ "$PLATFORM" = udt ]; then
+    ( cd "$CATA" && printf 'BASIC BP CATPROG\nCATALOG BP CATPROG LOCAL\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  else
+    ( cd "$CATA" && printf 'BASIC BP CATPROG\nCATALOG BP CATPROG LOCAL\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  fi
+  # IT REALLY WAS CATALOGUED.  Otherwise the assertion below is the absence of
+  # something that was never there, which is no assertion at all -- and the
+  # obvious spelling, `t "..." "CATPROG"`, is exactly that trap: UniData answers
+  # a missing record with "CATPROG is not a record in VOC.", which contains the
+  # name.  So assert on what only a PRESENT record can say.
+  tn "the program catalogued" "not a record" "$(CT "$CATA" VOC CATPROG)"
+  ( cd "$CATA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add VOC >/dev/null 2>&1 )
+  # A CONTROL THAT MUST BE STAGED.  `add VOC` on a fresh account stages nothing
+  # else -- every other record is stock -- so the absence of VOC/CATPROG was
+  # being asserted against EMPTY output, which an `add` that did nothing at all
+  # would also produce.  MYPARA is the account's own and has to come through, so
+  # emptiness can no longer pass for success (mv_git#134).
+  SEED "$CATA" 'OPEN "VOC" TO V ELSE STOP
+P = ""
+P<1> = "PA"
+P<2> = "HELLO"
+WRITE P ON V, "MYPARA"'
+  ( cd "$CATA" && "$MVXGIT" add VOC >/dev/null 2>&1 )
+  cstaged="$( cd "$CATA" && git diff --cached --name-only )"
+  t  "the account's own record is staged" "VOC/MYPARA"  "$cstaged"
+  tn "but its VOC entry stays out"        "VOC/CATPROG" "$cstaged"
+  ;;
+esac
+
+say "-- a wholesale add reaches EVERY master-file record (mv_git#131) --"
+# THE WHOLE FILE, not the first few.  backend_has_file() answers from a cached
+# file list, and building that list means a SELECT of its own -- so asked lazily
+# from inside this loop it clobbered the select the loop was reading, READNEXT
+# stopped early, and `add` walked off the end having staged almost nothing.
+#
+# Silent, and that is why it needs its own test: no error, and the "ignored"
+# count still looked plausible because records never reached are never counted
+# either.  Measured on UniData 8.3, `udt-git add VOC` on an account holding two
+# records of the user's own: "2 staged / 616 ignored" became "0 staged / 20
+# ignored", and the suite stayed green.
+#
+# ITS OWN ACCOUNT, and a COUNT rather than a sample.  The walk stops at the
+# first pointer it has to ask about, so how much survives depends on where the
+# hash happens to put things -- in the shared account these same records landed
+# early and every sampled assertion passed while the file WAS being cut off.
+# Thirty records and an exact count is the assertion that cannot be lucky.
+#
+# THROUGH THE CLI, deliberately: the verb and the CLI walk the master file with
+# different code -- the verb's loop is in BP/GIT.ADD, the CLI's is the engine's
+# -- and this bug was in the engine's.  The udt arm drives the verb everywhere
+# else, which is exactly why nothing saw it.
+MF="$WORK/mfwalk"; ACCT "$MF"; LINK "$MF"
+SEED "$MF" 'OPEN "VOC" TO V ELSE STOP
+P = ""
+P<1> = "PA"
+P<2> = "HELLO"
+FOR I = 1 TO 30
+   WRITE P ON V, "MYPARA":I
+NEXT I'
+( cd "$MF" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add VOC >/dev/null 2>&1 )
+te "all thirty of the account's own master-file records travel" "30" \
+   "$( cd "$MF" && git diff --cached --name-only | grep -c '^VOC/MYPARA' )"
+
+say "-- a file's own pointer is derived, not content (mv_git#131) --"
+# CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
+# <file>.DICT/%FILE% carries the geometry to write it again -- so committing the
+# pointer is the same fact twice, free to disagree.  It is dropped in EVERY
+# form now, native as much as open.
+#
+# ASSERTED ON BOTH SIDES, because the engine and BP/GIT.ADD each carry a copy of
+# this rule and drift between them is the recurring bug here (#51, #95, #108).
+CF "$A" PTRTEST
+SEED "$A" 'OPEN "PTRTEST" TO F ELSE STOP
+WRITE "row" ON F, "R1"'
+GITV "$A" GIT ADD -A >/dev/null
+st="$(GITV "$A" GIT STATUS)"
+t  "the file's records travel"  "PTRTEST/R1"           "$st"
+t  "and its geometry"           "PTRTEST.DICT/%FILE%"  "$st"
+tn "but not its VOC pointer"    "VOC/PTRTEST"          "$st"
+GITV "$A" GIT COMMIT -m ptrtest >/dev/null
+# ...and the deletion still lands without the pointer to carry it: %FILE% and
+# the records both go.  This is what the pointer used to signal.
+DF "$A" PTRTEST
+st="$(GITV "$A" GIT STATUS)"
+# THE RECORDS are the portable assertion.  What accompanies them differs by
+# platform and neither spelling is wrong: on MVX %FILE% is a real record on disk
+# and goes with the file, so status reports `D PTRTEST.DICT/%FILE%`; on UniData
+# the control is SYNTHESISED at add time from mv_fileclass, which cannot
+# describe a file that is gone, so the dictionary's own `@ID` item carries the
+# deletion instead.  Asserting either one here would pass on one platform and
+# fail on the other while the behaviour was right on both.
+t  "deleting the file shows its records gone" "D PTRTEST/R1" "$st"
+
+say "-- catalog: an account's object directories are not content (mv_git#130) --"
+# A catalogued program is BUILT from the source beside it: the account gets its
+# own copy back by compiling, and a clone that carried one would carry a binary
+# for whatever host committed it.  So the directory it lands in is plumbing --
+# CATALOG, LIB and bin on MVX, bin and lib on jBASE, CTLG on UniData -- and a
+# wholesale add leaves the file, its dictionary AND its VOC pointer out.
+#
+# STATUS IS ASSERTED, not just the index, and that is the point of testing them
+# together: a record `add` will never stage is a record `status` must never
+# report, or the account is untracked for ever and no commit can clear it.  That
+# asymmetry is what #51 and #95 both were, and it is what this found on the
+# native form -- add skipped the pointer, status named it.
+# LIB, not CATALOG, and the difference is the point of testing on more than one
+# platform: `CATALOG` is a stock VOC *verb* on UniData ("V" / CATALOG), so
+# CREATE.FILE refuses the name outright -- "CATALOG is a record in VOC file".
+# LIB is in the same shared list, is nobody's stock record on any of them, and
+# is one of the three MVX's own runtime reserves.
+CF "$A" LIB
+SEED "$A" 'OPEN "LIB" TO F ELSE STOP
+WRITE "objectcode" ON F, "PROG"'
+GITV "$A" GIT ADD -A >/dev/null
+tn "catalog stays out entirely" "LIB/PROG" "$(GITV "$A" GIT STATUS)"
+tn "and so does its geometry"   "LIB.DICT" "$(GITV "$A" GIT STATUS)"
+# The escape hatch every other exclusion has: naming it is a deliberate act.
+GITV "$A" GIT ADD LIB >/dev/null
+t  "an explicit add still stages it" "LIB/PROG" "$(GITV "$A" GIT STATUS)"
+
 # One repo, one index, one commit, with accounts as subdirectories beside
 # ordinary files.  uv-git has walked such a repository for some time; mvx-git
 # fell through to plain git, which cannot see records and staged the backend

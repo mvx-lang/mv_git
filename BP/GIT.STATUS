@@ -179,6 +179,12 @@ UNTRACKED:
          OPEN "%GITSTOCK%" TO USTKF THEN USTK = 1
       END
    END
+*  The files this account CARRIES -- which is not UFILES.  UFILES comes from the
+*  index, so it is what git already tracks; a file created but not yet committed
+*  is absent from it, and so is BP.O, whose records are never staged at all.
+*  Asked of the index, both looked like "not a file here" (mv_git#131).
+   UOWNF = "" ; UOWNID = "" ; UOWNFN = "" ; UTYPED = ""
+   CALL GIT.MASTER(REPO, UOWNF, UOWNID, UOWNFN, UTYPED)
    NU = DCOUNT(UFILES, AM)
    FOR U = 1 TO NU
       FN = UFILES<U>
@@ -224,8 +230,30 @@ UNTRACKED:
                IF URID[1,1] = "_" THEN
                   READ UOBJ FROM RV, URID[2, LEN(URID)] THEN UDROP = 1
                END
+*              WHAT THE TYPE SAYS, from the same GIT.MASTER answer `add` used.
+*              add drops a class-1 record -- a verb or keyword the destination
+*              supplies its own copy of -- in EVERY form, which is what the
+*              engine has always done; this side had no type test at all, so on
+*              a native UniVerse account every one came back `?? VOC/ARE`,
+*              `?? VOC/DF.MODIFY`, `?? VOC/VOC.CACHE`.  Untracked for ever
+*              (mv_git#51 again, #133).
+               IF NOT(UDROP) AND UISVOC AND UTYPED # "" THEN
+                  LOCATE(URID, UTYPED; UTDPOS) THEN UDROP = 1
+               END
                IF NOT(UDROP) AND UISVOC AND UFURN # "" THEN
                   LOCATE(URID, UFURN; UFPOS) THEN UDROP = 1
+               END
+*              A FILE'S OWN POINTER IS DERIVED and `add` no longer stages it in
+*              any form (mv_git#131) -- so status must not report it either, or
+*              every account is untracked for ever with nothing that can clear
+*              it.  The two sides ask the same question in the same order, which
+*              is the whole reason they are written beside each other: every time
+*              they have drifted the result was this same bug (#51, #95, #108).
+*
+*              UFILES is already only the account's OWN files, so a Q, X or R
+*              pointer is not in it and is still reported (mv_git#132).
+               IF NOT(UDROP) AND UISVOC AND UOWNID # "" THEN
+                  LOCATE(URID, UOWNID; UFLPOS) THEN UDROP = 1
                END
                IF NOT(UDROP) AND USTK AND UISVOC THEN
                   READ USREC FROM USTKF, URID THEN UDROP = 1
