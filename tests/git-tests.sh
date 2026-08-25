@@ -576,18 +576,19 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   # So the assertion is NOT "status is clean".  It is that adopt and clone
   # produce the SAME ACCOUNT: same record count, dictionary present, records
   # readable, and no descriptor left on disk off MVX (mv_git#122).
-  # udt only, and that is a KNOWN GAP rather than a decision: uv-git's adopt
-  # predates all of this and does not share the capture/clear/materialise path,
-  # so it fails four of these (mv_git#124).  The assertions describe what every
-  # platform should do, and unscoping them is part of converging uv-git -- not
-  # something to do first and leave red.
+  # Every platform that HAS adopt, because the point is that they AGREE: an
+  # adopted account and a cloned one must be the same account, and two CLIs
+  # building accounts differently is #108 waiting to happen.  Scoping these to
+  # one platform is how that would go unnoticed -- and while they were scoped,
+  # uv-git failed four of them.
   case "$PLATFORM" in
-    udt)
+    udt|uv)
       P="$WORK/plainco"
       git clone -q "$REM" "$P" 2>/dev/null
       t  "plain checkout has the open form" "CUST" \
          "$(ls "$P" 2>/dev/null | tr '\n' ' ')"
-      adopt_out="$( cd "$P" && "$MVXGIT" adopt 2>&1 )"
+      adopt_flav=""; [ "$PLATFORM" = uv ] && adopt_flav="--flavour=PICK"
+      adopt_out="$( cd "$P" && "$MVXGIT" adopt $adopt_flav 2>&1 )"
       t  "adopt reports an account"    "account"  "$adopt_out"
       # The record itself, not CT's whole output: the session banner carries
       # each account's own path, so two good accounts never match exactly.
@@ -601,7 +602,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       Q="$WORK/plainedit"
       git clone -q "$REM" "$Q" 2>/dev/null
       printf 'EDITED ON DISK\n' > "$Q/CUST/C1"
-      ( cd "$Q" && "$MVXGIT" adopt >/dev/null 2>&1 )
+      ( cd "$Q" && "$MVXGIT" adopt $adopt_flav >/dev/null 2>&1 )
       t  "adopt carries a disk edit in" "EDITED ON DISK" "$(CT "$Q" CUST C1)"
 
       # ...and an account that is a SUBDIRECTORY of a repository (#44, #49).
@@ -611,7 +612,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       # stages the whole worktree wherever it is run, and write-tree writes the
       # whole index, so without scoping adopt would have built acctB's files
       # inside acctA and cleared what it did not own.
-      M="$WORK/multi"
+      M="$WORK/adoptmulti"   # NOT $WORK/multi: the several-accounts test owns that
       mkdir -p "$M" && ( cd "$M" && git init -q . )
       for A in acctA acctB; do
           mkdir -p "$M/$A/CUST" "$M/$A/CUST.DICT"
@@ -622,7 +623,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       done
       ( cd "$M" && git add -A >/dev/null 2>&1 &&
         git -c user.email=t@t -c user.name=t commit -qm base >/dev/null 2>&1 )
-      ( cd "$M/acctA" && MVXGIT_OPEN_ACCOUNT=1 "$MVXGIT" adopt >/dev/null 2>&1 )
+      ( cd "$M/acctA" && MVXGIT_OPEN_ACCOUNT=1 "$MVXGIT" adopt $adopt_flav >/dev/null 2>&1 )
       t  "adopt in a subdirectory"     "acctA-one" "$(CT "$M/acctA" CUST C1)"
       te "the sibling account is untouched" "acctB-one" \
          "$(head -1 "$M/acctB/CUST/C1" 2>/dev/null)"

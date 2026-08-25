@@ -558,6 +558,31 @@ static int adopt(int argc, char **argv, int i) {
         open_form = !(line[0] == 'n' || line[0] == 'N');
     }
 
+    /* --- take the data from DISK ------------------------------------------
+     *
+     * The same three steps udt-git adopt takes, for the same reasons
+     * (mv_git#124): stash the account's tree so an EDIT in the checkout is what
+     * gets adopted rather than the committed version of it, clear what git left
+     * behind -- the open form sits on the names the native files want -- and
+     * build the account from the stashed tree once it exists.
+     *
+     * Never popped: popping would write the open form back over a native
+     * account.  The stash is dropped when the account is built, kept if it is
+     * not. */
+    char captured[192] = "";
+    int stashed = 0;
+    if (mv_git_worktree_stash(captured, sizeof captured, &stashed) != 0) {
+        fprintf(stderr, "uv-git adopt: could not read the working tree\n");
+        return 1;
+    }
+    if (stashed)
+        fprintf(stderr, "uv-git adopt: your uncommitted changes are in the "
+                        "stash and will be built into the account\n");
+    {
+        char why[512];
+        (void)mv_git_worktree_clear(why, sizeof why);
+    }
+
     /* --- create the account ---------------------------------------------- */
     if (!already) {
         if (fi < 0) fi = flavour_index("PICK");
@@ -627,6 +652,30 @@ static int adopt(int argc, char **argv, int i) {
             }
             git_repository_free(repo);
         }
+    }
+
+    /* --- build the records from what was stashed --------------------------- */
+    /* An agent first.  Records are reached through the account I/O agent, and a
+       just-created account has none -- materialise answers "the account I/O
+       agent did not answer" and the account comes out empty.  clone seeds one
+       here for exactly this reason; adopt never needed to until it started
+       materialising (mv_git#124). */
+    if (!already && mv_agent_seed() != 0)
+        fprintf(stderr, "uv-git adopt: could not put an agent into the "
+                        "account; it exists but will hold no records\n");
+    {
+        char gitdir[4096] = "", prefix[4096] = "";
+        if (repo_place(gitdir, sizeof gitdir, prefix, sizeof prefix) != 0)
+            snprintf(gitdir, sizeof gitdir, ".git");
+        mv_ctx *mctx = mv_ctx_create();
+        char *m = mv_git_materialize_rev(mctx, gitdir, captured);
+        if (m) {
+            for (char *q = m; *q; q++) if ((unsigned char)*q == 0xFE) *q = '\n';
+            printf("%s\n", m);
+            free(m);
+        }
+        mv_ctx_destroy(mctx);
+        if (stashed) (void)system("git stash drop -q >/dev/null 2>&1");
     }
 
     printf("adopted as a UniVerse account%s%s%s\n",
