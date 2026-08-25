@@ -80,10 +80,27 @@ END
 BEGIN CASE
    CASE PLAT = "MVX"
 $IFDEF MVX
-*     The engine's own clone: MVX materialises straight from the git objects.
+*     TWO STEPS, and it used to be one.  GITCLONE is the engine's PLAIN clone --
+*     a working-tree checkout, which is what a source package wants -- so on its
+*     own it left a directory of open-form files with no account in it: no VOC,
+*     no descriptor, and the next verb run there failed.  The comment that used
+*     to be here said "MVX materialises straight from the git objects", which is
+*     exactly the half that was missing (mv_git#138).
+*
+*     The UV and UDT arms below hand the whole job to their CLI, and say why: a
+*     SESSION cannot create an account there, since the account is born by
+*     running the platform binary in an empty directory.  On MVX it can -- this
+*     session IS mvx -- so it finishes the job itself, in process.  That is not
+*     only tidier: SH is behind the runtime privilege gate, so shelling out
+*     would take CLONE away from the restricted user this verb exists to serve.
       OUT = ""
       CALL GITCLONE(URL, DIR, REF, OUT)
       PRINT OUT
+      IF INDEX(OUT, "cloned", 1) > 0 THEN
+         MOUT = ""
+         CALL GIT.OBJ("MATACCT", 2, REPO, DIR, "", "", "", MOUT)
+         IF TRIM(MOUT) # "" THEN PRINT MOUT
+      END
 $ENDIF
    CASE PLAT = "UV"
 *     CLONE IS THE ONE OPERATION A SESSION CANNOT DO FOR ITSELF.  Every other

@@ -42,6 +42,9 @@
 #include <strings.h>      /* strcasecmp / strncasecmp */
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <limits.h>
 
 /* --- helpers ----------------------------------------------------------- */
 
@@ -1939,6 +1942,20 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(buf);
     mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
     free(r);
+}
+
+/* --- GITMATERIALISEACCT(dir, out) --------------------------------------- */
+void mvx_sub_GITMATERIALISEACCT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+#ifdef MVXGIT_NORECORDS
+    (void)ctx; (void)argc; (void)argv;
+#else
+    if (argc < 2) return;
+    char dir[4096];
+    arg_str(argv[0], dir, sizeof dir);
+    char *r = mv_git_materialize_account(ctx, dir);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+#endif
 }
 
 /* --- GITVOCDROP(list, out) ---------------------------------------------- */
@@ -6486,6 +6503,66 @@ char *mv_git_materialize(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
 }
+
+#ifndef MVXGIT_NORECORDS
+/* Turn a fresh clone into a live ACCOUNT: its records out of the git objects,
+ * then BUILD to provision it -- catalogue BP, link packages, write the native
+ * descriptor.
+ *
+ * HERE, not in the CLI, because both ways in need it and only one of them had
+ * it.  `mvx-git clone` materialised; `GIT CLONE` at the TCL prompt called the
+ * engine's PLAIN clone and stopped, so it left a directory of checked-out
+ * open-form files with no account in it -- no VOC, no descriptor, and the next
+ * verb run there failed.  The comment on that arm claimed "MVX materialises
+ * straight from the git objects", which is exactly what was missing (mv_git#138).
+ *
+ * The UniVerse and UniData arms hand the whole job to their CLI instead, and
+ * say why: a SESSION cannot create an account there, because the account is
+ * born by running the platform binary in an empty directory.  On MVX it can --
+ * the session IS mvx -- so it does it in process, and no shell is involved.
+ * That matters beyond tidiness: SH is behind the runtime privilege gate, so
+ * shelling out would have taken CLONE away from exactly the restricted user the
+ * in-session verb exists to serve.
+ *
+ * BUILD is a VERB, so it is spawned rather than called -- the same `mvx -a <dir>
+ * -c BUILD` the CLI used, with MVXPRIV=developer because provisioning compiles
+ * and catalogues BP.  Not the SH gate: this is the engine running the runtime,
+ * not a user reaching the shell.
+ *
+ * Interactive index rebuilding stays in the CLI (it asks a question, and a verb
+ * has no terminal to ask on); everything above it is shared, so the two entry
+ * points cannot drift about what a clone IS. */
+char *mv_git_materialize_account(mv_ctx *ctx, const char *dir) {
+    char cwd0[PATH_MAX];
+    if (!getcwd(cwd0, sizeof cwd0)) cwd0[0] = '\0';
+    if (!dir || !dir[0] || chdir(dir) != 0)
+        return strdup("cannot enter the cloned directory");
+
+    setenv("MVXACCOUNT", ".", 1);
+    /* The open-account opt-in was written into this clone's config by the clone
+       itself; the engine reads it from the environment, and materialise is where
+       the open form is translated back -- the record-key item's name among it
+       (mv_git#96).  Without this the flag is set and unread. */
+    openaccount_sync(".git");
+    free(mv_git_materialize(ctx, ".git"));
+
+    const char *mvx = getenv("MVX");
+    if (!mvx || !mvx[0]) mvx = "mvx";
+    setenv("MVXPRIV", "developer", 1);          /* BUILD catalogues BP */
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *bargv[] = {(char *)mvx, "-a", ".", "-c", "BUILD", NULL};
+        execvp(bargv[0], bargv);
+        _exit(127);
+    }
+    if (pid > 0) {
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+    }
+    if (cwd0[0] && chdir(cwd0) != 0) { /* best effort */ }
+    return strdup("");
+}
+#endif
 /* Materialise a given tree-ish rather than HEAD -- see GITMATERIALIZE. */
 char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev) {
     const char *a[] = {repo, rev};
