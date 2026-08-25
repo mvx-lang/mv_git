@@ -177,13 +177,16 @@ static int account_from_cwd(char *out, size_t cap) {
  * files from a cloned/checked-out legible directory.  Found via $MVXCONVERT or
  * PATH.  This is the only place mvx-git needs convert — never on its own
  * record-git add/commit/checkout. */
-static void convert_import(const char *acct) {
+static int convert_import(const char *acct) {
     fprintf(stderr, "mvx-git: rebuilding account %s\n", acct);
     const char *tool = getenv("MVXCONVERT");
     if (!tool || !tool[0]) tool = "mvx-git-adopt";
     char *rargv[3] = {(char *)tool, (char *)acct, NULL};
-    if (run(rargv) != 0)
+    if (run(rargv) != 0) {
         fprintf(stderr, "mvx-git: account rebuild failed\n");
+        return -1;
+    }
+    return 0;
 }
 
 /* True if the cloned HEAD tree carries the descriptor `name` — checked in the
@@ -785,8 +788,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "mvx-git adopt: no such directory: %s\n", dir);
             return 1;
         }
-        convert_import(aacct);
-        return 0;
+        /* The status matters: `mvx-git adopt` that printed "account rebuild
+           failed" and still exited 0 is a script that carries on as though it
+           had an account.  convert_import was void because its only caller was
+           a clone that had already reported its own result. */
+        return convert_import(aacct) == 0 ? 0 : 1;
     }
 
     if (sub && !strcmp(sub, "textconv"))
