@@ -298,6 +298,16 @@ char *GITISOPEN(char *repo) {
     return emit(repo, mv_git_is_open(rp(repo)));
 }
 
+/* GITADDDISK(repo, mvfiles) — stage the account's ORDINARY files, the ones that
+   are not records.  The verb had no such pass, so `GIT ADD -A` in a session
+   committed no README, no notes, no .gitignore (mv_git#148). */
+char *GITADDDISK(char *repo, char *mvfiles) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_adddisk_for(ctx, rp(repo), mvfiles ? mvfiles : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
    (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
 char *GITFILES(char *repo) {

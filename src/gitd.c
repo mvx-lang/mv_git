@@ -394,6 +394,7 @@ BRIDGE1(op_files,      mv_git_headfiles(ctx, rp(A(g,0))))
 BRIDGE1(op_furniture,  mv_git_filter_furniture(A(g,1)))
 BRIDGE1(op_vocdrop,    mv_git_filter_vocdrop(rp(A(g,0)), A(g,1)))
 BRIDGE1(op_isopen,   mv_git_is_open(rp(A(g,0))))
+BRIDGE1(op_adddisk,  mv_git_adddisk_for(ctx, rp(A(g,0)), A(g,1)))
 /* The record arrives measured by strlen, which is safe only because the caller
    never sends a record with a NUL in it: BP/GIT.STATUS answers "same" for those
    before it ever asks (a binary record has no dictionary projection). */
@@ -465,6 +466,7 @@ static const struct {
     { "FURNITURE",   2, op_furniture  },
     { "VOCDROP",     2, op_vocdrop    },
     { "ISOPEN",      1, op_isopen   },
+    { "ADDDISK",     2, op_adddisk  },
     { "PROJECT",     4, op_project    },
     { "VERSION",     1, op_version    },
     { "STAGEDESC",   3, op_stagedesc  },

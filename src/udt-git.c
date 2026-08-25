@@ -107,6 +107,13 @@ static void add_all(mv_ctx *ctx, const char *repo) {
        `PROG` on UniData and a whole <X>.O file on UniVerse (mv_git#145, #146).
        Left on, it made the CLI drop records the verb kept. */
 
+    /* THE ORDINARY FILES FIRST -- a README, notes, a script, .gitignore itself.
+       This walk stages RECORDS and had no pass for anything else, so an account
+       committed with udt-git kept none of them (mv_git#148).  The engine has a
+       real backend here, so it can tell an MV file from a plain directory on its
+       own and needs no list. */
+    emit(mv_git_adddisk_for(ctx, repo, ""));
+
     mv_value fl;
     mv_init(&fl);
     mv_filelist(ctx, &fl);

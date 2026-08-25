@@ -803,6 +803,34 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- an account's ORDINARY files travel too, both ways in (mv_git#148) --"
+# `GIT ADD -A` stages RECORDS.  It had no pass for anything else, so a README, a
+# script, notes -- and `.gitignore` itself -- were silently left out of every
+# commit made in a session, while the CLI staged them.  On UniData NEITHER route
+# staged them, because udt-git has its own add_all with no disk pass either.
+#
+# Three implementations of one command, and only one of them did this.
+#
+# The pass has to know which top-level names are MV FILES, so it leaves their
+# records to the record walk; on UniVerse the engine cannot look, so the caller
+# supplies the list -- the same shape as the furniture and VOCDROP asks (#133).
+# The control below is exactly that: CUST's records must still arrive as
+# RECORDS, not swept up as blobs.
+PLN="$WORK/plain"; ACCT "$PLN"; LINK "$PLN"; CF "$PLN" CUST
+SEED "$PLN" 'OPEN "CUST" TO F ELSE STOP
+WRITE "Ada" ON F, "C1"'
+printf '# project notes\n' > "$PLN/NOTES.md"
+( cd "$PLN" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+GITV "$PLN" GIT INIT   >/dev/null
+GITV "$PLN" GIT ADD -A >/dev/null
+pverb="$( cd "$PLN" && git ls-files )"
+t  "the verb stages an ordinary file" "NOTES.md" "$pverb"
+t  "and the records are still records" "CUST/C1" "$pverb"
+( cd "$PLN" && git rm -r --cached . -q >/dev/null 2>&1; "$MVXGIT" add -A >/dev/null 2>&1 )
+pcli="$( cd "$PLN" && git ls-files )"
+t  "the CLI stages it too"             "NOTES.md" "$pcli"
+t  "and its records too"               "CUST/C1"  "$pcli"
+
 say "-- an object FILE is excluded by name, and a NUL is not an object (mv_git#145) --"
 # UniVerse keeps compiled objects in a file beside the source: BP -> BP.O.  That
 # is an ordinary F record in the master file, so the BASIC walk saw it as a file

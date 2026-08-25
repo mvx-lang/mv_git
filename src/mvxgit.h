@@ -288,6 +288,9 @@ char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
+/* The disk pass with the MV file names supplied, for a caller whose engine
+   cannot enumerate them itself (mv_git#148). */
+char *mv_git_adddisk_for(mv_ctx *ctx, const char *repo, const char *mvfiles);
 /* Normalise the staged index to the open account format (%FILE% -> DIR/hash,
    .mvx -> .mv-account) — the git objects carry the open form; disk stays
    native.  Run after `add` when `mvx.openaccount` is set. */

@@ -2029,6 +2029,24 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(r);
 }
 
+/* --- GITADDDISK(repo, mvfiles, out) -------------------------------------- */
+void mvx_sub_GITADDDISKFOR(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[1], nb, sizeof nb, &p);
+    char *list = malloc((size_t)l + 1);
+    if (!list) { mv_set_str(argv[2], "", 0); return; }
+    memcpy(list, p, (size_t)l);
+    list[l] = '\0';
+    char *r = mv_git_adddisk_for(ctx, rp, list);
+    free(list);
+    mv_set_str(argv[2], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
 /* --- GITISOPEN(repo, out) --------------------------------------------- */
 void mvx_sub_GITISOPEN(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     (void)ctx;
@@ -2485,6 +2503,34 @@ static void split_top(const char *path, char *out, size_t cap);
    exactly that, which is how `M BP.O/...` survived every commit.
 
    Returns >0 to skip the path. */
+/* THE MV FILE NAMES, WHEN THE CALLER HAD TO SUPPLY THEM.
+ *
+ * The disk pass has to know which top-level names are MV FILES, so it can leave
+ * their records to the record pass instead of sweeping them up as blobs.  It
+ * asks backend_has_file() -- and on UniVerse the engine is mvgitd, built
+ * NORECORDS, where that always answers 0.  Handed the job blind it would stage
+ * every record directory as plain blobs, which is why the BASIC has never had a
+ * disk pass at all and `GIT ADD -A` in a session committed no ordinary files
+ * (mv_git#148).
+ *
+ * So the caller supplies the list, exactly as it supplies the candidates to
+ * GIT.FURNIDS and VOCDROP: BP/GIT.MASTER already walked the master file and
+ * knows the names.  Set for the duration of one disk pass and cleared after. */
+static char *g_given;           /* @AM-separated MV file names, or NULL */
+
+static int caller_has_file(mv_ctx *ctx, const char *name) {
+    if (!g_given) return backend_has_file(ctx, name);
+    size_t nl = strlen(name), n = strlen(g_given), i = 0;
+    while (i <= n) {
+        size_t st = i;
+        while (i < n && (unsigned char)g_given[i] != 0xFE) i++;
+        if (i - st == nl && memcmp(g_given + st, name, nl) == 0) return 1;
+        if (i >= n) break;
+        i++;
+    }
+    return 0;
+}
+
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
     if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
@@ -2542,7 +2588,7 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        (mv_git#130). */
     if (mv_account_furniture(top, strlen(top))) return 1;
     /* only a path INSIDE a file is a record; the file's own entry is not */
-    if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
+    if (strcmp(top, rel) != 0 && caller_has_file((mv_ctx *)payload, top))
         return 1;
     /* A FILE'S CONTROL IS NEVER TAKEN FROM DISK.  <file>.DICT/%FILE% is
        create-time metadata, and on MVX it is also an ordinary file on disk — so
@@ -2557,6 +2603,25 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        GITOPENFORM converts that to the open class.  The disk pass was only ever
        a third way to the same path, arriving last and knowing least. */
     if (is_file_control(rel)) return 1;
+    /* THE ACCOUNT DESCRIPTOR IS NOT TAKEN FROM DISK EITHER, and for the same
+       reason as the file control above: it is a versioned artefact that `add`
+       stages deliberately (STAGEDESC), and GIT ATTR edits it IN THE INDEX with
+       nothing written to the account at all.  Swept up here, the on-disk copy
+       landed on top of an edit that was already staged and the edit was gone --
+       `GIT ATTR --set version=2` then `add -A` read back 1 (mv_git#139 again,
+       through a new door: the disk pass reached the verb in mv_git#148).
+       `.mvx` IS NOT IN THE LIST, and that is the point of the list being one.
+       MVX keeps a real `.mvx` on disk carrying local state, mv_git_desc_for()
+       deliberately declines to synthesise one there ("MVX writes a real .mvx;
+       it travels as a file"), and so this pass is the ONLY thing that stages
+       it.  Excluded along with the rest, an MVX account stopped carrying its
+       descriptor at all and read dirty for ever after. */
+    {
+        static const char *const desc[] = {
+            ".mv-account", ".udt", ".uv", ".jbase", NULL };
+        for (const char *const *d = desc; *d; d++)
+            if (strcmp(rel, *d) == 0) return 1;
+    }
     return 0;
 }
 
@@ -6635,6 +6700,17 @@ char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
     const char *a[] = {repo, path};
     return run_sub_len(mvx_sub_GITCAT, ctx, a, 2, outlen);
 }
+/* The disk pass with the MV file names supplied, for a caller whose engine
+   cannot enumerate them itself (mv_git#148).  An empty list means "ask the
+   backend", so this is also just mv_git_adddisk with a hint. */
+char *mv_git_adddisk_for(mv_ctx *ctx, const char *repo, const char *mvfiles) {
+    g_given = (mvfiles && mvfiles[0]) ? strdup(mvfiles) : NULL;
+    char *r = mv_git_adddisk(ctx, repo);
+    free(g_given);
+    g_given = NULL;
+    return r;
+}
+
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITADDDISK, ctx, a, 1);
