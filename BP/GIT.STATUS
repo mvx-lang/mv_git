@@ -237,10 +237,13 @@ UNTRACKED:
                IF NOT(UDROP) AND USTK AND UISVOC THEN
                   READ USREC FROM USTKF, URID THEN UDROP = 1
                END
+*              A record that cannot be READ is not reportable; a record that
+*              merely CONTAINS a NUL is the user's, and used to be dropped here
+*              on a guess.  Objects are excluded by NAME now -- `_PROG` beside
+*              `PROG`, and a whole <X>.O file -- so the guess bought nothing and
+*              cost real records (mv_git#145).
                IF NOT(UDROP) THEN
-                  READ UREC FROM RV, URID THEN
-                     IF INDEX(UREC, CHAR(0), 1) > 0 THEN UDROP = 1
-                  END ELSE UDROP = 1
+                  READ UREC FROM RV, URID ELSE UDROP = 1
                END
                IF NOT(UDROP) THEN
                   PRINT "?? " : UPATH

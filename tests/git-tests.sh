@@ -803,6 +803,48 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- an object FILE is excluded by name, and a NUL is not an object (mv_git#145) --"
+# UniVerse keeps compiled objects in a file beside the source: BP -> BP.O.  That
+# is an ordinary F record in the master file, so the BASIC walk saw it as a file
+# like any other and staged every object in it -- 61 of them, measured.  Nothing
+# caught that except the NUL-content guess in `add`.
+#
+# So the guess was load-bearing for the wrong reason, and removing it (which is
+# right -- it also drops legitimate records) broke UniVerse outright until the
+# walk learned the engine's rule: a file <X>.O whose <X> is also a file here is
+# an object file.
+#
+# Both halves are asserted, because each alone would have passed at some point
+# during this: the object file stays out, AND a record that merely holds a NUL
+# is the user's and travels.
+case "$PLATFORM" in
+uv)
+  OBF="$WORK/objfile"; ACCT "$OBF"; LINK "$OBF"
+  printf 'PRINT "x"\n' > "$OBF/BP/OBJPROG"
+  ( cd "$OBF" && printf 'BASIC BP OBJPROG\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  ( cd "$OBF" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$OBF" GIT INIT   >/dev/null
+  GITV "$OBF" GIT ADD -A >/dev/null
+  # it really compiled -- otherwise BP.O holds nothing and this asserts nothing
+  t  "the object file exists" "OBJPROG" "$( ls "$OBF/BP.O" 2>/dev/null | tr '\n' ' ' )"
+  tn "but its records stay out" "BP.O/" "$( cd "$OBF" && git ls-files | grep -E '^(BP|BP\.O)/' | tr '\n' ' ' )x"
+  ;;
+esac
+case "$PLATFORM" in
+udt|uv)
+  NUA="$WORK/nulrec"; ACCT "$NUA"; LINK "$NUA"; CF "$NUA" MYDATA
+  SEED "$NUA" 'OPEN "MYDATA" TO F ELSE STOP
+WRITE "before":CHAR(0):"after" ON F, "HASNUL"
+WRITE "ordinary" ON F, "PLAIN"'
+  ( cd "$NUA" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$NUA" GIT INIT   >/dev/null
+  GITV "$NUA" GIT ADD -A >/dev/null
+  nst="$( cd "$NUA" && git ls-files )"
+  t  "an ordinary record travels"          "MYDATA/PLAIN"  "$nst"
+  t  "and so does one holding a NUL"       "MYDATA/HASNUL" "$nst"
+  ;;
+esac
+
 say "-- a compiled object is named, and a NUL is only a guess (mv_git#133) --"
 # OBJECT DETECTION IS TWO TESTS AND THEY ARE NOT EQUAL.  The NAMING rule -- an
 # id `_PROG` whose base `PROG` is really in the same file -- is exact.  The

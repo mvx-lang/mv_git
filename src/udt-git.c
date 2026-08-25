@@ -100,7 +100,13 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     /* A blanket add -A never commits compiled BASIC objects (binary records,
        rebuilt on the target) — the engine honours this flag; an explicit
        `udt-git add <file>` leaves it unset and stages everything (#9). */
-    setenv("MVX_GIT_SKIP_OBJECTS", "1", 1);
+    /* The NUL-content backstop USED to be turned on here for everything.  It is
+       a guess in both directions -- it drops a legitimate record holding a NUL
+       and keeps an object that holds none -- and it is no longer needed: a
+       compiled object is excluded by NAME on every platform now, `_PROG` beside
+       `PROG` on UniData and a whole <X>.O file on UniVerse (mv_git#145, #146).
+       Left on, it made the CLI drop records the verb kept. */
+
     mv_value fl;
     mv_init(&fl);
     mv_filelist(ctx, &fl);
