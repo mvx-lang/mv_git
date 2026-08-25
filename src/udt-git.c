@@ -738,37 +738,33 @@ static int do_adopt(int argc, char **argv, int i) {
         return 1;
     }
 
-    /* Which system is this checkout native to?  That decides what, if
-       anything, adopt asks -- see mv_git#124.  The descriptor present says who
-       wrote it; desc_native_name() says who we are. */
+    /* What to ask about the open form is the ENGINE's decision, not this
+       driver's: three CLIs ask it and an answer that differs by platform is a
+       difference nobody intends (mv_git#124). */
     const char *found = NULL;
     for (int k = 0; names[k] && !found; k++)
         if (access(names[k], F_OK) == 0) found = names[k];
-    int is_open    = found && !strcmp(found, ".mv-account");
-    int is_foreign = found && !is_open && strcmp(found, mv_git_desc_native_name());
-    int flag_on    = open_account_on();
-
-    if (is_open && !flag_on) {
-        /* The data is already portable; the FLAG is what is missing, and it
-           does not travel with a clone (#88).  Left off, this account looks
-           portable and the first commit writes the native form over it.  So the
-           question is "enable", not "convert" -- nothing is being converted. */
+    switch (mv_git_adopt_question(found, open_account_on())) {
+    case MV_ADOPT_ASK_ENABLE:
+        fprintf(stderr, "udt-git adopt: %s is already in the open account "
+                        "format, but this repository does not have the flag "
+                        "set -- without it the next commit writes the native "
+                        "form over it.\n", dir);
         if (ask_open_account(dir)) {
             const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
             runcmd(cfg);
         }
-    } else if (is_foreign) {
-        /* Native to another MV system, so it is being converted either way to
-           be usable here.  That is the one moment worth asking whether it
-           should ALSO become portable.  Declining still adopts -- it just stays
-           native. */
-        fprintf(stderr,
-            "udt-git adopt: %s is a native %s account, and will be converted to "
-            "a UniData one.\n", dir, found);
+        break;
+    case MV_ADOPT_ASK_CONVERT:
+        fprintf(stderr, "udt-git adopt: %s is a native %s account and will be "
+                        "converted to a UniData one.\n", dir, found);
         if (ask_open_account(dir)) {
             const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
             runcmd(cfg);
         }
+        break;
+    default:
+        break;                  /* native to this system: nothing to ask */
     }
 
     /* Take the data from DISK.  The checkout may have been edited, and adopting

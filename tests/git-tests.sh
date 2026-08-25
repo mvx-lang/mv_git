@@ -32,6 +32,11 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: %s\n     actual:   
 skip() { SKIP=$((SKIP+1)); printf '  skip %s (%s)\n' "$1" "$2"; }
 # t NAME EXPECTED ACTUAL  — substring assertion (EXPECTED must appear in ACTUAL)
 t()    { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
+# tn NAME UNWANTED ACTUAL — asserts the output does NOT contain UNWANTED.
+# For "it should not ask": a question nobody should be asked cannot be checked
+# by looking for the right words, only by their absence.
+tn()   { case "$3" in *"$2"*) bad "$1" "NOT: $2" "$3";; *) ok "$1";; esac; }
+
 # te NAME EXPECTED ACTUAL — exact-equality assertion
 te()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
@@ -627,6 +632,56 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       t  "adopt in a subdirectory"     "acctA-one" "$(CT "$M/acctA" CUST C1)"
       te "the sibling account is untouched" "acctB-one" \
          "$(head -1 "$M/acctB/CUST/C1" 2>/dev/null)"
+
+      # --- what adopt ASKS -------------------------------------------------
+      #
+      # Three rules, and the wording matters as much as the trigger:
+      #
+      #   open form, flag off   ask to ENABLE.  The data is already portable;
+      #                         the flag is what is missing, and it does not
+      #                         travel with a clone (#88).  Asking to "convert"
+      #                         something that already IS open is nonsense to
+      #                         whoever answers.
+      #   native to ANOTHER MV  ask to CONVERT.  It is being converted either
+      #                         way to be usable here, so that is the one moment
+      #                         "should it also be portable?" is fair.
+      #   native to THIS MV     say nothing.  Nothing is being converted, and
+      #                         asking invites converting a working account for
+      #                         no reason.
+      #
+      # None of this was covered until now; it lived in one CLI and in one
+      # person's hand-testing.
+      askdir() { local d="$1" desc="$2" body="$3"
+                 rm -rf "$d"; mkdir -p "$d/CUST" "$d/CUST.DICT"
+                 printf 'x\n' > "$d/CUST/C1"; printf 'DIR' > "$d/CUST.DICT/%FILE%"
+                 printf '%s' "$body" > "$d/$desc"
+                 ( cd "$d" && git init -q . && git add -A >/dev/null 2>&1 &&
+                   git -c user.email=t@t -c user.name=t commit -qm x >/dev/null 2>&1 ); }
+      OPENDESC='# .mv-account - open (portable) account descriptor
+name = t
+version = 1
+openaccount = 1
+'
+      # 1. open form, flag NOT set -> asks to ENABLE
+      askdir "$WORK/ask1" ".mv-account" "$OPENDESC"
+      t "asks to ENABLE when the flag is off" "flag" \
+        "$( cd "$WORK/ask1" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
+      # 2. native to ANOTHER system -> asks to CONVERT
+      case "$PLATFORM" in udt) FOREIGN=".uv" ;; *) FOREIGN=".udt" ;; esac
+      askdir "$WORK/ask2" "$FOREIGN" "# native descriptor
+name = t
+version = 1
+"
+      t "asks to CONVERT a foreign-native account" "convert" \
+        "$( cd "$WORK/ask2" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
+      # 3. native to THIS system -> silent about the open form
+      case "$PLATFORM" in udt) OWN=".udt" ;; *) OWN=".uv" ;; esac
+      askdir "$WORK/ask3" "$OWN" "# native descriptor
+name = t
+version = 1
+"
+      tn "silent for an account already native here" "open account" \
+         "$( cd "$WORK/ask3" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" adopt $adopt_flav 2>&1 )"
 
       # A SUBMODULE account takes its account type from its OWN repository.
       #

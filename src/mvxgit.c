@@ -1577,6 +1577,42 @@ int mv_git_worktree_clear(char *why, size_t wcap) {
    whether `adopt` asks about the open form (mv_git#124). */
 const char *mv_git_desc_native_name(void) { return desc_native_name(); }
 
+/* What, if anything, should `adopt` ask about the open form?
+ *
+ * ONE implementation, because three CLIs ask it and an answer that differs by
+ * platform is a difference nobody intends -- the same reason open_dict_project
+ * and the furniture rules are single (#87, #95, #108).
+ *
+ *   MV_ADOPT_ASK_NOTHING   the checkout is native to THIS system.  Nothing is
+ *                          being converted, so there is nothing to ask; asking
+ *                          would invite converting a working native account for
+ *                          no reason.
+ *   MV_ADOPT_ASK_ENABLE    the checkout is already in the OPEN form but this
+ *                          repository does not have the flag.  The data is
+ *                          portable; the flag is what is missing, and it does
+ *                          not travel with a clone (#88).  Left off, the first
+ *                          commit writes the native form over it.  So the
+ *                          question is "enable", not "convert" -- nothing is
+ *                          being converted, and asking to convert something
+ *                          that already IS open reads as nonsense.
+ *   MV_ADOPT_ASK_CONVERT   the checkout is native to ANOTHER MV system.  It has
+ *                          to be converted to be usable here either way, so
+ *                          that is the one moment "should it also become
+ *                          portable?" is a fair question.  Declining still
+ *                          adopts; it just stays native.
+ *
+ * `desc` is the descriptor found in the checkout (".mv-account", ".udt", ...),
+ * or NULL.  The platform is not guessed from the repository's layout: the
+ * descriptor present says who wrote it, and desc_native_name() says who we are.
+ */
+int mv_git_adopt_question(const char *desc, int flag_on) {
+    if (!desc || !desc[0]) return MV_ADOPT_ASK_NOTHING;
+    if (strcmp(desc, ".mv-account") == 0)
+        return flag_on ? MV_ADOPT_ASK_NOTHING : MV_ADOPT_ASK_ENABLE;
+    if (strcmp(desc, desc_native_name()) == 0) return MV_ADOPT_ASK_NOTHING;
+    return MV_ADOPT_ASK_CONVERT;
+}
+
 void mv_git_drop_native_desc(void) {
 #ifndef MVXGIT_DESC_ON_DISK
     static const char *const names[] = { ".mvx", ".udt", ".uv", ".jbase", NULL };

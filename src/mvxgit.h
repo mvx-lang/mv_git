@@ -162,6 +162,14 @@ int mv_git_worktree_clear(char *why, size_t wcap);
 /* This platform's native descriptor name (".mvx", ".udt", ".uv", ".jbase"). */
 const char *mv_git_desc_native_name(void);
 
+/* What `adopt` should ask about the open form, given the descriptor found in the
+   checkout and whether this repository already has mvx.openaccount set.  One
+   implementation, because three CLIs ask it (mv_git#124). */
+#define MV_ADOPT_ASK_NOTHING 0
+#define MV_ADOPT_ASK_ENABLE  1   /* already open; the FLAG is missing */
+#define MV_ADOPT_ASK_CONVERT 2   /* native to another MV system */
+int mv_git_adopt_question(const char *desc, int flag_on);
+
 void mv_git_drop_native_desc(void);
 
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
