@@ -793,6 +793,40 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- a compiled object is named, and a NUL is only a guess (mv_git#133) --"
+# OBJECT DETECTION IS TWO TESTS AND THEY ARE NOT EQUAL.  The NAMING rule -- an
+# id `_PROG` whose base `PROG` is really in the same file -- is exact.  The
+# CONTENT rule -- "the record holds a NUL" -- is a guess in both directions, so
+# the engine keeps it behind a switch.
+#
+# There were THREE implementations: the engine had both with the guess gated,
+# `status` had both ungated, and `add` had only the guess.  On UniVerse they
+# disagreed in the direction that loses data -- a record holding CHAR(0) was
+# dropped by the verb and staged by the CLI, from the same account.
+#
+# So: the object must go by NAME, and the ordinary record must survive wherever
+# the guess is off.  The second is asserted against the CLI, which is the route
+# whose switch setting the platform actually chooses.
+case "$PLATFORM" in
+udt|uv)
+  OBA="$WORK/objs"; ACCT "$OBA"; LINK "$OBA"; CF "$OBA" MYDATA
+  SEED "$OBA" 'OPEN "MYDATA" TO F ELSE STOP
+WRITE "the source" ON F, "PROG"
+WRITE "pretend object" ON F, "_PROG"
+WRITE "lonely" ON F, "_ORPHAN"'
+  ( cd "$OBA" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$OBA" GIT INIT   >/dev/null
+  GITV "$OBA" GIT ADD -A >/dev/null
+  ost="$( cd "$OBA" && git diff --cached --name-only )"
+  t  "the source travels"                 "MYDATA/PROG"    "$ost"
+  tn "its object does not, by NAME"       "MYDATA/_PROG"   "$ost"
+  # `_ORPHAN` has no `ORPHAN` beside it, so it is somebody's record whose name
+  # begins with an underscore -- not an object.  The naming rule is exact in
+  # both directions or it is just another guess.
+  t  "an underscore with no source is content" "MYDATA/_ORPHAN" "$ost"
+  ;;
+esac
+
 say "-- the CLI and the verb stage the same wholesale set (mv_git#141, #142) --"
 # TWO WAYS TO SKIP THE EXCLUSIONS, and UniVerse hit both:
 #

@@ -276,7 +276,40 @@ STAGEDATA:
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DF, RID THEN
          DROP = 0
-         IF SKIPOBJ AND INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
+*        A COMPILED OBJECT, and it is TWO tests, not one.
+*
+*        The NAMING rule is exact: UniData writes the object of <PROG> as
+*        _<PROG> in the SAME file, so an id starting "_" whose base id is really
+*        there is an object.  This arm did not have that rule at all -- it had
+*        only the CONTENT guess below, and got away with it because an object
+*        happens to be binary.
+*
+*        The CONTENT rule is a guess in both directions -- it drops a legitimate
+*        record that holds a NUL and keeps an object that does not -- which is
+*        why the engine keeps it behind a switch.  Applied here unconditionally,
+*        it silently dropped the user's data: measured on UniVerse, a record
+*        holding CHAR(0) was dropped by the verb and staged by the CLI, from the
+*        same account (mv_git#133).  So the switch is asked for.
+*        A COMPILED OBJECT, and it is TWO tests, not one.
+*
+*        The NAMING rule is exact: UniData writes the object of <PROG> as
+*        _<PROG> in the SAME file, so an id starting "_" whose base id is really
+*        there is an object.  This arm did not have that rule at all -- it had
+*        only the CONTENT guess below, and got away with it because an object
+*        happens to be binary.
+*
+*        The CONTENT rule is a guess in both directions -- it drops a legitimate
+*        record that holds a NUL and keeps an object that does not -- which is
+*        why the engine keeps it behind a switch.  Applied here unconditionally
+*        it silently dropped the user's data: measured on UniVerse, a record
+*        holding CHAR(0) was dropped by the verb and staged by the CLI, from the
+*        same account (mv_git#133).  So the switch is asked for.
+         IF SKIPOBJ AND NOT(DROP) AND RID[1,1] = "_" THEN
+            READ OBJSRC FROM DF, RID[2, LEN(RID)] THEN DROP = 1
+         END
+         IF SKIPOBJ AND NOT(DROP) THEN
+            IF INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
+         END
 *        The account did not write this record; the system did.  A record
 *        identical to the one a fresh account holds is furniture, not content
 *        (mv_git#46) -- and it is compared BY CONTENT, so a stock verb this
