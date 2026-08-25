@@ -159,8 +159,8 @@ ADDALL:
 *  pointer into it, and an account with no master file is broken rather than
 *  empty -- so that stays a reported error and not a quiet zero-file add.
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
-   FILES = "" ; FILEIDS = "" ; FURNIDS = ""
-   CALL GIT.FILEIDS(REPO, FILES, FILEIDS, FURNIDS)
+   FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
+   CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
@@ -264,11 +264,13 @@ STAGEDATA:
                LOCATE(RID, FILEIDS; FIPOS) THEN DROP = 1
             END
          END
-         IF OPENFMT AND ISVOC THEN
-            RT = RREC<1>
-            IF RT="V" OR RT="K" THEN DROP = 1
-            IF RT="F" OR RT="LF" OR RT="DF" OR RT="DIR" THEN DROP = 1
-            IF RT="Q" OR RT="X" OR RT="R" THEN DROP = 1
+*        ...and what the TYPE says, from GIT.MASTER.  This used to be a
+*        hardcoded V/K/F/LF/DF/DIR/Q/X/R chain here, the same on every platform
+*        while mv_voc_class() in the engine is a table PER MV SYSTEM -- MVX has
+*        no V or K, because an MVX account's VOC holds the user's own verbs and
+*        dropping them would drop what the commit exists to carry (mv_git#133).
+         IF BLANKET AND ISVOC AND TYPEDROP # "" AND NOT(DROP) THEN
+            LOCATE(RID, TYPEDROP; TDPOS) THEN DROP = 1
          END
          IF NOT(DROP) THEN
             CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, RID, RREC, "", OBJOUT)

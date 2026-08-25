@@ -26,12 +26,17 @@
 *  FILES is `id<VM>type` for the caller that wants the type; IDS is the bare
 *  ids, for a LOCATE inside a record loop; FURN is the furniture ids among the
 *  candidates, which the caller needs anyway -- a master-file pointer to a file
-*  the filter excluded points at nothing and must not be staged (mv_git#78).
-*  Returned from here so the candidate list is built once, not twice.
-      SUBROUTINE GIT.FILEIDS(REPO, FILES, IDS, FURN)
+*  the filter excluded points at nothing and must not be staged (mv_git#78);
+*  and TYPEDROP is the ids a wholesale add drops BY TYPE.
+*
+*  ONE PASS, four answers.  Every one of them needs the same walk of the master
+*  file, and each used to do its own -- or, worse, not have one and guess from
+*  the index instead.  Collecting them together is what makes asking cheap
+*  enough that both callers ask rather than deciding for themselves.
+      SUBROUTINE GIT.MASTER(REPO, FILES, IDS, FURN, TYPEDROP)
       $INCLUDE BP.INC PLATFORM.H
       AM = CHAR(254) ; VM = CHAR(253)
-      FILES = "" ; IDS = "" ; FURN = ""
+      FILES = "" ; IDS = "" ; FURN = "" ; TYPEDROP = ""
 *  NOT COMPILED ON MVX, and that is the same split the rest of this package
 *  makes: on MVX `add` and `status` are the ENGINE (GITADDALL / the status walk
 *  in mvxgit.c), which asks mv_filelist directly and needs nothing from here.
@@ -45,6 +50,7 @@ $IFNDEF MVX
       END
       FIALL = ""
       FIRAW = ""
+      FITYPE = ""
 *     A select-list VARIABLE and the LOOP/ELSE EXIT form — the spelling
 *     GIT.STATUS and GITUDT.CHECKOUT settled on, which both platforms accept.
       FILIST = ""
@@ -57,6 +63,12 @@ $IFNDEF MVX
 *           described file reads "F Customer master" and an exact match against
 *           "F" makes it invisible.  Take the first token, and trim.
             FIVT = TRIM(FIELD(FIVREC<1>, " ", 1))
+*           EVERY record is a candidate for the TYPE question, not just the
+*           file-type ones: it is what decides whether a verb, a keyword or a
+*           remote pointer travels.  Attribute 1 goes over as-is -- the engine
+*           takes the first token, because UniVerse appends the file description
+*           a user may give at CREATE.FILE time ("F Customer master").
+            FITYPE<-1> = FIVID : VM : FIVREC<1>
             IF FIVT = "F" OR FIVT = "DIR" THEN
                FIDP = FIVREC<2> ; FIDD = FIVREC<3> ; FILOC = 1
                IF INDEX(FIDP, "/", 1) OR FIDP[1,1] = "@" THEN FILOC = 0
@@ -77,6 +89,14 @@ $IFNDEF MVX
       FIFURN = ""
       CALL GIT.FURNIDS(REPO, FIALL, FIFURN)
       FURN = FIFURN
+*     ...and the TYPE table, which is per MV SYSTEM and lived in the engine
+*     while the BASIC carried a single hardcoded copy for all of them:
+*     V/K/F/LF/DF/DIR/Q/X/R regardless of platform.  Right for the two that run
+*     this walk today and wrong for the next one -- on jBASE mv_voc_class()
+*     answers 0 for everything, so the engine would keep what the BASIC dropped,
+*     on the same account (mv_git#114, #133).  The op reads no records, so
+*     mvgitd can answer it on UniVerse just as CallC does on UniData.
+      CALL GIT.OBJ("VOCDROP", 2, REPO, FITYPE, "", "", "", TYPEDROP)
       FINR = DCOUNT(FIRAW, AM)
       FOR FIK = 1 TO FINR
          FIID = FIELD(FIRAW<FIK>, VM, 1)

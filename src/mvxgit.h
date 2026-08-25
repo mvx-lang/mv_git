@@ -144,6 +144,7 @@ const char *mv_git_prefix(void);
 char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
                      const char *id, const char *rec);
 char *mv_git_filter_furniture(const char *list);
+char *mv_git_filter_vocdrop(const char *repo, const char *list);
 char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);
 /* Remove a native descriptor a plain `git checkout` left behind.  A no-op on

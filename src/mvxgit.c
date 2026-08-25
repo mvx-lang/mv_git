@@ -1520,6 +1520,70 @@ char *mv_git_filter_furniture(const char *list) {
     return out;
 }
 
+/* Which of `list` a wholesale add must drop BY TYPE.
+ *
+ * `list` is @AM-separated `id<VM>attribute-1`, and the answer is the @AM
+ * separated ids to DROP.  The caller supplies the candidates for the same
+ * reason GIT.FURNIDS does: this reads no records, so mvgitd can answer it on
+ * UniVerse where the engine has no record access at all (mv_git#133).
+ *
+ * THE TABLE IS PER MV SYSTEM and the BASIC had one copy for all of them.
+ * mv_voc_class() is V/K/F/LF/DF/DIR/Q/X/R on UniData and UniVerse but only
+ * F/DIR/Q on MVX -- an MVX account's VOC holds the user's OWN verbs, since the
+ * standard ones come from the system account, so dropping V there would drop
+ * the very thing the commit exists to carry.  BP/GIT.ADD tested
+ * `RT="V" OR RT="K" ...` regardless of platform, which was right for the two
+ * platforms that run it today and wrong for the next one: on jBASE
+ * mv_voc_class() answers 0 for everything, so the engine would keep what the
+ * BASIC dropped, on the same account (mv_git#114).
+ *
+ * ATTRIBUTE 1 IS NOT ALWAYS THE TYPE ALONE.  UniVerse appends the description a
+ * user may give at CREATE.FILE time, so a described file reads "F Customer
+ * master"; the first token is the type.
+ *
+ * Class 1 is dropped always -- a verb or keyword the destination supplies its
+ * own copy of.  Class 2 is dropped in the OPEN interchange only, where the
+ * portable form carries the file as <file>.DICT/%FILE% instead.  A file's own
+ * pointer is dropped in every form, but that is a different question with a
+ * different answer (does this account carry a file by that name), it needs to
+ * read the account, and it lives in BP/GIT.FILEIDS (mv_git#131).
+ *
+ * Fail-safe by construction: an empty answer drops nothing, so an op that did
+ * not run leaves records in the commit rather than silently losing them. */
+char *mv_git_filter_vocdrop(const char *repo, const char *list) {
+    size_t n = list ? strlen(list) : 0;
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    /* Before mv_openaccount(), which reads the environment.  The CLI exports it;
+       a verb inherits a plain session where nothing did, so without this the
+       engine decides an open account is not one and keeps every file pointer --
+       the same trap mv_git_project() documents (mv_git#108). */
+    openaccount_sync(rp_or_dot(repo));
+    int open = mv_openaccount();
+    size_t o = 0, i = 0;
+    while (i < n) {
+        size_t s = i;
+        while (i < n && (unsigned char)list[i] != 0xFE) i++;
+        size_t e = i;                       /* entry is [s, e) */
+        size_t nm = s;
+        while (nm < e && (unsigned char)list[nm] != 0xFD) nm++;
+        if (nm < e) {
+            /* the type: attribute 1 up to its first blank */
+            size_t ts = nm + 1, te = ts;
+            while (te < e && list[te] != ' ') te++;
+            int cls = mv_voc_class(list + ts, (int64_t)(te - ts));
+            if (cls == 1 || (cls == 2 && open)) {
+                if (o) out[o++] = (char)0xFE;
+                memcpy(out + o, list + s, nm - s);
+                o += nm - s;
+            }
+        }
+        if (i < n) i++;                     /* past the @AM */
+    }
+    out[o] = '\0';
+    return out;
+}
+
 /* Stage the account descriptor a commit should carry.
  *
  * ONE implementation, because it must not matter whether a commit was made with
@@ -1871,6 +1935,23 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     memcpy(buf, p, (size_t)l);
     buf[l] = '\0';
     char *r = mv_git_filter_furniture(buf);
+    free(buf);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
+/* --- GITVOCDROP(list, out) ---------------------------------------------- */
+void mvx_sub_GITVOCDROP(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[0], nb, sizeof nb, &p);
+    char *buf = malloc((size_t)l + 1);
+    if (!buf) { mv_set_str(argv[1], "", 0); return; }
+    memcpy(buf, p, (size_t)l);
+    buf[l] = '\0';
+    char *r = mv_git_filter_vocdrop(".git", buf);
     free(buf);
     mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
     free(r);

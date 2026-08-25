@@ -283,6 +283,14 @@ char *GITFURNITURE(char *repo, char *list) {
     return emit(repo, mv_git_filter_furniture(list ? list : ""));
 }
 
+/* GITVOCDROP(repo, list) — which master-file records a wholesale add drops by
+   TYPE, for the `id<VM>attribute-1` list the BASIC walk produced.  The type
+   table is per MV system and lives in mv_voc_class(); the verb must not carry
+   its own copy, which is exactly what it used to do (mv_git#133). */
+char *GITVOCDROP(char *repo, char *list) {
+    return emit(repo, mv_git_filter_vocdrop(rp(repo), list ? list : ""));
+}
+
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
    (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
 char *GITFILES(char *repo) {

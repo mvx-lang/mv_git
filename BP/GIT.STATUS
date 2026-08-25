@@ -183,8 +183,8 @@ UNTRACKED:
 *  index, so it is what git already tracks; a file created but not yet committed
 *  is absent from it, and so is BP.O, whose records are never staged at all.
 *  Asked of the index, both looked like "not a file here" (mv_git#131).
-   UOWNF = "" ; UOWNID = "" ; UOWNFN = ""
-   CALL GIT.FILEIDS(REPO, UOWNF, UOWNID, UOWNFN)
+   UOWNF = "" ; UOWNID = "" ; UOWNFN = "" ; UTYPED = ""
+   CALL GIT.MASTER(REPO, UOWNF, UOWNID, UOWNFN, UTYPED)
    NU = DCOUNT(UFILES, AM)
    FOR U = 1 TO NU
       FN = UFILES<U>
@@ -229,6 +229,16 @@ UNTRACKED:
                NEXT G
                IF URID[1,1] = "_" THEN
                   READ UOBJ FROM RV, URID[2, LEN(URID)] THEN UDROP = 1
+               END
+*              WHAT THE TYPE SAYS, from the same GIT.MASTER answer `add` used.
+*              add drops a class-1 record -- a verb or keyword the destination
+*              supplies its own copy of -- in EVERY form, which is what the
+*              engine has always done; this side had no type test at all, so on
+*              a native UniVerse account every one came back `?? VOC/ARE`,
+*              `?? VOC/DF.MODIFY`, `?? VOC/VOC.CACHE`.  Untracked for ever
+*              (mv_git#51 again, #133).
+               IF NOT(UDROP) AND UISVOC AND UTYPED # "" THEN
+                  LOCATE(URID, UTYPED; UTDPOS) THEN UDROP = 1
                END
                IF NOT(UDROP) AND UISVOC AND UFURN # "" THEN
                   LOCATE(URID, UFURN; UFPOS) THEN UDROP = 1
