@@ -67,6 +67,8 @@
 /* How often a child looks up to see whether its session is still there. */
 #define LIVENESS_POLL_SECS 5
 
+static void self_ident(char *out, size_t cap);
+
 static char g_dir[MVG_PATH_MAX];      /* run directory, 0700 */
 static char g_token[MVG_TOKEN_LEN + 1];
 
@@ -706,9 +708,17 @@ static void server_loop(int lockfd) {
     if (mkfifo(ctlp, 0600) != 0) die(ctlp);
 
     /* Record the pid in the file whose lock we hold, so --status/--stop can find
-       us and a second server can tell we are alive. */
-    char buf[32];
-    int n = snprintf(buf, sizeof buf, "%ld\n", (long)getpid());
+       us and a second server can tell we are alive.
+       AND THE BUILD, because a server outlives the binary that started it.  The
+       process is shared and long-lived by design; installing a new mvgitd
+       replaces the file on disk and does not touch the server already running,
+       so the next session connected to it and every op was served by the OLD
+       code -- silently, with the new binary sitting right there (mv_git#155).
+       Second field, so `fscanf("%ld")` in --stop/--status still reads the pid. */
+    char ident[160];
+    self_ident(ident, sizeof ident);
+    char buf[224];
+    int n = snprintf(buf, sizeof buf, "%ld %s\n", (long)getpid(), ident);
     if (ftruncate(lockfd, 0) != 0) { /* non-fatal */ }
     if (lseek(lockfd, 0, SEEK_SET) == 0)
         { if (write(lockfd, buf, (size_t)n) != n) { /* non-fatal */ } }
@@ -805,6 +815,69 @@ static void server_loop(int lockfd) {
 /* Is a server running?  The lock on the pid file is the liveness test, not the
    file's existence: a killed server leaves the file (and its FIFOs) behind, and
    a stale FIFO is indistinguishable from a live one until you try to use it. */
+static int server_running(void);
+
+/* WHAT THIS PROCESS WAS STARTED FROM, as an identity a replacement cannot share.
+ *
+ * The obvious identity is GITD_VERSION, and it is not enough.  version.sh falls
+ * back to the literal "0" for a tree with no .git -- which is every build made
+ * by unpacking a source tarball or rsyncing a working tree to a test box, i.e.
+ * exactly the development loop where a stale server bites.  Two consecutive dev
+ * builds would both call themselves "0" and the handshake would never fire.
+ *
+ * So the identity is the executable's inode, mtime and size.  Installing a new
+ * mvgitd necessarily writes a new file -- you cannot overwrite a running one,
+ * the kernel says "Text file busy" -- so the inode changes and the mismatch is
+ * certain, whatever the version string says.
+ *
+ * Linux-only, and that is fine: mvgitd exists for UniVerse, which is where the
+ * Model B split is forced.  If /proc is not there the fingerprint comes back
+ * empty and the version string is used instead -- weaker, never wrong. */
+static void self_ident(char *out, size_t cap) {
+    struct stat st;
+    if (stat("/proc/self/exe", &st) == 0)
+        snprintf(out, cap, "%s/%llu:%lld:%lld", GITD_VERSION,
+                 (unsigned long long)st.st_ino, (long long)st.st_mtime,
+                 (long long)st.st_size);
+    else
+        snprintf(out, cap, "%s/-", GITD_VERSION);
+}
+
+/* The identity of the server that is currently serving, "" if none is recorded.
+   A server from before mv_git#155 leaves the field absent, which reads as ""
+   and therefore as a mismatch -- correctly, since it is by definition older. */
+static void server_build(char *out, size_t cap) {
+    out[0] = '\0';
+    char pidp[MVG_PATH_MAX];
+    pathcat(pidp, sizeof pidp, "pid");
+    FILE *f = fopen(pidp, "r");
+    if (!f) return;
+    long pid = 0;
+    char ver[128] = "";
+    if (fscanf(f, "%ld %127s", &pid, ver) == 2) snprintf(out, cap, "%s", ver);
+    fclose(f);
+}
+
+/* Ask the running server to go, and wait for it to actually let go of the lock.
+   Bounded: a server that will not leave must not wedge the session for ever --
+   we carry on and let the flock race below sort it out. */
+static void retire_server(void) {
+    char pidp[MVG_PATH_MAX];
+    pathcat(pidp, sizeof pidp, "pid");
+    FILE *f = fopen(pidp, "r");
+    if (!f) return;
+    long pid = 0;
+    if (fscanf(f, "%ld", &pid) != 1) pid = 0;
+    fclose(f);
+    if (pid <= 0) return;
+    if (kill((pid_t)pid, SIGTERM) != 0) return;
+    for (int i = 0; i < 100; i++) {           /* up to ~5s, 50ms apart */
+        if (!server_running()) return;
+        struct timespec ts = { 0, 50L * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+}
+
 static int server_running(void) {
     char pidp[MVG_PATH_MAX];
     pathcat(pidp, sizeof pidp, "pid");
@@ -824,7 +897,20 @@ static int server_running(void) {
    readiness test is "the control FIFO exists and someone holds the lock" rather
    than "my child is alive". */
 static void ensure_server(void) {
-    if (server_running()) return;
+    if (server_running()) {
+        /* A SERVER OF A DIFFERENT BUILD IS THE WRONG SERVER, at any age.  This
+           is not a staleness timer that could be tuned shorter: one second after
+           an install, the old process is already serving code that is no longer
+           what is on disk.  So the build is part of the server's identity, and a
+           mismatch retires it here rather than being noticed later as behaviour
+           that does not match the source (mv_git#155). */
+        char running[160], mine[160];
+        server_build(running, sizeof running);
+        self_ident(mine, sizeof mine);
+        if (strcmp(running, mine) == 0) return;
+        retire_server();
+        if (server_running()) return;   /* would not go; use it rather than hang */
+    }
 
     pid_t pid = fork();
     if (pid < 0) die("fork");
