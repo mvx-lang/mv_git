@@ -1592,12 +1592,9 @@ char *mv_git_filter_vocdrop(const char *repo, const char *list) {
     size_t n = list ? strlen(list) : 0;
     char *out = malloc(n + 1);
     if (!out) return NULL;
-    /* Before mv_openaccount(), which reads the environment.  The CLI exports it;
-       a verb inherits a plain session where nothing did, so without this the
-       engine decides an open account is not one and keeps every file pointer --
-       the same trap mv_git_project() documents (mv_git#108). */
+    /* Kept for the side effect: it publishes mvx.openaccount into the
+       environment, which the rest of an add reads (mv_git#135). */
     openaccount_sync(rp_or_dot(repo));
-    int open = mv_openaccount();
     size_t o = 0, i = 0;
     while (i < n) {
         size_t s = i;
@@ -1610,7 +1607,18 @@ char *mv_git_filter_vocdrop(const char *repo, const char *list) {
             size_t ts = nm + 1, te = ts;
             while (te < e && list[te] != ' ') te++;
             int cls = mv_voc_class(list + ts, (int64_t)(te - ts));
-            if (cls == 1 || (cls == 2 && open)) {
+            /* CLASS 1 ONLY.  Class 2 used to be dropped wholesale in the open
+               form, on the reasoning that a file pointer's portable form is
+               `<file>.DICT/%FILE%` -- true of a pointer to a file THIS
+               REPOSITORY CARRIES, and of nothing else.  Q, R and an F/DIR whose
+               path leaves the account all name something the repository does not
+               carry: no %FILE% describes them, no CREATE.FILE on the far side
+               writes them, and dropping them lost the account's own
+               configuration silently (mv_git#132).
+               The pointers that ARE derived are dropped by asking whether the
+               file is here -- in every form, not just the open one (#131) -- so
+               this blanket rule was both redundant and harmful. */
+            if (cls == 1) {
                 if (o) out[o++] = (char)0xFE;
                 memcpy(out + o, list + s, nm - s);
                 o += nm - s;
@@ -2122,7 +2130,6 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        synthesised <file>.DICT/%FILE%; a native commit keeps those so it can be
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
-    int voc_open = is_voc && mv_openaccount();
 #ifdef MVXGIT_OPENDICT
     /* An open-account dictionary commits its D/I items in the canonical (mvx-
        shaped) open form: UniData's SM/assoc attribute order is remapped, and on
@@ -2186,7 +2193,11 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    of them: the user has said they want this record versioned,
                    and second-guessing that is how a tool becomes untrustworthy. */
                 int cls = mv_voc_class(vp, f1);
-                if (!one && (cls == 1 || (cls == 2 && voc_open))) {
+                /* Class 1 only -- see mv_git_filter_vocdrop().  A class-2
+                   pointer is dropped by whether its file is HERE (#131, just
+                   below), which is the question the open form was really asking
+                   and got wrong for Q, R and foreign paths (mv_git#132). */
+                if (!one && cls == 1) {
                     skipped++;
                     continue;
                 }
@@ -3879,7 +3890,6 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                records (keywords and verbs the destination supplies its own copies
                of), add dropped every one, and status listed every one. */
             int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
-            int voc_open = is_voc && mv_openaccount();
             mv_select(ctx, &fvar);
             while (mv_readnext(ctx, &id)) {
                 if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
@@ -3892,7 +3902,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     int64_t f1 = 0;
                     while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
                     int cls = mv_voc_class(vp, f1);
-                    if (cls == 1 || (cls == 2 && voc_open)) continue;
+                    if (cls == 1) continue;      /* mv_git#132, as add */
                     /* A POINTER TO FURNITURE IS FURNITURE, and `add` has always
                        known that (mv_git#78) -- this side did not.  So in a
                        NATIVE account, where the class-2 skip just above does not
