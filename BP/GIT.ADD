@@ -86,12 +86,47 @@ CALL GIT.REPO(REPO)
       PRINT NSTAGED : " record(s) staged across " : NFILES : " file(s)"
       IF NSKIP > 0 THEN PRINT NSKIP : " virtual file(s) skipped (SQL catalog / DataView — no data to stage)"
    END ELSE
-      FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0 ; BLANKET = 0
+*     ISVOC decides whether the master-file exclusions apply at all, and this
+*     arm left it 0 -- it is only ever set inside the account walk -- so even
+*     with WHOLE on, `GIT ADD VOC` skipped every one of them for the very file
+*     they exist for (mv_git#141).
+      FILE = ARG3 ; ISVOC = (ARG3 = "VOC") ; NSTAGED = 0 ; BLANKET = 0
+*     NAMING A FILE IS NOT NAMING A RECORD.  `GIT ADD VOC` used to turn every
+*     wholesale exclusion off, so it staged the furniture, the stock records and
+*     the derived pointers that `GIT ADD -A` drops -- while the ENGINE draws the
+*     line one step further in and treats a file-only add as wholesale.  So the
+*     same command behaved differently on UniVerse than on UniData and MVX
+*     (mv_git#141).  The engine's line is the right one: the comment every
+*     exclusion shares says "naming a RECORD explicitly is a deliberate act",
+*     and a file is not a record.
+*
+*     WHOLE, not BLANKET.  BLANKET means "the whole account" and drives the
+*     reconcile pass over FILES below, which a single-file add has no list for;
+*     WHOLE means "the wholesale exclusions apply".  They were one flag doing
+*     two jobs.
+      ONEID = FIELD(S, " ", 4)
+      IF ONEID # "" AND ONEID[1,1] # "-" THEN
+         WHOLE = 0 ; SKIPOBJ = 0
+      END ELSE
+         WHOLE = 1 ; SKIPOBJ = 1
+*        The exclusions read lists that only the account walk builds, and a
+*        single-file add does not do that walk -- so without this they were all
+*        empty and `WHOLE` excluded nothing.  One call, the same one ADDALL
+*        makes (mv_git#133).
+         FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
+         CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
+*        ...and STOCKOPEN writes its %GITSTOCK% pointer into VOCF, which only
+*        the account walk opened.  Reached from here it wrote to an unopened
+*        file variable and UniData took the whole verb down with
+*        "Can not access unopened file" (mv_git#141).
+         OPEN "VOC" TO VOCF ELSE
+            OPEN "MD" TO VOCF ELSE WHOLE = 0
+         END
+      END
 *     A NAMED RECORD stages just that record.  This arm ignored the id entirely
 *     and staged the whole file — `GIT ADD VOC ZZPULL` reported "617 record(s)
 *     staged" — while MVX and UniVerse both stage the one record named.  Three
 *     implementations, and this was the one that had never been asked.
-      ONEID = FIELD(S, " ", 4)
       IF ONEID # "" AND ONEID[1,1] # "-" THEN
          OPEN FILE TO OF1 ELSE
             PRINT "GIT: cannot open " : FILE
@@ -156,7 +191,7 @@ CALL GIT.REPO(REPO)
 *  select before opening any file), then stage each file's data + dictionary (+
 *  open-form controls when -o).
 ADDALL:
-   NSTAGED = 0 ; NFILES = 0 ; BLANKET = 1 ; NSKIP = 0
+   NSTAGED = 0 ; NFILES = 0 ; BLANKET = 1 ; WHOLE = 1 ; NSKIP = 0
 *  THE ACCOUNT'S OWN FILES, from the one place that answers that question.
 *
 *  This walk used to be HERE, and status derived its own answer from the index
@@ -236,7 +271,7 @@ STAGEDATA:
       IF BLANKET THEN NSKIP += 1 ELSE PRINT "GIT: cannot open " : FILE
       RETURN
    END
-   IF BLANKET AND ISVOC THEN GOSUB STOCKOPEN
+   IF WHOLE AND ISVOC THEN GOSUB STOCKOPEN
    SELECT DF
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DF, RID THEN
@@ -254,7 +289,7 @@ STAGEDATA:
             END
          END
 *        A pointer to a file the furniture filter excluded points at nothing.
-         IF BLANKET AND ISVOC AND FURNIDS # "" AND NOT(DROP) THEN
+         IF WHOLE AND ISVOC AND FURNIDS # "" AND NOT(DROP) THEN
             LOCATE(RID, FURNIDS; FIDPOS) THEN DROP = 1
          END
 *        A FILE'S OWN POINTER IS DERIVED, so it is not content in ANY form --
@@ -274,7 +309,7 @@ STAGEDATA:
 *
 *        Wholesale adds only: `ADD VOC CUST` names the record and stages it, the
 *        rule every other exclusion here follows.
-         IF BLANKET AND ISVOC AND NOT(DROP) THEN
+         IF WHOLE AND ISVOC AND NOT(DROP) THEN
             RT = TRIM(FIELD(RREC<1>, " ", 1))
             IF RT="F" OR RT="LF" OR RT="DF" OR RT="DIR" THEN
                LOCATE(RID, FILEIDS; FIPOS) THEN DROP = 1
@@ -285,7 +320,7 @@ STAGEDATA:
 *        while mv_voc_class() in the engine is a table PER MV SYSTEM -- MVX has
 *        no V or K, because an MVX account's VOC holds the user's own verbs and
 *        dropping them would drop what the commit exists to carry (mv_git#133).
-         IF BLANKET AND ISVOC AND TYPEDROP # "" AND NOT(DROP) THEN
+         IF WHOLE AND ISVOC AND TYPEDROP # "" AND NOT(DROP) THEN
             LOCATE(RID, TYPEDROP; TDPOS) THEN DROP = 1
          END
          IF NOT(DROP) THEN
