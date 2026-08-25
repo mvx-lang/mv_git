@@ -624,6 +624,16 @@ int mv_voc_class(const char *type, int64_t len) {
        and travels. */
     static const struct { const char *t; int c; } tbl[] = {
         {"V", 1}, {"K", 1},                              /* verb, keyword */
+        /* UniData's LOCAL catalog (`CATALOG BP PROG LOCAL`), which writes
+           `C` / <abs path into CTLG> / <file> <prog>.  Class 1, like a verb:
+           cataloguing on the far side recreates it, and what the record holds
+           is an ABSOLUTE path on the machine that committed it, pointing into
+           CTLG -- which is furniture and never travels.  So a clone anywhere
+           else got a VOC entry naming a directory that does not exist
+           (mv_git#137).  UniVerse writes `V` for the same act and has no C-type
+           records at all (measured on 14.2.1: zero in a stock account), so the
+           shared U2 table can carry it. */
+        {"C", 1},                                        /* udt local catalog */
         {"F", 2}, {"LF", 2}, {"DF", 2}, {"DIR", 2},      /* file definitions */
         {"Q", 2}, {"X", 2}, {"R", 2},                    /* account/remote ptrs */
         {NULL, 0}

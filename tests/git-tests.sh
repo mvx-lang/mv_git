@@ -743,6 +743,42 @@ version = 1
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- a catalogued item is recreated by cataloguing, so it does not travel (mv_git#137) --"
+# The same rule as a file's own pointer: what the platform writes for you when
+# you catalogue is plumbing, and cataloguing on the far side writes it again.
+#
+# It bit hardest on UniData's LOCAL catalog, whose VOC record is type `C` and
+# holds an ABSOLUTE path into CTLG -- a directory that is furniture and never
+# committed -- so every clone got an entry naming a path from the machine that
+# made the commit.  UniVerse writes `V` for the same act, which was already
+# dropped; UniData's GLOBAL catalog writes no VOC record at all.
+#
+# Only where the platform puts catalogued items in the master file: on MVX the
+# verb is a `V` record the account owns, and that is a separate decision (#137).
+case "$PLATFORM" in
+udt|uv)
+  CATA="$WORK/catv"; ACCT "$CATA"; LINK "$CATA"
+  printf 'PRINT "hi"\n' > "$CATA/BP/CATPROG" 2>/dev/null || \
+    { mkdir -p "$CATA/BP"; printf 'PRINT "hi"\n' > "$CATA/BP/CATPROG"; }
+  if [ "$PLATFORM" = udt ]; then
+    ( cd "$CATA" && printf 'BASIC BP CATPROG\nCATALOG BP CATPROG LOCAL\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  else
+    ( cd "$CATA" && printf 'BASIC BP CATPROG\nCATALOG BP CATPROG LOCAL\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  fi
+  # IT REALLY WAS CATALOGUED.  Otherwise the assertion below is the absence of
+  # something that was never there, which is no assertion at all -- and the
+  # obvious spelling, `t "..." "CATPROG"`, is exactly that trap: UniData answers
+  # a missing record with "CATPROG is not a record in VOC.", which contains the
+  # name.  So assert on what only a PRESENT record can say.
+  tn "the program catalogued" "not a record" "$(CT "$CATA" VOC CATPROG)"
+  ( cd "$CATA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add VOC >/dev/null 2>&1 )
+  tn "but its VOC entry stays out" "VOC/CATPROG" \
+     "$( cd "$CATA" && git diff --cached --name-only )"
+  ;;
+esac
+
 say "-- a wholesale add reaches EVERY master-file record (mv_git#131) --"
 # THE WHOLE FILE, not the first few.  backend_has_file() answers from a cached
 # file list, and building that list means a SELECT of its own -- so asked lazily
