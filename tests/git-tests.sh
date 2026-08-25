@@ -803,6 +803,31 @@ pcli="$(descof "$PAR")"
 t  "the verb honours mvx.openaccount" ".mv-account" "$pverb"
 te "and the CLI stages the same"      "$pverb"      "$pcli"
 
+say "-- a file's dictionary travels once, as records (mv_git#151) --"
+# UniVerse keeps a file's dictionary beside the data as `D_<name>`, a hash file
+# of its own.  The disk pass that #148 gave the verb took it as 2KB of opaque
+# binary -- while `<file>.DICT/@ID` and `<file>.DICT/%FILE%` were carrying that
+# same dictionary as RECORDS.  The dictionary went into the commit twice, once
+# in a form no other MV system can read.
+#
+# BOTH HALVES, because dropping D_CUST is only right if the records are still
+# there: a skip that took the dictionary out altogether would pass a test that
+# only looked for the blob.
+case "$PLATFORM" in
+uv)
+  DCT="$WORK/dictblob"; ACCT "$DCT"; LINK "$DCT"; CF "$DCT" CUST
+  ( cd "$DCT" && git init -q . >/dev/null 2>&1; git config mvx.openaccount true )
+  GITV "$DCT" GIT INIT   >/dev/null
+  GITV "$DCT" GIT ADD -A >/dev/null
+  dst="$( cd "$DCT" && git ls-files )"
+  # the file really has a dictionary on disk, or this asserts nothing
+  t  "the dictionary file exists on disk" "D_CUST" \
+     "$( ls "$DCT" 2>/dev/null | grep '^D_CUST$' )"
+  t  "and travels as records"             "CUST.DICT/" "$dst"
+  tn "but not as a blob"                  "D_CUST"     "${dst}x"
+  ;;
+esac
+
 say "-- an account's ORDINARY files travel too, both ways in (mv_git#148) --"
 # `GIT ADD -A` stages RECORDS.  It had no pass for anything else, so a README, a
 # script, notes -- and `.gitignore` itself -- were silently left out of every
