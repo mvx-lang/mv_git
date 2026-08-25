@@ -144,6 +144,9 @@ const char *mv_git_prefix(void);
 char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
                      const char *id, const char *rec);
 char *mv_git_filter_furniture(const char *list);
+char *mv_git_filter_vocdrop(const char *repo, const char *list);
+/* "1" when this repository is an open account, else "0" (mv_git#135). */
+char *mv_git_is_open(const char *repo);
 char *mv_git_versions(const char *self);
 int mv_agent_cataloged(void);
 /* Remove a native descriptor a plain `git checkout` left behind.  A no-op on
@@ -285,6 +288,9 @@ char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
 /* Stage the on-disk working tree exactly as `git add -A` would (modes,
    .gitignore, top-level files, deletions).  Step one of `mvx-git add -A`. */
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo);
+/* The disk pass with the MV file names supplied, for a caller whose engine
+   cannot enumerate them itself (mv_git#148). */
+char *mv_git_adddisk_for(mv_ctx *ctx, const char *repo, const char *mvfiles);
 /* Normalise the staged index to the open account format (%FILE% -> DIR/hash,
    .mvx -> .mv-account) — the git objects carry the open form; disk stays
    native.  Run after `add` when `mvx.openaccount` is set. */
@@ -293,6 +299,9 @@ char *mv_git_openform(mv_ctx *ctx, const char *repo);
    path): MV files -> backend, .mv-account/.mvx -> .mvx, plain files -> disk.
    The open form never touches disk; no external adopt tool is run. */
 char *mv_git_materialize(mv_ctx *ctx, const char *repo);
+/* A clone into a live account: records, then BUILD.  Shared by `mvx-git clone`
+   and the in-session GIT CLONE so the two cannot disagree (mv_git#138). */
+char *mv_git_materialize_account(mv_ctx *ctx, const char *dir);
 /* Materialise a given tree-ish instead of HEAD: `adopt` builds the account from
    the WORKING TREE, so an edit somebody made in a plain checkout is carried in
    rather than silently replaced by the committed version. */

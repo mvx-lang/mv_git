@@ -62,20 +62,78 @@ CALL GIT.REPO(REPO)
 *  two accounts in one repository cannot both claim CUST/C1.
    CALL GIT.PREFIX(PFX)
    ARG3 = FIELD(S, " ", 3)
+*  THE FORM IS A PROPERTY OF THE ACCOUNT, not of the sentence.  This read the
+*  command line and nothing else, so an account marked open by `mvx.openaccount`
+*  committed as NATIVE through the verb while `udt-git add -A` committed it as
+*  open -- the same account, two different commits, decided by which way you came
+*  in.  That is what #81 settled must not happen (mv_git#135).
+*
+*  It had gone internally inconsistent too: since #133 the master-file type drops
+*  come from the VOCDROP op, which reads the config, so ONE `add -A` was dropping
+*  pointers as an open account and stamping a native descriptor.
+*
+*  The engine answers from .git/config -- no records, so mvgitd serves it on
+*  UniVerse the same way it serves furniture and VOCDROP.  `-o`/`--open` stays as
+*  an explicit override for a one-off commit in the other form.
    OPENFMT = 0
+   OFOUT = ""
+   CALL GIT.OBJ("ISOPEN", 1, REPO, "", "", "", "", OFOUT)
+   IF TRIM(OFOUT) = "1" THEN OPENFMT = 1
    IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
+*  THE IGNORE LISTS, which this program did not read AT ALL.  `status` matched
+*  them and `add` did not, so a record the user had gitignored was COMMITTED by
+*  the verb while the CLI left it out -- one account, two different commits
+*  (mv_git#133).  Loaded once here and matched by GIT.IGNORED, which is the
+*  matcher `status` uses too, so the two cannot drift apart again.
+   IGL = ""
+   CALL GIT.IGNORES(IGL)
    IF ARG3 = "-A" OR ARG3 = "." OR ARG3 = "--all" THEN
       SKIPOBJ = 1
       GOSUB ADDALL
       PRINT NSTAGED : " record(s) staged across " : NFILES : " file(s)"
       IF NSKIP > 0 THEN PRINT NSKIP : " virtual file(s) skipped (SQL catalog / DataView — no data to stage)"
    END ELSE
-      FILE = ARG3 ; ISVOC = 0 ; NSTAGED = 0 ; SKIPOBJ = 0 ; BLANKET = 0
+*     ISVOC decides whether the master-file exclusions apply at all, and this
+*     arm left it 0 -- it is only ever set inside the account walk -- so even
+*     with WHOLE on, `GIT ADD VOC` skipped every one of them for the very file
+*     they exist for (mv_git#141).
+      FILE = ARG3 ; ISVOC = (ARG3 = "VOC") ; NSTAGED = 0 ; BLANKET = 0
+*     NAMING A FILE IS NOT NAMING A RECORD.  `GIT ADD VOC` used to turn every
+*     wholesale exclusion off, so it staged the furniture, the stock records and
+*     the derived pointers that `GIT ADD -A` drops -- while the ENGINE draws the
+*     line one step further in and treats a file-only add as wholesale.  So the
+*     same command behaved differently on UniVerse than on UniData and MVX
+*     (mv_git#141).  The engine's line is the right one: the comment every
+*     exclusion shares says "naming a RECORD explicitly is a deliberate act",
+*     and a file is not a record.
+*
+*     WHOLE, not BLANKET.  BLANKET means "the whole account" and drives the
+*     reconcile pass over FILES below, which a single-file add has no list for;
+*     WHOLE means "the wholesale exclusions apply".  They were one flag doing
+*     two jobs.
+      ONEID = FIELD(S, " ", 4)
+      IF ONEID # "" AND ONEID[1,1] # "-" THEN
+         WHOLE = 0 ; SKIPOBJ = 0
+      END ELSE
+         WHOLE = 1 ; SKIPOBJ = 1
+*        The exclusions read lists that only the account walk builds, and a
+*        single-file add does not do that walk -- so without this they were all
+*        empty and `WHOLE` excluded nothing.  One call, the same one ADDALL
+*        makes (mv_git#133).
+         FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
+         CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
+*        ...and STOCKOPEN writes its %GITSTOCK% pointer into VOCF, which only
+*        the account walk opened.  Reached from here it wrote to an unopened
+*        file variable and UniData took the whole verb down with
+*        "Can not access unopened file" (mv_git#141).
+         OPEN "VOC" TO VOCF ELSE
+            OPEN "MD" TO VOCF ELSE WHOLE = 0
+         END
+      END
 *     A NAMED RECORD stages just that record.  This arm ignored the id entirely
 *     and staged the whole file — `GIT ADD VOC ZZPULL` reported "617 record(s)
 *     staged" — while MVX and UniVerse both stage the one record named.  Three
 *     implementations, and this was the one that had never been asked.
-      ONEID = FIELD(S, " ", 4)
       IF ONEID # "" AND ONEID[1,1] # "-" THEN
          OPEN FILE TO OF1 ELSE
             PRINT "GIT: cannot open " : FILE
@@ -140,48 +198,38 @@ CALL GIT.REPO(REPO)
 *  select before opening any file), then stage each file's data + dictionary (+
 *  open-form controls when -o).
 ADDALL:
-   NSTAGED = 0 ; NFILES = 0 ; FILES = "" ; BLANKET = 1 ; NSKIP = 0 ; ALLF = ""
+   NSTAGED = 0 ; NFILES = 0 ; BLANKET = 1 ; WHOLE = 1 ; NSKIP = 0
+*  THE ACCOUNT'S OWN FILES, from the one place that answers that question.
+*
+*  This walk used to be HERE, and status derived its own answer from the index
+*  instead -- which is a different set, and the difference is exactly the
+*  interesting cases (mv_git#131).  Two answers to one question is how #51, #78
+*  and #95 all happened: `add` skips a record, `status` does not know to, and it
+*  is reported untracked forever because the thing reporting it is the thing
+*  that will never stage it.
+*
+*  It stays in BASIC rather than moving behind GIT.OBJ because it READS THE
+*  ACCOUNT, and on UniVerse the engine is the background process with no record
+*  access at all -- mv_open/mv_read/mv_filelist are fatal there.  Furniture goes
+*  the other way for the same reason: it matches strings and reads nothing, so
+*  the engine can own it (mv_git#81, #133).
+*  The master file is still opened here: STOCKOPEN writes its %GITSTOCK%
+*  pointer into it, and an account with no master file is broken rather than
+*  empty -- so that stays a reported error and not a quiet zero-file add.
    OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
-   SELECT VOCF
-   LOOP WHILE READNEXT VID DO
-      READ VREC FROM VOCF, VID THEN
-*        Attribute 1 is the TYPE, but it is not always the type ALONE: UniVerse
-*        appends the file description a user may give at CREATE.FILE time, so a
-*        described file reads "F Customer master" and an exact match against
-*        "F" makes it invisible to this scan — the file is simply never staged,
-*        with no error.  Take the first token, and trim, so a description (or a
-*        trailing space from an empty one) cannot hide a file from GIT ADD -A.
-         VT = TRIM(FIELD(VREC<1>, " ", 1))
-         IF VT = "F" OR VT = "DIR" THEN
-            DP = VREC<2> ; DD = VREC<3> ; LOC = 1
-            IF INDEX(DP,"/",1) OR DP[1,1] = "@" THEN LOC = 0
-            IF INDEX(DD,"/",1) OR DD[1,1] = "@" THEN LOC = 0
-*           Every file-type id is a candidate, local or not: VOC points at
-*           furniture that has no file here (_ENCINFO_, _KEYSTORE_) and those
-*           pointers are furniture too.  The local ones are what gets staged.
-            ALLF<-1> = VID : VM : VT
-            IF LOC THEN FILES<-1> = VID : VM : VT
-         END
-      END
-   REPEAT
-*  ONE set of furniture rules, for the verb and the CLI alike, and one place
-*  that asks for them — GIT.FURNIDS, which `status` calls too.  This walk has to
-*  be here (mvgitd has no record backend, so on UniVerse the enumeration must
-*  happen in the session), but what the walk FINDS and what counts as FURNITURE
-*  are different questions and only the first needs BASIC.  GIT.ADD used to test
-*  `_X_` and `&X&` inline and know none of the names, so the verb committed the
-*  whole SQL catalogue while the CLI did not: 944 blobs against 76 for the same
-*  stock account (mv_git#81).
-   FURNIDS = ""
-   CALL GIT.FURNIDS(REPO, ALLF, FURNIDS)
-   IF FURNIDS # "" THEN
-      KEPT = ""
-      NRAW = DCOUNT(FILES, AM)
-      FOR RK = 1 TO NRAW
-         LOCATE(FIELD(FILES<RK>, VM, 1), FURNIDS; FPOS) ELSE KEPT<-1> = FILES<RK>
-      NEXT RK
-      FILES = KEPT
-   END
+   FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
+   CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
+*  THE ORDINARY FILES -- a README, notes, a script, .gitignore itself.  This
+*  walk stages RECORDS and had no pass for anything else, so `GIT ADD -A` in a
+*  session committed none of them while the CLI did (mv_git#148).
+*
+*  The file names go WITH the call: the pass has to know which top-level names
+*  are MV files so it can leave their records to the walk below, and on UniVerse
+*  the engine is mvgitd, which cannot look.  FILEIDS is exactly that list and is
+*  already in hand -- the same "the caller supplies what the engine cannot see"
+*  the furniture and VOCDROP asks are built on (mv_git#133).
+   DKOUT = ""
+   CALL GIT.OBJ("ADDDISK", 2, REPO, FILEIDS, "", "", "", DKOUT)
    NF = DCOUNT(FILES, AM)
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
@@ -241,12 +289,36 @@ STAGEDATA:
       IF BLANKET THEN NSKIP += 1 ELSE PRINT "GIT: cannot open " : FILE
       RETURN
    END
-   IF BLANKET AND ISVOC THEN GOSUB STOCKOPEN
+   IF WHOLE AND ISVOC THEN GOSUB STOCKOPEN
    SELECT DF
    LOOP WHILE READNEXT RID DO
       READ RREC FROM DF, RID THEN
          DROP = 0
-         IF SKIPOBJ AND INDEX(RREC, CHAR(0), 1) > 0 THEN DROP = 1
+*        IGNORED?  Wholesale adds only: naming a record explicitly is a
+*        deliberate act and overrides the list, the rule every exclusion here
+*        follows.
+         IF WHOLE AND NOT(DROP) THEN
+            IGHIT = 0
+            CALL GIT.IGNORED(IGL, FILE : "/" : RID, FILE, IGHIT)
+            IF IGHIT THEN DROP = 1
+         END
+*        A COMPILED OBJECT, and it is TWO tests, not one.
+*
+*        The NAMING rule is exact: UniData writes the object of <PROG> as
+*        _<PROG> in the SAME file, so an id starting "_" whose base id is really
+*        there is an object.  This arm did not have that rule at all -- it had
+*        only the CONTENT guess below, and got away with it because an object
+*        happens to be binary.
+*
+*        The CONTENT rule is a guess in both directions -- it drops a legitimate
+*        record that holds a NUL and keeps an object that does not -- which is
+*        why the engine keeps it behind a switch.  Applied here unconditionally
+*        it silently dropped the user's data: measured on UniVerse, a record
+*        holding CHAR(0) was dropped by the verb and staged by the CLI, from the
+*        same account (mv_git#133).  So the switch is asked for.
+         IF SKIPOBJ AND NOT(DROP) AND RID[1,1] = "_" THEN
+            READ OBJSRC FROM DF, RID[2, LEN(RID)] THEN DROP = 1
+         END
 *        The account did not write this record; the system did.  A record
 *        identical to the one a fresh account holds is furniture, not content
 *        (mv_git#46) -- and it is compared BY CONTENT, so a stock verb this
@@ -259,14 +331,39 @@ STAGEDATA:
             END
          END
 *        A pointer to a file the furniture filter excluded points at nothing.
-         IF BLANKET AND ISVOC AND FURNIDS # "" AND NOT(DROP) THEN
+         IF WHOLE AND ISVOC AND FURNIDS # "" AND NOT(DROP) THEN
             LOCATE(RID, FURNIDS; FIDPOS) THEN DROP = 1
          END
-         IF OPENFMT AND ISVOC THEN
-            RT = RREC<1>
-            IF RT="V" OR RT="K" THEN DROP = 1
-            IF RT="F" OR RT="LF" OR RT="DF" OR RT="DIR" THEN DROP = 1
-            IF RT="Q" OR RT="X" OR RT="R" THEN DROP = 1
+*        A FILE'S OWN POINTER IS DERIVED, so it is not content in ANY form --
+*        native as much as open.  CREATE.FILE writes it, DELETE.FILE removes it,
+*        and <file>.DICT/%FILE% carries the geometry a checkout needs to write it
+*        again (staged on every add since mv_git#15).  Committing it as well is
+*        the same fact in two places, free to disagree -- and it left a native
+*        repository carrying a pointer spelled for the platform that made it and
+*        of no use anywhere else (mv_git#131).
+*
+*        ONLY A FILE THIS ACCOUNT CARRIES, which is what FILEIDS holds: an
+*        F/DIR record whose data AND dict paths are bare local names, furniture
+*        already subtracted.  A Q, X or R pointer is not in it and still travels
+*        below -- those name another account's file, nothing here creates them,
+*        no %FILE% describes them, and dropping one loses real configuration on
+*        every clone (mv_git#132).
+*
+*        Wholesale adds only: `ADD VOC CUST` names the record and stages it, the
+*        rule every other exclusion here follows.
+         IF WHOLE AND ISVOC AND NOT(DROP) THEN
+            RT = TRIM(FIELD(RREC<1>, " ", 1))
+            IF RT="F" OR RT="LF" OR RT="DF" OR RT="DIR" THEN
+               LOCATE(RID, FILEIDS; FIPOS) THEN DROP = 1
+            END
+         END
+*        ...and what the TYPE says, from GIT.MASTER.  This used to be a
+*        hardcoded V/K/F/LF/DF/DIR/Q/X/R chain here, the same on every platform
+*        while mv_voc_class() in the engine is a table PER MV SYSTEM -- MVX has
+*        no V or K, because an MVX account's VOC holds the user's own verbs and
+*        dropping them would drop what the commit exists to carry (mv_git#133).
+         IF WHOLE AND ISVOC AND TYPEDROP # "" AND NOT(DROP) THEN
+            LOCATE(RID, TYPEDROP; TDPOS) THEN DROP = 1
          END
          IF NOT(DROP) THEN
             CALL GIT.OBJ("STAGE", 4, REPO, PFX:FILE, RID, RREC, "", OBJOUT)

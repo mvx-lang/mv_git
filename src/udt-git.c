@@ -100,7 +100,20 @@ static void add_all(mv_ctx *ctx, const char *repo) {
     /* A blanket add -A never commits compiled BASIC objects (binary records,
        rebuilt on the target) — the engine honours this flag; an explicit
        `udt-git add <file>` leaves it unset and stages everything (#9). */
-    setenv("MVX_GIT_SKIP_OBJECTS", "1", 1);
+    /* The NUL-content backstop USED to be turned on here for everything.  It is
+       a guess in both directions -- it drops a legitimate record holding a NUL
+       and keeps an object that holds none -- and it is no longer needed: a
+       compiled object is excluded by NAME on every platform now, `_PROG` beside
+       `PROG` on UniData and a whole <X>.O file on UniVerse (mv_git#145, #146).
+       Left on, it made the CLI drop records the verb kept. */
+
+    /* THE ORDINARY FILES FIRST -- a README, notes, a script, .gitignore itself.
+       This walk stages RECORDS and had no pass for anything else, so an account
+       committed with udt-git kept none of them (mv_git#148).  The engine has a
+       real backend here, so it can tell an MV file from a plain directory on its
+       own and needs no list. */
+    emit(mv_git_adddisk_for(ctx, repo, ""));
+
     mv_value fl;
     mv_init(&fl);
     mv_filelist(ctx, &fl);

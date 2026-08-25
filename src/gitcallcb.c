@@ -283,6 +283,31 @@ char *GITFURNITURE(char *repo, char *list) {
     return emit(repo, mv_git_filter_furniture(list ? list : ""));
 }
 
+/* GITVOCDROP(repo, list) — which master-file records a wholesale add drops by
+   TYPE, for the `id<VM>attribute-1` list the BASIC walk produced.  The type
+   table is per MV system and lives in mv_voc_class(); the verb must not carry
+   its own copy, which is exactly what it used to do (mv_git#133). */
+char *GITVOCDROP(char *repo, char *list) {
+    return emit(repo, mv_git_filter_vocdrop(rp(repo), list ? list : ""));
+}
+
+/* GITISOPEN(repo) — is this account open?  The verb used to decide from its
+   own command line, so the same account committed differently through the verb
+   and the CLI (mv_git#135). */
+char *GITISOPEN(char *repo) {
+    return emit(repo, mv_git_is_open(rp(repo)));
+}
+
+/* GITADDDISK(repo, mvfiles) — stage the account's ORDINARY files, the ones that
+   are not records.  The verb had no such pass, so `GIT ADD -A` in a session
+   committed no README, no notes, no .gitignore (mv_git#148). */
+char *GITADDDISK(char *repo, char *mvfiles) {
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_adddisk_for(ctx, rp(repo), mvfiles ? mvfiles : "");
+    mv_ctx_destroy(ctx);
+    return emit(repo, r);
+}
+
 /* GITFILES(repo) — every blob path in HEAD, @AM-separated, via <repo>/gitmsg
    (the verb OSREADs it and drives CREATE.FILE + WRITE on the current session). */
 char *GITFILES(char *repo) {

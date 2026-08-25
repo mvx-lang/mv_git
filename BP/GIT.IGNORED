@@ -1,0 +1,36 @@
+*  GIT.IGNORED(IGL, PATH, FILE, HIT) — is this record path ignored?
+*  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+*
+*  ONE MATCHER, for the same reason GIT.FURNIDS and GIT.MASTER are one place:
+*  `add` and `status` have to agree, or the account never reads clean.  Here
+*  they did not agree at all -- `status` matched these lists and `add` did not
+*  even look at them, so a record the user had gitignored was COMMITTED by the
+*  verb and left out by the CLI.  Same account, two different commits, which is
+*  the thing #81 settled must not happen (mv_git#133).
+*
+*  A DELIBERATE SUBSET, and worth saying plainly rather than leaving to be
+*  discovered: this understands an exact path, a bare file name, and a trailing
+*  "*".  It is NOT fnmatch and it is not libgit2's full gitignore -- BASIC has no
+*  pattern matcher, and the ENGINE applies the full rules to the paths it
+*  handles itself.  What matters for correctness is that the two BASIC halves
+*  apply the SAME subset: a pattern this cannot express is one neither of them
+*  acts on, which is a limitation.  A pattern one acted on and the other did not
+*  was a bug.
+      SUBROUTINE GIT.IGNORED(IGL, PATH, FILE, HIT)
+      AM = CHAR(254)
+      HIT = 0
+      IF IGL = "" THEN RETURN
+      NIG = DCOUNT(IGL, AM)
+      FOR IGK = 1 TO NIG
+         GP = TRIM(IGL<IGK>)
+         IF GP # "" THEN
+*           The exact record path, or the whole file by name.
+            IF GP = PATH OR GP = FILE THEN HIT = 1
+            GL = LEN(GP)
+            IF GL > 0 AND GP[GL,1] = "*" THEN
+               IF PATH[1, GL-1] = GP[1, GL-1] THEN HIT = 1
+            END
+         END
+      NEXT IGK
+      RETURN
+      END

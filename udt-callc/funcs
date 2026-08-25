@@ -11,6 +11,9 @@ GITBRANCH:string:2:string,string
 GITFILES:string:1:string
 GITPROJECT:string:4:string,string,string,string
 GITFURNITURE:string:2:string,string
+GITVOCDROP:string:2:string,string
+GITISOPEN:string:1:string
+GITADDDISK:string:2:string,string
 GITVERSION:string:1:string
 GITSTAGEDESC:string:3:string,string,string
 GITCAT:string:2:string,string

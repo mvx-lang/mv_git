@@ -42,6 +42,9 @@
 #include <strings.h>      /* strcasecmp / strncasecmp */
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <limits.h>
 
 /* --- helpers ----------------------------------------------------------- */
 
@@ -713,6 +716,8 @@ static void record_path(char *out, size_t cap, const char *fn, const char *id) {
 }
 
 #ifdef MVXGIT_OPENDICT
+static git_tree *head_tree(git_repository *repo);   /* defined below */
+
 /* The canonical spelling of an I-type item's expression, for the record as it
    stands live in the account.
  *
@@ -742,14 +747,34 @@ static char *open_dict_ispec(git_repository *repo, git_index *index,
     snprintf(base, sizeof base, "%.*s", (int)(bl - 5), fn);   /* drop ".DICT" */
     attr_of(rec, len, (char)0xFE, 2, spec, sizeof spec);
 
-    dictsrc ds = { repo, NULL, index };
+    /* HEAD, not the index.  "The spelling it was committed in" is a question
+       about the COMMIT, and `add -A` rebuilds the index from empty -- so by the
+       time a dictionary item is reached, the index holds only what this run has
+       already staged and the committed copy is simply absent.  Every lookup
+       missed, every item fell through to translating back, and the ones whose
+       key field could not be resolved from a half-built index were staged in
+       the native spelling: a freshly cloned account restated its I-types on
+       every commit (mv_git#90 on jBASE, and the same fault on UniData).
+       The index is still consulted first, so a STAGED edit is not undone by an
+       older HEAD. */
+    git_tree *ht = head_tree(repo);
+    dictsrc ds = { repo, ht, index };
     char gpath[600];
     record_path(gpath, sizeof gpath, fn, idb);
 
     char *canon = NULL;
     const git_index_entry *pe = git_index_get_bypath(index, gpath, 0);
     git_blob *pb = NULL;
-    if (pe && git_blob_lookup(&pb, repo, &pe->id) == 0) {
+    if (!pe && ht) {
+        git_tree_entry *te = NULL;
+        if (git_tree_entry_bypath(&te, ht, gpath) == 0) {
+            git_blob_lookup(&pb, repo, git_tree_entry_id(te));
+            git_tree_entry_free(te);
+        }
+    } else if (pe) {
+        git_blob_lookup(&pb, repo, &pe->id);
+    }
+    if (pb) {
         char was[512];
         attr_of(git_blob_rawcontent(pb), (int64_t)git_blob_rawsize(pb),
                 '\n', 2, was, sizeof was);
@@ -759,6 +784,7 @@ static char *open_dict_ispec(git_repository *repo, git_index *index,
         git_blob_free(pb);
     }
     if (!canon) canon = ispec_to_open(&ds, base, spec, (int64_t)strlen(spec));
+    if (ht) git_tree_free(ht);
     if (!canon) return NULL;
 
     char *out = rec_set_attr2(rec, len, (char)0xFE, canon, outlen);
@@ -825,6 +851,15 @@ static int git_path_ignored(git_repository *repo, const char *path) {
 static const char *rp_or_dot(const char *r) { return r && r[0] ? r : ".git"; }
 
 static void openaccount_sync(const char *rp) {
+    /* libgit2 FIRST.  Every op that arrives through the engine's own entry
+       points has been through ensure_init(), but the ones the BASIC calls to ASK
+       a question -- ISOPEN, VOCDROP -- had not, and git_repository_open() on an
+       uninitialised libgit2 simply fails.  It fails SILENTLY here, because a
+       repository that will not open is indistinguishable from one with no
+       `mvx.openaccount` in it: the account looked native however the config was
+       set (mv_git#135).  Cheap and idempotent, so it belongs in the one function
+       that every one of those callers goes through. */
+    ensure_init();
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) return;
     git_config *cfg = NULL;
@@ -886,6 +921,12 @@ static int record_is_object(mv_ctx *ctx, mv_value *fvar, const char *idb,
     if (backstop && cp && clen > 0 && memchr(cp, 0, (size_t)clen)) return 1;
     return 0;
 }
+
+/* Declared here as well as beside its definition: the record passes ask it
+   about a VOC pointer's target long before the file-enumeration helpers are
+   defined (mv_git#131). */
+static int backend_has_file(mv_ctx *ctx, const char *name);
+static void backend_files_prime(mv_ctx *ctx);
 
 static int is_provision_pointer(const char *file, const char *id) {
     if (strcasecmp(id, "CATALOG") != 0) return 0;
@@ -1318,6 +1359,49 @@ int mv_account_furniture(const char *name, size_t len) {
 #endif
     for (const char *const *sf = sysfile; *sf; sf++)
         if (len == strlen(*sf) && memcmp(name, *sf, len) == 0) return 1;
+    /* THE CATALOG AREA, and it is the same question on every system, which is
+       why this list is shared rather than one more per-platform arm.  A
+       catalogued program is BUILT from the source beside it: the account gets
+       its own copy back by compiling, a clone that carried one would carry a
+       binary for whatever host committed it, and the object is not what anybody
+       wrote.  So the directory it lands in is plumbing, not content.
+
+       Each system spells the directory differently and every one of them is
+       here, because a repository is shared BETWEEN systems: an MVX account's
+       `CATALOG/` reaching a jBASE checkout is the same mistake in the other
+       direction, and testing only the local platform's spelling lets each
+       system commit the others' object code.  That is the rule mv_git already
+       applies to the .so/.dll/.dylib extensions (mv_git#114).
+
+         CATALOG, LIB, bin   MVX names all three itself, in the runtime's own
+                             infra() (mvx runtime/src/mvx_acct.c)
+         bin, lib            a jBASE account is born with them, and its file
+                             list is a DIRECTORY SCAN with no master file in the
+                             way -- so nothing else was stopping them.  Nor were
+                             they even the account's: JediOpen("bin") resolves
+                             through $JBCDEV_BIN, which defaults to $HOME/bin,
+                             so `add -A` staged the OPERATOR'S home directory
+                             (mv_git#130).
+         CTLG                UniData's, named in its own list above as well --
+                             it is a stock FILE there, not only a catalog.
+
+       CROSS-APPLIED DELIBERATELY, and it is the opposite call to the vendor
+       data-file names above.  MENUFILE and CTLG are not cross-applied because a
+       site may legitimately own a file by those names and dropping it would
+       lose their data.  These four cannot be somebody's data file: the family
+       reserves them, and MVX refuses to treat them as files at all.  The escape
+       hatch is the same as every other exclusion's -- naming the file
+       explicitly (`add CATALOG`) stages it regardless -- so the cost of being
+       wrong here is one argument, not lost records.
+
+       Matched CASE-SENSITIVELY, like the list above and for the same reason:
+       `bin` is jBASE's binary directory and `BIN` could be anybody's file. */
+    {
+        static const char *const catalog[] = {
+            "CATALOG", "LIB", "CTLG", "bin", "lib", NULL };
+        for (const char *const *c = catalog; *c; c++)
+            if (len == strlen(*c) && memcmp(name, *c, len) == 0) return 1;
+    }
     /* The work-file shapes are common to the family rather than to any one
        platform: names wrapped in underscores (_HOLD_, _PH_, _EDAMAP_, _SCREEN_,
        _REPORT_, _ENCINFO_, _KEYSTORE_ …) and in ampersands (&SAVEDLISTS&, &PH&,
@@ -1345,6 +1429,13 @@ int mv_account_furniture(const char *name, size_t len) {
        another dictionary. */
     if (len > 2 && name[0] == 'D' && name[1] == '_' &&
         mv_account_furniture(name + 2, len - 2)) return 1;
+    /* ...and MVX and jBASE keep it beside the data as `<name>.DICT`, which is
+       also the name it travels under in the open form.  Same rule, the other
+       spelling: `CATALOG` was skipped and `CATALOG.DICT/%FILE%` staged, so a
+       wholesale add committed the geometry of a directory it had deliberately
+       left out (mv_git#130).  One level, as above. */
+    if (len > 5 && memcmp(name + len - 5, ".DICT", 5) == 0 &&
+        mv_account_furniture(name, len - 5)) return 1;
     return 0;
 }
 
@@ -1435,6 +1526,129 @@ char *mv_git_filter_furniture(const char *list) {
             if (o) out[o++] = (char)0xFE;
             memcpy(out + o, list + s, e - s);
             o += e - s;
+        }
+        if (i < n) i++;                     /* past the @AM */
+    }
+    out[o] = '\0';
+    return out;
+}
+
+/* Is this repository an OPEN account?  "1" or "0".
+ *
+ * THE FORM IS A PROPERTY OF THE ACCOUNT, not of the sentence.  `mvx.openaccount`
+ * in .git/config is what marks it, and the ENGINE has always honoured it -- but
+ * the VERB read the form from its own command line and nothing else:
+ *
+ *     OPENFMT = 0
+ *     IF INDEX(S, " -o", 1) # 0 OR INDEX(S, " --open", 1) # 0 THEN OPENFMT = 1
+ *
+ * So the same account committed differently depending on which way you came in:
+ * `udt-git add -A` wrote `.mv-account`, `GIT ADD -A` at the TCL prompt wrote
+ * `.udt`, with the flag set to true either way.  That is what #81 settled must
+ * not happen (mv_git#135).
+ *
+ * It had also gone INTERNALLY inconsistent: since #133 the master-file type
+ * drops come from the VOCDROP op, which reads the config -- so one `add -A` was
+ * dropping pointers as an open account and stamping a native descriptor.
+ *
+ * Reads .git/config and no records, which is what lets mvgitd serve it on
+ * UniVerse exactly as furniture and VOCDROP are served (#133). */
+char *mv_git_is_open(const char *repo) {
+    openaccount_sync(rp_or_dot(repo));
+    return strdup(mv_openaccount() ? "1" : "0");
+}
+
+/* The class of a master-file record, from attribute 1 of its content.
+ *
+ * ATTRIBUTE 1 IS NOT ALWAYS THE TYPE ALONE.  UniVerse appends the file
+ * description given at CREATE.FILE time, so a described file reads
+ * "F Customer master" -- and an EMPTY description still leaves "F ", with the
+ * trailing space.  `CT` trims it on the way to the screen, which is what makes
+ * this so easy to look straight past.
+ *
+ * The engine matched the whole of attribute 1, so on UniVerse `mv_voc_class`
+ * was handed "F " and answered 0 -- class 0, the user's own, keep.  Every
+ * class-2 exclusion was therefore skipped for every file in the account:
+ * measured on 14.2.1, `uv-git add -A` staged VOC/BP, VOC/BP.O, VOC/VOCLIB,
+ * VOC/&SAVEDLISTS& and VOC/OWN -- furniture and derived pointers alike -- while
+ * the in-session verb dropped all six, because BP/GIT.AGENT and BP/GIT.MASTER
+ * both take the first TOKEN (mv_git#142).
+ *
+ * One helper, because the two call sites that had this idiom inline are add and
+ * status, and those two disagreeing is the bug this whole area keeps having. */
+static int voc_class_of(const char *rec, int64_t len) {
+    int64_t f1 = 0;
+    while (f1 < len && (unsigned char)rec[f1] != 0xFE) f1++;
+    int64_t t = 0;
+    while (t < f1 && rec[t] != ' ') t++;
+    return mv_voc_class(rec, t);
+}
+
+/* Which of `list` a wholesale add must drop BY TYPE.
+ *
+ * `list` is @AM-separated `id<VM>attribute-1`, and the answer is the @AM
+ * separated ids to DROP.  The caller supplies the candidates for the same
+ * reason GIT.FURNIDS does: this reads no records, so mvgitd can answer it on
+ * UniVerse where the engine has no record access at all (mv_git#133).
+ *
+ * THE TABLE IS PER MV SYSTEM and the BASIC had one copy for all of them.
+ * mv_voc_class() is V/K/F/LF/DF/DIR/Q/X/R on UniData and UniVerse but only
+ * F/DIR/Q on MVX -- an MVX account's VOC holds the user's OWN verbs, since the
+ * standard ones come from the system account, so dropping V there would drop
+ * the very thing the commit exists to carry.  BP/GIT.ADD tested
+ * `RT="V" OR RT="K" ...` regardless of platform, which was right for the two
+ * platforms that run it today and wrong for the next one: on jBASE
+ * mv_voc_class() answers 0 for everything, so the engine would keep what the
+ * BASIC dropped, on the same account (mv_git#114).
+ *
+ * ATTRIBUTE 1 IS NOT ALWAYS THE TYPE ALONE.  UniVerse appends the description a
+ * user may give at CREATE.FILE time, so a described file reads "F Customer
+ * master"; the first token is the type.
+ *
+ * Class 1 is dropped always -- a verb or keyword the destination supplies its
+ * own copy of.  Class 2 is dropped in the OPEN interchange only, where the
+ * portable form carries the file as <file>.DICT/%FILE% instead.  A file's own
+ * pointer is dropped in every form, but that is a different question with a
+ * different answer (does this account carry a file by that name), it needs to
+ * read the account, and it lives in BP/GIT.FILEIDS (mv_git#131).
+ *
+ * Fail-safe by construction: an empty answer drops nothing, so an op that did
+ * not run leaves records in the commit rather than silently losing them. */
+char *mv_git_filter_vocdrop(const char *repo, const char *list) {
+    size_t n = list ? strlen(list) : 0;
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    /* Kept for the side effect: it publishes mvx.openaccount into the
+       environment, which the rest of an add reads (mv_git#135). */
+    openaccount_sync(rp_or_dot(repo));
+    size_t o = 0, i = 0;
+    while (i < n) {
+        size_t s = i;
+        while (i < n && (unsigned char)list[i] != 0xFE) i++;
+        size_t e = i;                       /* entry is [s, e) */
+        size_t nm = s;
+        while (nm < e && (unsigned char)list[nm] != 0xFD) nm++;
+        if (nm < e) {
+            /* the type: attribute 1 up to its first blank */
+            size_t ts = nm + 1, te = ts;
+            while (te < e && list[te] != ' ') te++;
+            int cls = mv_voc_class(list + ts, (int64_t)(te - ts));
+            /* CLASS 1 ONLY.  Class 2 used to be dropped wholesale in the open
+               form, on the reasoning that a file pointer's portable form is
+               `<file>.DICT/%FILE%` -- true of a pointer to a file THIS
+               REPOSITORY CARRIES, and of nothing else.  Q, R and an F/DIR whose
+               path leaves the account all name something the repository does not
+               carry: no %FILE% describes them, no CREATE.FILE on the far side
+               writes them, and dropping them lost the account's own
+               configuration silently (mv_git#132).
+               The pointers that ARE derived are dropped by asking whether the
+               file is here -- in every form, not just the open one (#131) -- so
+               this blanket rule was both redundant and harmful. */
+            if (cls == 1) {
+                if (o) out[o++] = (char)0xFE;
+                memcpy(out + o, list + s, nm - s);
+                o += nm - s;
+            }
         }
         if (i < n) i++;                     /* past the @AM */
     }
@@ -1665,6 +1879,10 @@ static int uv_flavour_committed(char *out, size_t cap) {
     return out[0] != '\0';
 }
 
+/* Defined below, beside the descriptor schema it needs (mv_git#139). */
+static int desc_carry_open(const char *base, const char *path,
+                           char *out, size_t cap);
+
 int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
                     const char *prefix, int open) {
     const char *pfx = prefix ? prefix : "";
@@ -1677,8 +1895,21 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
         snprintf(base, sizeof base, "%s", (slash && slash[1]) ? slash + 1 : acct);
     }
     if (open) {
-        mv_git_desc_open(base, "1", NULL, NULL, desc, dcap);
+        /* THE COMMITTED DESCRIPTOR IS THE SOURCE OF TRUTH, exactly as it is for
+           the UniVerse flavour below.  This used to SYNTHESISE the whole thing
+           from the account's directory name and a hardcoded `version = 1`, so
+           every `add -A` threw away whatever the descriptor already said: an
+           account attribute set with `GIT ATTR --set version=2` was gone on the
+           next add, silently, and `GIT ATTR` reported the old value back.
+           Both entry points did it -- measured on UniData 8.3, `udt-git add -A`
+           lost the edit too -- which is why the suite never saw it: the verb was
+           taking the NATIVE path (mv_git#135) and only the open path was wrong
+           (mv_git#139).
+           Only the name is regenerated, and only when the descriptor carries
+           none: an account renamed by ATTR keeps the name it was given. */
         snprintf(path, pcap, "%s.mv-account", pfx);
+        if (!desc_carry_open(base, path, desc, dcap))
+            mv_git_desc_open(base, "1", NULL, NULL, desc, dcap);
     } else {
 #if defined(MVXGIT_UDT)
         snprintf(desc, dcap,
@@ -1798,6 +2029,66 @@ void mvx_sub_GITFURNITURE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     free(r);
 }
 
+/* --- GITADDDISK(repo, mvfiles, out) -------------------------------------- */
+void mvx_sub_GITADDDISKFOR(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    if (argc < 3) return;
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[1], nb, sizeof nb, &p);
+    char *list = malloc((size_t)l + 1);
+    if (!list) { mv_set_str(argv[2], "", 0); return; }
+    memcpy(list, p, (size_t)l);
+    list[l] = '\0';
+    char *r = mv_git_adddisk_for(ctx, rp, list);
+    free(list);
+    mv_set_str(argv[2], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
+/* --- GITISOPEN(repo, out) --------------------------------------------- */
+void mvx_sub_GITISOPEN(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    char rp[4096];
+    arg_str(argv[0], rp, sizeof rp);
+    char *r = mv_git_is_open(rp);
+    mv_set_str(argv[1], r ? r : "0", r ? (int64_t)strlen(r) : 1);
+    free(r);
+}
+
+/* --- GITMATERIALISEACCT(dir, out) --------------------------------------- */
+void mvx_sub_GITMATERIALISEACCT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+#ifdef MVXGIT_NORECORDS
+    (void)ctx; (void)argc; (void)argv;
+#else
+    if (argc < 2) return;
+    char dir[4096];
+    arg_str(argv[0], dir, sizeof dir);
+    char *r = mv_git_materialize_account(ctx, dir);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+#endif
+}
+
+/* --- GITVOCDROP(list, out) ---------------------------------------------- */
+void mvx_sub_GITVOCDROP(mv_ctx *ctx, int32_t argc, mv_value **argv) {
+    (void)ctx;
+    if (argc < 2) return;
+    const char *p;
+    char nb[40];
+    int64_t l = mv_val_chars(argv[0], nb, sizeof nb, &p);
+    char *buf = malloc((size_t)l + 1);
+    if (!buf) { mv_set_str(argv[1], "", 0); return; }
+    memcpy(buf, p, (size_t)l);
+    buf[l] = '\0';
+    char *r = mv_git_filter_vocdrop(".git", buf);
+    free(buf);
+    mv_set_str(argv[1], r ? r : "", r ? (int64_t)strlen(r) : 0);
+    free(r);
+}
+
 /* --- GITVERSION(repo, out) ---------------------------------------------- *
  *
  * What is actually running: this build, the libgit2 it was linked against, and
@@ -1883,7 +2174,6 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        synthesised <file>.DICT/%FILE%; a native commit keeps those so it can be
        checked out into another instance of the same platform. */
     int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
-    int voc_open = is_voc && mv_openaccount();
 #ifdef MVXGIT_OPENDICT
     /* An open-account dictionary commits its D/I items in the canonical (mvx-
        shaped) open form: UniData's SM/assoc attribute order is remapped, and on
@@ -1922,6 +2212,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             mv_set_str(&id, only, (int64_t)strlen(only));
             have = mv_read(ctx, &rec, &fvar, &id, 0);
         } else {
+            backend_files_prime(ctx);   /* before the select, never inside it */
             mv_select(ctx, &fvar);
         }
         while (have) {
@@ -1933,8 +2224,6 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 const char *vp;
                 char vnb[40];
                 int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
-                int64_t f1 = 0;
-                while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
                 /* The platform classifies its own VOC type codes (they differ
                    across UniData / MVX / UniVerse): 1 = always drop (system
                    verb/keyword the target supplies), 2 = drop in the open
@@ -1945,8 +2234,12 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                    (`add VOC SORT`) is a deliberate act and overrides every one
                    of them: the user has said they want this record versioned,
                    and second-guessing that is how a tool becomes untrustworthy. */
-                int cls = mv_voc_class(vp, f1);
-                if (!one && (cls == 1 || (cls == 2 && voc_open))) {
+                int cls = voc_class_of(vp, vl);
+                /* Class 1 only -- see mv_git_filter_vocdrop().  A class-2
+                   pointer is dropped by whether its file is HERE (#131, just
+                   below), which is the question the open form was really asking
+                   and got wrong for Q, R and foreign paths (mv_git#132). */
+                if (!one && cls == 1) {
                     skipped++;
                     continue;
                 }
@@ -1966,6 +2259,24 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                         skipped++;
                         continue;
                     }
+                    /* A FILE'S OWN POINTER IS DERIVED, so it is not content in
+                       ANY form -- native as much as open.  CREATE.FILE writes
+                       it, DELETE.FILE removes it, and `<file>.DICT/%FILE%`
+                       carries the geometry a checkout needs to write it again.
+                       Committing it as well means the same fact in two places,
+                       free to disagree: a file created on one platform showed
+                       up as a pointer diff that was pure noise, and a native
+                       repository carried a pointer spelled for the platform
+                       that made it and no use anywhere else (mv_git#131).
+
+                       ONLY A FILE THIS ACCOUNT CARRIES.  mv_filelist is already
+                       exactly that question -- an F/DIR record whose data AND
+                       dict paths are bare local names, furniture excluded -- so
+                       a Q, X or R pointer is not in it and still travels.  Those
+                       name another account's file: nothing here creates them, no
+                       %FILE% describes them, and dropping one would lose real
+                       configuration on every clone (mv_git#132). */
+                    if (cls == 2 && backend_has_file(ctx, fid)) { skipped++; continue; }
                 }
                 /* Identical to what a fresh account of this flavour holds, so
                    it is the system's record and not this account's (mv_git#46).
@@ -2192,6 +2503,34 @@ static void split_top(const char *path, char *out, size_t cap);
    exactly that, which is how `M BP.O/...` survived every commit.
 
    Returns >0 to skip the path. */
+/* THE MV FILE NAMES, WHEN THE CALLER HAD TO SUPPLY THEM.
+ *
+ * The disk pass has to know which top-level names are MV FILES, so it can leave
+ * their records to the record pass instead of sweeping them up as blobs.  It
+ * asks backend_has_file() -- and on UniVerse the engine is mvgitd, built
+ * NORECORDS, where that always answers 0.  Handed the job blind it would stage
+ * every record directory as plain blobs, which is why the BASIC has never had a
+ * disk pass at all and `GIT ADD -A` in a session committed no ordinary files
+ * (mv_git#148).
+ *
+ * So the caller supplies the list, exactly as it supplies the candidates to
+ * GIT.FURNIDS and VOCDROP: BP/GIT.MASTER already walked the master file and
+ * knows the names.  Set for the duration of one disk pass and cleared after. */
+static char *g_given;           /* @AM-separated MV file names, or NULL */
+
+static int caller_has_file(mv_ctx *ctx, const char *name) {
+    if (!g_given) return backend_has_file(ctx, name);
+    size_t nl = strlen(name), n = strlen(g_given), i = 0;
+    while (i <= n) {
+        size_t st = i;
+        while (i < n && (unsigned char)g_given[i] != 0xFE) i++;
+        if (i - st == nl && memcmp(g_given + st, name, nl) == 0) return 1;
+        if (i >= n) break;
+        i++;
+    }
+    return 0;
+}
+
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
     if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
@@ -2241,14 +2580,15 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        (wrapped in & or _); the plain-file pass must skip them too, because on
        UniVerse they are real directories on disk and git would otherwise sweep
        them up. */
-    {
-        size_t tl = strlen(top);
-        if (tl >= 2 && ((top[0] == '&' && top[tl - 1] == '&') ||
-                        (top[0] == '_' && top[tl - 1] == '_')))
-            return 1;
-    }
+    /* ASKED, NOT RESTATED.  This test used to spell the &…&/_…_ shapes out
+       again, which meant the plain-file pass and the account scan carried two
+       copies of one rule -- and the catalog directories, which only the scan
+       knew about, were swept up here as ordinary blobs: `CATALOG.DICT/%FILE%`
+       reached the index from disk however carefully pass 2 left CATALOG out
+       (mv_git#130). */
+    if (mv_account_furniture(top, strlen(top))) return 1;
     /* only a path INSIDE a file is a record; the file's own entry is not */
-    if (strcmp(top, rel) != 0 && backend_has_file((mv_ctx *)payload, top))
+    if (strcmp(top, rel) != 0 && caller_has_file((mv_ctx *)payload, top))
         return 1;
     /* A FILE'S CONTROL IS NEVER TAKEN FROM DISK.  <file>.DICT/%FILE% is
        create-time metadata, and on MVX it is also an ordinary file on disk — so
@@ -2263,6 +2603,25 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        GITOPENFORM converts that to the open class.  The disk pass was only ever
        a third way to the same path, arriving last and knowing least. */
     if (is_file_control(rel)) return 1;
+    /* THE ACCOUNT DESCRIPTOR IS NOT TAKEN FROM DISK EITHER, and for the same
+       reason as the file control above: it is a versioned artefact that `add`
+       stages deliberately (STAGEDESC), and GIT ATTR edits it IN THE INDEX with
+       nothing written to the account at all.  Swept up here, the on-disk copy
+       landed on top of an edit that was already staged and the edit was gone --
+       `GIT ATTR --set version=2` then `add -A` read back 1 (mv_git#139 again,
+       through a new door: the disk pass reached the verb in mv_git#148).
+       `.mvx` IS NOT IN THE LIST, and that is the point of the list being one.
+       MVX keeps a real `.mvx` on disk carrying local state, mv_git_desc_for()
+       deliberately declines to synthesise one there ("MVX writes a real .mvx;
+       it travels as a file"), and so this pass is the ONLY thing that stages
+       it.  Excluded along with the rest, an MVX account stopped carrying its
+       descriptor at all and read dirty for ever after. */
+    {
+        static const char *const desc[] = {
+            ".mv-account", ".udt", ".uv", ".jbase", NULL };
+        for (const char *const *d = desc; *d; d++)
+            if (strcmp(rel, *d) == 0) return 1;
+    }
     return 0;
 }
 
@@ -2507,6 +2866,56 @@ int mv_git_desc_open(const char *name, const char *version,
     if (hash)        snprintf(d.hash, sizeof d.hash, "%s", hash);
     d.openaccount = 1;
     return desc_render_open(&d, out, cap);
+}
+
+/* The committed `.mv-account`, re-rendered so an add carries it FORWARD instead
+   of replacing it.  0 when there is nothing committed yet (the first add), and
+   the caller synthesises a fresh one.
+   Reads HEAD, not the working tree: the descriptor's home in the open form IS
+   the git objects, which is what makes GIT ATTR able to edit it at all. */
+static int desc_carry_open(const char *base, const char *path,
+                           char *out, size_t cap) {
+    ensure_init();
+    git_repository *r = NULL;
+    if (git_repository_open(&r, ".git") != 0) return 0;
+
+    /* THE INDEX FIRST, then HEAD.  `GIT ATTR --set` STAGES the edited
+       descriptor; nothing commits in between, so an add that consulted only
+       HEAD read the value from before the edit and wrote it straight back over
+       the staged one.  Which is the whole bug: the edit was still sitting in the
+       index, and the add replaced it (mv_git#139). */
+    const git_oid *oid = NULL;
+    git_index *ix = NULL;
+    git_oid staged;
+    if (git_repository_index(&ix, r) == 0) {
+        const git_index_entry *e = git_index_get_bypath(ix, path, 0);
+        if (e) { git_oid_cpy(&staged, &e->id); oid = &staged; }
+    }
+    git_tree *t = NULL;
+    git_tree_entry *te = NULL;
+    git_oid committed;
+    if (!oid && (t = head_tree(r)) != NULL &&
+        git_tree_entry_bypath(&te, t, path) == 0) {
+        git_oid_cpy(&committed, git_tree_entry_id(te));
+        oid = &committed;
+    }
+
+    int done = 0;
+    git_blob *b = NULL;
+    if (oid && git_blob_lookup(&b, r, oid) == 0) {
+        acct_desc d;
+        desc_parse(git_blob_rawcontent(b), (size_t)git_blob_rawsize(b), &d);
+        if (!d.name[0] && base) snprintf(d.name, sizeof d.name, "%s", base);
+        d.openaccount = 1;              /* staging the open form says so */
+        desc_render_open(&d, out, cap);
+        done = 1;
+        git_blob_free(b);
+    }
+    if (te) git_tree_entry_free(te);
+    if (t)  git_tree_free(t);
+    if (ix) git_index_free(ix);
+    git_repository_free(r);
+    return done;
 }
 
 /* Public: adopt a descriptor onto this platform — see mvxgit.h for why this is a
@@ -2884,6 +3293,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         snprintf(p, sizeof p, "%s/%s", acct, n);
         if (stat(p, &sb) != 0 || !S_ISDIR(sb.st_mode)) continue;
         if (!addall_is_mv_file(acct, n)) continue;
+        if (mv_account_furniture(n, strlen(n))) continue;
         if (git_path_ignored(repo, n)) continue;
         const char *a[] = {rp, n, ""};
         addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -2923,6 +3333,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     }
                 }
                 if (!is_obj && !addall_was_seen(&seen, name) &&
+                    !mv_account_furniture(name, strlen(name)) &&
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
@@ -3300,6 +3711,24 @@ static void split_top(const char *path, char *top, size_t cap) {
 static nameset g_bfiles;
 static int g_bfiles_done;
 
+/* Fill the file-list memo NOW, while no select of ours is in flight.
+ *
+ * backend_has_file() answers from a cached list, but building that list means
+ * mv_filelist(), and on UniData mv_filelist() runs its own SELECT over VOC.
+ * Called from INSIDE a record loop, that second select CLOBBERS the one the
+ * loop is reading -- READNEXT stops early, and the add walks off the end of the
+ * file having staged almost nothing.  It is silent: no error, and the "ignored"
+ * count looks plausible because the records that were never reached are never
+ * counted either.  Measured on UniData 8.3, `add VOC` on an account with two of
+ * the user's own records: 2 staged / 616 ignored before, 0 staged / 20 ignored
+ * after (mv_git#131).
+ *
+ * So every walk primes the memo before it selects.  Cheap: one enumeration per
+ * process, which the walk was going to need anyway. */
+static void backend_files_prime(mv_ctx *ctx) {
+    (void)backend_has_file(ctx, "");
+}
+
 static int backend_has_file(mv_ctx *ctx, const char *name) {
 #ifdef MVXGIT_NORECORDS
     (void)ctx; (void)name;
@@ -3550,7 +3979,6 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                records (keywords and verbs the destination supplies its own copies
                of), add dropped every one, and status listed every one. */
             int is_voc = strcasecmp(fn, "VOC") == 0 || strcasecmp(fn, "MD") == 0;
-            int voc_open = is_voc && mv_openaccount();
             mv_select(ctx, &fvar);
             while (mv_readnext(ctx, &id)) {
                 if (!mv_read(ctx, &rec, &fvar, &id, 0)) continue;
@@ -3560,10 +3988,38 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     const char *vp;
                     char vnb[40];
                     int64_t vl = mv_val_chars(&rec, vnb, sizeof vnb, &vp);
-                    int64_t f1 = 0;
-                    while (f1 < vl && (unsigned char)vp[f1] != 0xFE) f1++;
-                    int cls = mv_voc_class(vp, f1);
-                    if (cls == 1 || (cls == 2 && voc_open)) continue;
+                    int cls = voc_class_of(vp, vl);
+                    if (cls == 1) continue;      /* mv_git#132, as add */
+                    /* A POINTER TO FURNITURE IS FURNITURE, and `add` has always
+                       known that (mv_git#78) -- this side did not.  So in a
+                       NATIVE account, where the class-2 skip just above does not
+                       fire, status named every one of them: `?? VOC/bin`,
+                       `?? VOC/LIB`, `?? VOC/_HOLD_`, for files no add will ever
+                       stage.  Untracked forever, and no commit could clear it --
+                       the same shape of bug as #51 and #95, and the reason the
+                       two sides are supposed to ask the same questions in the
+                       same order (mv_git#130). */
+                    if (cls == 2 && mv_account_furniture(idb, strlen(idb)))
+                        continue;
+                    /* A FILE'S OWN POINTER IS DERIVED, so it is not content in
+                       ANY form -- native as much as open.  CREATE.FILE writes
+                       it, DELETE.FILE removes it, and `<file>.DICT/%FILE%`
+                       carries the geometry a checkout needs to write it again.
+                       Committing it as well means the same fact in two places,
+                       free to disagree: a file created on one platform showed
+                       up as a pointer diff that was pure noise, and a native
+                       repository carried a pointer spelled for the platform
+                       that made it and no use anywhere else (mv_git#131).
+
+                       ONLY A FILE THIS ACCOUNT CARRIES.  mv_filelist is already
+                       exactly that question -- an F/DIR record whose data AND
+                       dict paths are bare local names, furniture excluded -- so
+                       a Q, X or R pointer is not in it and still travels.  Those
+                       name another account's file: nothing here creates them, no
+                       %FILE% describes them, and dropping one would lose real
+                       configuration on every clone (mv_git#132). */
+                    if (cls == 2 && backend_has_file(ctx, idb)) continue;
+
                     /* An object FILE is not committed, so neither is its VOC
                        pointer — and reporting the pointer would leave it
                        untracked forever, since no add will ever stage it. */
@@ -6244,6 +6700,17 @@ char *mv_git_catpath_len(mv_ctx *ctx, const char *repo, const char *path,
     const char *a[] = {repo, path};
     return run_sub_len(mvx_sub_GITCAT, ctx, a, 2, outlen);
 }
+/* The disk pass with the MV file names supplied, for a caller whose engine
+   cannot enumerate them itself (mv_git#148).  An empty list means "ask the
+   backend", so this is also just mv_git_adddisk with a hint. */
+char *mv_git_adddisk_for(mv_ctx *ctx, const char *repo, const char *mvfiles) {
+    g_given = (mvfiles && mvfiles[0]) ? strdup(mvfiles) : NULL;
+    char *r = mv_git_adddisk(ctx, repo);
+    free(g_given);
+    g_given = NULL;
+    return r;
+}
+
 char *mv_git_adddisk(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITADDDISK, ctx, a, 1);
@@ -6256,6 +6723,66 @@ char *mv_git_materialize(mv_ctx *ctx, const char *repo) {
     const char *a[] = {repo};
     return run_sub(mvx_sub_GITMATERIALIZE, ctx, a, 1);
 }
+
+#ifndef MVXGIT_NORECORDS
+/* Turn a fresh clone into a live ACCOUNT: its records out of the git objects,
+ * then BUILD to provision it -- catalogue BP, link packages, write the native
+ * descriptor.
+ *
+ * HERE, not in the CLI, because both ways in need it and only one of them had
+ * it.  `mvx-git clone` materialised; `GIT CLONE` at the TCL prompt called the
+ * engine's PLAIN clone and stopped, so it left a directory of checked-out
+ * open-form files with no account in it -- no VOC, no descriptor, and the next
+ * verb run there failed.  The comment on that arm claimed "MVX materialises
+ * straight from the git objects", which is exactly what was missing (mv_git#138).
+ *
+ * The UniVerse and UniData arms hand the whole job to their CLI instead, and
+ * say why: a SESSION cannot create an account there, because the account is
+ * born by running the platform binary in an empty directory.  On MVX it can --
+ * the session IS mvx -- so it does it in process, and no shell is involved.
+ * That matters beyond tidiness: SH is behind the runtime privilege gate, so
+ * shelling out would have taken CLONE away from exactly the restricted user the
+ * in-session verb exists to serve.
+ *
+ * BUILD is a VERB, so it is spawned rather than called -- the same `mvx -a <dir>
+ * -c BUILD` the CLI used, with MVXPRIV=developer because provisioning compiles
+ * and catalogues BP.  Not the SH gate: this is the engine running the runtime,
+ * not a user reaching the shell.
+ *
+ * Interactive index rebuilding stays in the CLI (it asks a question, and a verb
+ * has no terminal to ask on); everything above it is shared, so the two entry
+ * points cannot drift about what a clone IS. */
+char *mv_git_materialize_account(mv_ctx *ctx, const char *dir) {
+    char cwd0[PATH_MAX];
+    if (!getcwd(cwd0, sizeof cwd0)) cwd0[0] = '\0';
+    if (!dir || !dir[0] || chdir(dir) != 0)
+        return strdup("cannot enter the cloned directory");
+
+    setenv("MVXACCOUNT", ".", 1);
+    /* The open-account opt-in was written into this clone's config by the clone
+       itself; the engine reads it from the environment, and materialise is where
+       the open form is translated back -- the record-key item's name among it
+       (mv_git#96).  Without this the flag is set and unread. */
+    openaccount_sync(".git");
+    free(mv_git_materialize(ctx, ".git"));
+
+    const char *mvx = getenv("MVX");
+    if (!mvx || !mvx[0]) mvx = "mvx";
+    setenv("MVXPRIV", "developer", 1);          /* BUILD catalogues BP */
+    pid_t pid = fork();
+    if (pid == 0) {
+        char *bargv[] = {(char *)mvx, "-a", ".", "-c", "BUILD", NULL};
+        execvp(bargv[0], bargv);
+        _exit(127);
+    }
+    if (pid > 0) {
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+    }
+    if (cwd0[0] && chdir(cwd0) != 0) { /* best effort */ }
+    return strdup("");
+}
+#endif
 /* Materialise a given tree-ish rather than HEAD -- see GITMATERIALIZE. */
 char *mv_git_materialize_rev(mv_ctx *ctx, const char *repo, const char *rev) {
     const char *a[] = {repo, rev};

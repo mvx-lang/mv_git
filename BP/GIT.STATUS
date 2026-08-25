@@ -152,20 +152,7 @@ UNTRACKED:
 *  reporting them would leave them untracked forever — the same rule every
 *  other exclusion here follows.
    IGL = ""
-   CALL GIT.OSFILE("READ", @PATH : "/GITIGNORE", IGL, IGOK)
-   IF NOT(IGOK) THEN IGL = ""
-   CONVERT LF TO AM IN IGL
-*  And git's OWN .gitignore, which is a separate list from the account's bulk
-*  GIT IGNORE one and is what an ordinary user reaches for first.  Full
-*  gitignore semantics live in the engine (libgit2); this honours the plain
-*  forms — an exact path, a file name, a trailing "*" — which is what the
-*  records path actually uses.
-   IGL2 = ""
-   CALL GIT.OSFILE("READ", @PATH : "/.gitignore", IGL2, IG2OK)
-   IF IG2OK AND IGL2 # "" THEN
-      CONVERT LF TO AM IN IGL2
-      IF IGL = "" THEN IGL = IGL2 ELSE IGL := AM : IGL2
-   END
+   CALL GIT.IGNORES(IGL)
    SPATH = ""
    CALL GIT.STOCK(REPO, SPATH)
    USTK = 0
@@ -179,6 +166,12 @@ UNTRACKED:
          OPEN "%GITSTOCK%" TO USTKF THEN USTK = 1
       END
    END
+*  The files this account CARRIES -- which is not UFILES.  UFILES comes from the
+*  index, so it is what git already tracks; a file created but not yet committed
+*  is absent from it, and so is BP.O, whose records are never staged at all.
+*  Asked of the index, both looked like "not a file here" (mv_git#131).
+   UOWNF = "" ; UOWNID = "" ; UOWNFN = "" ; UTYPED = ""
+   CALL GIT.MASTER(REPO, UOWNF, UOWNID, UOWNFN, UTYPED)
    NU = DCOUNT(UFILES, AM)
    FOR U = 1 TO NU
       FN = UFILES<U>
@@ -206,34 +199,51 @@ UNTRACKED:
 *              reporting it would leave it untracked forever.  UniVerse VOCs
 *              really do carry one: a record whose id is "/".
                IF URID = "" OR INDEX(URID, "/", 1) > 0 THEN UDROP = 1
-               NIG = DCOUNT(IGL, AM)
-               FOR G = 1 TO NIG
-                  GP = TRIM(IGL<G>)
-                  IF GP # "" THEN
-*                    Exact path, bare file name, or a "FILE/" prefix — the
-*                    forms the list actually holds.  Not fnmatch: BASIC has no
-*                    pattern matcher, and the engine applies the full rules on
-*                    its own paths.
-                     IF GP = UPATH OR GP = FN THEN UDROP = 1
-                     GL = LEN(GP)
-                     IF GP[GL,1] = "*" THEN
-                        IF UPATH[1, GL-1] = GP[1, GL-1] THEN UDROP = 1
-                     END
-                  END
-               NEXT G
+*              The matcher is GIT.IGNORED's, and `add` uses the same one --
+*              it used to have none at all (mv_git#133).
+               IF NOT(UDROP) THEN
+                  IGHIT = 0
+                  CALL GIT.IGNORED(IGL, UPATH, FN, IGHIT)
+                  IF IGHIT THEN UDROP = 1
+               END
                IF URID[1,1] = "_" THEN
                   READ UOBJ FROM RV, URID[2, LEN(URID)] THEN UDROP = 1
+               END
+*              WHAT THE TYPE SAYS, from the same GIT.MASTER answer `add` used.
+*              add drops a class-1 record -- a verb or keyword the destination
+*              supplies its own copy of -- in EVERY form, which is what the
+*              engine has always done; this side had no type test at all, so on
+*              a native UniVerse account every one came back `?? VOC/ARE`,
+*              `?? VOC/DF.MODIFY`, `?? VOC/VOC.CACHE`.  Untracked for ever
+*              (mv_git#51 again, #133).
+               IF NOT(UDROP) AND UISVOC AND UTYPED # "" THEN
+                  LOCATE(URID, UTYPED; UTDPOS) THEN UDROP = 1
                END
                IF NOT(UDROP) AND UISVOC AND UFURN # "" THEN
                   LOCATE(URID, UFURN; UFPOS) THEN UDROP = 1
                END
+*              A FILE'S OWN POINTER IS DERIVED and `add` no longer stages it in
+*              any form (mv_git#131) -- so status must not report it either, or
+*              every account is untracked for ever with nothing that can clear
+*              it.  The two sides ask the same question in the same order, which
+*              is the whole reason they are written beside each other: every time
+*              they have drifted the result was this same bug (#51, #95, #108).
+*
+*              UFILES is already only the account's OWN files, so a Q, X or R
+*              pointer is not in it and is still reported (mv_git#132).
+               IF NOT(UDROP) AND UISVOC AND UOWNID # "" THEN
+                  LOCATE(URID, UOWNID; UFLPOS) THEN UDROP = 1
+               END
                IF NOT(UDROP) AND USTK AND UISVOC THEN
                   READ USREC FROM USTKF, URID THEN UDROP = 1
                END
+*              A record that cannot be READ is not reportable; a record that
+*              merely CONTAINS a NUL is the user's, and used to be dropped here
+*              on a guess.  Objects are excluded by NAME now -- `_PROG` beside
+*              `PROG`, and a whole <X>.O file -- so the guess bought nothing and
+*              cost real records (mv_git#145).
                IF NOT(UDROP) THEN
-                  READ UREC FROM RV, URID THEN
-                     IF INDEX(UREC, CHAR(0), 1) > 0 THEN UDROP = 1
-                  END ELSE UDROP = 1
+                  READ UREC FROM RV, URID ELSE UDROP = 1
                END
                IF NOT(UDROP) THEN
                   PRINT "?? " : UPATH
