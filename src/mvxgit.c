@@ -744,8 +744,17 @@ static int dict_of_open_account(const char *fn) {
     return l > 5 && strcmp(fn + l - 5, ".DICT") == 0 && mv_openaccount();
 }
 
+static const char *local_to_tree(const char *fn, char *buf, size_t cap);
+
 static void record_path(char *out, size_t cap, const char *fn, const char *id) {
-    snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
+    /* The one place a LOCAL file name becomes a GIT path, so the one place the
+       master file's name is translated: an open jBASE account commits its MD
+       records under VOC, because VOC is the portable spelling and another
+       platform has to be able to read them.  A native account keeps MD
+       (local_to_tree is the identity when openaccount is off). */
+    char tbuf[320];
+    const char *tfn = local_to_tree(fn, tbuf, sizeof tbuf);
+    snprintf(out, cap, "%s%s/%s", g_prefix, tfn, id);
 }
 
 #ifdef MVXGIT_OPENDICT
@@ -1841,6 +1850,48 @@ static const char *voc_local_name(void) {
 }
 
 const char *mv_git_voc_local_name(void) { return voc_local_name(); }
+
+/* The two directions of that name, for a whole file or its dictionary.
+ *
+ * git always says VOC; the account says whatever the platform calls it.  On
+ * every platform but jBASE these are the identity, which is why nothing needed
+ * them until now -- MVX, UniData and UniVerse all agree on VOC, so the first
+ * disagreement is also the first time the translation exists at all.
+ *
+ * `VOC` <-> `MD`, and `VOC.DICT` <-> `MD.DICT`: the dictionary travels under
+ * the same portable stem as its file, so the suffix is preserved rather than
+ * translated into the platform's own dictionary spelling (jBASE's `MD]D` is a
+ * NATIVE detail, and the open form never carries native detail). */
+static const char *tree_to_local(const char *fn, char *buf, size_t cap) {
+    const char *loc = voc_local_name();
+    if (!strcmp(loc, "VOC")) return fn;                 /* identity */
+    /* ONLY in the open form.  A native jBASE account commits its MD as MD --
+       native means native, the same way the descriptor is `.jbase` there and
+       `.mv-account` only when the account is open.  Turning openaccount on is
+       what renames it to VOC, because VOC is the portable spelling and the
+       whole point of the open form is that another platform can read it. */
+    if (!mv_openaccount()) return fn;
+    if (strcasecmp(fn, "VOC") == 0) { snprintf(buf, cap, "%s", loc); return buf; }
+    if (strcasecmp(fn, "VOC.DICT") == 0) {
+        snprintf(buf, cap, "%s.DICT", loc);
+        return buf;
+    }
+    return fn;
+}
+
+static const char *local_to_tree(const char *fn, char *buf, size_t cap) {
+    const char *loc = voc_local_name();
+    if (!strcmp(loc, "VOC")) return fn;                 /* identity */
+    if (!mv_openaccount()) return fn;                   /* native keeps MD */
+    size_t ll = strlen(loc);
+    if (strcasecmp(fn, loc) == 0) { snprintf(buf, cap, "VOC"); return buf; }
+    if (strlen(fn) == ll + 5 && strncasecmp(fn, loc, ll) == 0 &&
+        strcasecmp(fn + ll, ".DICT") == 0) {
+        snprintf(buf, cap, "VOC.DICT");
+        return buf;
+    }
+    return fn;
+}
 
 const char *mv_git_desc_native_name(void) { return desc_native_name(); }
 
@@ -5143,7 +5194,11 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
            dictionary in git still gets created. */
         mv_value spec;
         mv_init(&spec);
-        mv_set_str(&spec, base, (int64_t)strlen(base));
+        /* The tree says VOC; the account may call it something else.  A
+           checkout onto jBASE therefore creates MD, not a VOC directory. */
+        char lbuf[320];
+        const char *lbase = tree_to_local(base, lbuf, sizeof lbuf);
+        mv_set_str(&spec, lbase, (int64_t)strlen(lbase));
         if (type[0]) {
             mv_value tv;
             mv_init(&tv);
@@ -5155,7 +5210,9 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         }
         mv_clear(&spec);
     }
-    if (!open_named(ctx, fn, &fvar)) {
+    char lfbuf[320];
+    const char *lfn = tree_to_local(fn, lfbuf, sizeof lfbuf);
+    if (!open_named(ctx, lfn, &fvar)) {
         mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
         return;
     }
