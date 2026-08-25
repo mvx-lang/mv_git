@@ -743,6 +743,42 @@ version = 1
 fi
 
 # --- several accounts in one repository (mv_git#44) --------------------------
+say "-- a wholesale add reaches EVERY master-file record (mv_git#131) --"
+# THE WHOLE FILE, not the first few.  backend_has_file() answers from a cached
+# file list, and building that list means a SELECT of its own -- so asked lazily
+# from inside this loop it clobbered the select the loop was reading, READNEXT
+# stopped early, and `add` walked off the end having staged almost nothing.
+#
+# Silent, and that is why it needs its own test: no error, and the "ignored"
+# count still looked plausible because records never reached are never counted
+# either.  Measured on UniData 8.3, `udt-git add VOC` on an account holding two
+# records of the user's own: "2 staged / 616 ignored" became "0 staged / 20
+# ignored", and the suite stayed green.
+#
+# ITS OWN ACCOUNT, and a COUNT rather than a sample.  The walk stops at the
+# first pointer it has to ask about, so how much survives depends on where the
+# hash happens to put things -- in the shared account these same records landed
+# early and every sampled assertion passed while the file WAS being cut off.
+# Thirty records and an exact count is the assertion that cannot be lucky.
+#
+# THROUGH THE CLI, deliberately: the verb and the CLI walk the master file with
+# different code -- the verb's loop is in BP/GIT.ADD, the CLI's is the engine's
+# -- and this bug was in the engine's.  The udt arm drives the verb everywhere
+# else, which is exactly why nothing saw it.
+MF="$WORK/mfwalk"; ACCT "$MF"; LINK "$MF"
+SEED "$MF" 'OPEN "VOC" TO V ELSE STOP
+P = ""
+P<1> = "PA"
+P<2> = "HELLO"
+FOR I = 1 TO 30
+   WRITE P ON V, "MYPARA":I
+NEXT I'
+( cd "$MF" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add VOC >/dev/null 2>&1 )
+te "all thirty of the account's own master-file records travel" "30" \
+   "$( cd "$MF" && git diff --cached --name-only | grep -c '^VOC/MYPARA' )"
+
 say "-- a file's own pointer is derived, not content (mv_git#131) --"
 # CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
 # <file>.DICT/%FILE% carries the geometry to write it again -- so committing the

@@ -914,6 +914,7 @@ static int record_is_object(mv_ctx *ctx, mv_value *fvar, const char *idb,
    about a VOC pointer's target long before the file-enumeration helpers are
    defined (mv_git#131). */
 static int backend_has_file(mv_ctx *ctx, const char *name);
+static void backend_files_prime(mv_ctx *ctx);
 
 static int is_provision_pointer(const char *file, const char *id) {
     if (strcasecmp(id, "CATALOG") != 0) return 0;
@@ -2081,6 +2082,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             mv_set_str(&id, only, (int64_t)strlen(only));
             have = mv_read(ctx, &rec, &fvar, &id, 0);
         } else {
+            backend_files_prime(ctx);   /* before the select, never inside it */
             mv_select(ctx, &fvar);
         }
         while (have) {
@@ -3479,6 +3481,24 @@ static void split_top(const char *path, char *top, size_t cap) {
  * hence the guard rather than a call that would abort. */
 static nameset g_bfiles;
 static int g_bfiles_done;
+
+/* Fill the file-list memo NOW, while no select of ours is in flight.
+ *
+ * backend_has_file() answers from a cached list, but building that list means
+ * mv_filelist(), and on UniData mv_filelist() runs its own SELECT over VOC.
+ * Called from INSIDE a record loop, that second select CLOBBERS the one the
+ * loop is reading -- READNEXT stops early, and the add walks off the end of the
+ * file having staged almost nothing.  It is silent: no error, and the "ignored"
+ * count looks plausible because the records that were never reached are never
+ * counted either.  Measured on UniData 8.3, `add VOC` on an account with two of
+ * the user's own records: 2 staged / 616 ignored before, 0 staged / 20 ignored
+ * after (mv_git#131).
+ *
+ * So every walk primes the memo before it selects.  Cheap: one enumeration per
+ * process, which the walk was going to need anyway. */
+static void backend_files_prime(mv_ctx *ctx) {
+    (void)backend_has_file(ctx, "");
+}
 
 static int backend_has_file(mv_ctx *ctx, const char *name) {
 #ifdef MVXGIT_NORECORDS
