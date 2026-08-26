@@ -469,6 +469,31 @@ te "a fresh account stages none of the platform's own dictionary records" "0" \
    "$( cd "$EMPTY" && git diff --cached --name-only \
         | grep -ciE "^$MASTER\.DICT/f[0-9]+$" )"
 
+# --- structural: a $IFDEF without the include is silently false ------------
+#
+# $IFDEF tests a symbol the PREPROCESSOR knows, and PLATFORM.H is where the
+# build declares them.  A source that says $IFDEF ENGINE without including it
+# does not fail -- it compiles the $ELSE arm, quietly, on every platform.
+#
+# That is exactly how mv_git#179 happened.  mvx-basic PREDEFINES MVX and ENGINE
+# (compiler/src/main.cpp), so fifteen handlers took the engine branch on MVX by
+# accident of the compiler and the $ELSE branch everywhere else.  On UniData and
+# UniVerse $ELSE is the right answer, so nothing looked wrong for a year; jBASE
+# is the first platform where ENGINE comes only from PLATFORM.H, and there all
+# fifteen dispatched into GIT.OBJ, which answered "unknown git-object
+# operation" for ops it never had arms for.
+#
+# A grep is a poor test of behaviour but the right test of THIS: the failure is
+# invisible at runtime on three platforms out of four.
+say "-- structural: every \$IFDEF has PLATFORM.H to read --"
+missing=""
+for f in "$GITPKG"/BP/*; do
+    [ -f "$f" ] || continue
+    grep -q '\$IFDEF' "$f" || continue
+    grep -q 'INCLUDE BP.INC PLATFORM.H' "$f" || missing="$missing $(basename "$f")"
+done
+te "no source tests a symbol it never included" "" "$missing"
+
 say "-- lifecycle: init / config / add -A / status / commit / log --"
 t  "init"        "repository"        "$(GITV "$A" GIT INIT)"
 GITV "$A" GIT CONFIG user.name Test >/dev/null

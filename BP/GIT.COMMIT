@@ -12,6 +12,7 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.COMMIT
+$INCLUDE BP.INC PLATFORM.H
 * the message is decoded by the cmd dispatch (GIT.CMD.FLAG "m"/"message"); read it.
 CALL GIT.CMD.VAL("m", MSG)
 IF MSG = "" THEN

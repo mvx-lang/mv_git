@@ -12,6 +12,7 @@
 *  * @version 1.0
 *  */
 SUBROUTINE GIT.TAG
+$INCLUDE BP.INC PLATFORM.H
 * GIT TAG                     list tags
 * GIT TAG name {commit}       lightweight tag at commit (HEAD if omitted)
 * GIT TAG -a name -m message  annotated tag at HEAD
