@@ -1,0 +1,7 @@
+# Verbs this package registers.  One name per line.
+#
+# The VOC record (V + CATALOG/<name>) is DERIVED from this at build time by
+# mkpkg.sh (mvx#136), so it is not tracked here.  Which programs are verbs
+# cannot be inferred -- every non-SUBROUTINE source compiles to CATALOG/, but
+# GIT.AGENT, GIT.REGACCT and GIT.SETUP are not commands anyone should type.
+GIT
