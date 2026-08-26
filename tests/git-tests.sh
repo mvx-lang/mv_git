@@ -19,6 +19,12 @@
 # Exit non-zero if any assertion fails.
 set -u
 PLATFORM="${PLATFORM:-mvx}"
+# THE ACCOUNT'S OWN MASTER FILE, under the name the platform uses for it.
+# Every MV system calls it VOC except jBASE, which calls it MD -- and there is
+# no VOC there to open, so a test that hardcodes "VOC" writes nothing at all and
+# then reports that nothing travelled (mv_git#114).
+MASTER=VOC
+[ "$PLATFORM" = jbase ] && MASTER=MD
 UDT_NEWACCT="${UDT_NEWACCT:-${UDTHOME:-/usr/ud83}/bin/newacct}"
 SKIP_NET="${SKIP_NET:-0}"
 : "${MVX:?set MVX to the runtime (mvx)}"
@@ -1284,18 +1290,18 @@ say "-- a wholesale add reaches EVERY master-file record (mv_git#131) --"
 # -- and this bug was in the engine's.  The udt arm drives the verb everywhere
 # else, which is exactly why nothing saw it.
 MF="$WORK/mfwalk"; ACCT "$MF"; LINK "$MF"
-SEED "$MF" 'OPEN "VOC" TO V ELSE STOP
-P = ""
-P<1> = "PA"
-P<2> = "HELLO"
+SEED "$MF" "OPEN \"$MASTER\" TO V ELSE STOP
+P = \"\"
+P<1> = \"PA\"
+P<2> = \"HELLO\"
 FOR I = 1 TO 30
-   WRITE P ON V, "MYPARA":I
-NEXT I'
+   WRITE P ON V, \"MYPARA\":I
+NEXT I"
 ( cd "$MF" && git init -q . >/dev/null 2>&1
   "$MVXGIT" init >/dev/null 2>&1
-  "$MVXGIT" add VOC >/dev/null 2>&1 )
+  "$MVXGIT" add "$MASTER" >/dev/null 2>&1 )
 te "all thirty of the account's own master-file records travel" "30" \
-   "$( cd "$MF" && git diff --cached --name-only | grep -c '^VOC/MYPARA' )"
+   "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
 say "-- a file's own pointer is derived, not content (mv_git#131) --"
 # CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
