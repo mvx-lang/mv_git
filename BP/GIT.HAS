@@ -12,11 +12,12 @@
 * when mvpkg is present defer to the real MVPKG.HAS for the per-package answer.
 * Lets GIT pick an installed cmd over its bundled GIT.CMD.* with no catalog games.
 SUBROUTINE GIT.HAS(NAME, FOUND)
+$INCLUDE BP.INC PLATFORM.H
 COMMON /GITENV/ MVPK
 FOUND = 0
 IF MVPK = "" THEN
    MVPK = "0"
-   OPEN "VOC" TO GHVOC THEN
+   OPEN MVMASTER TO GHVOC THEN
       READ GHREC FROM GHVOC, "MVPKG.LOCK" THEN MVPK = "1"
    END
 END

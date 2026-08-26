@@ -113,7 +113,7 @@ UNTRACKED:
 *  read clean (mv_git#78).
    UFURN = ""
    UCAND = ""
-   OPEN "VOC" TO UVOCF THEN
+   OPEN MVMASTER TO UVOCF THEN
 *     The same spelling as the select below, which is the one all three
 *     compilers take — a bare SELECT with LOOP WHILE READNEXT does not.
       UVLIST = ""
@@ -161,7 +161,7 @@ UNTRACKED:
    CALL GIT.STOCK(REPO, SPATH)
    USTK = 0
    IF SPATH # "" THEN
-      OPEN "VOC" TO UVOC THEN
+      OPEN MVMASTER TO UVOC THEN
          USP = ""
          USP<1> = "F"
          USP<2> = FIELD(SPATH, CHAR(254), 1)

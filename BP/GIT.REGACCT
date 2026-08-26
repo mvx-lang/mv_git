@@ -29,7 +29,7 @@ $IFDEF UDT
       END
       UDH = GETENV("UDTHOME")
       IF UDH = "" THEN UDH = "/usr/ud83"
-      OPEN "VOC" TO V ELSE
+      OPEN MVMASTER TO V ELSE
          PRINT "cannot open VOC"
          STOP
       END

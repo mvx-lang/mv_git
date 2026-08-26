@@ -147,7 +147,7 @@
 *        Already inside the UDT branch — a nested IFDEF would close it early.
          UH = GETENV("UDTHOME")
          IF UH # "" THEN
-            OPEN "VOC" TO SVOC THEN
+            OPEN MVMASTER TO SVOC THEN
                SP = ""
                SP<1> = "F"
                SP<2> = UH : "/sys/VOC"

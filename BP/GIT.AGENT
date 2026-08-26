@@ -383,7 +383,7 @@ DO.READNEXT:
 *     when it is F or DIR and both its data and dictionary paths resolve inside
 *     this account, so a Q-pointer to another account is never followed.
 DO.FILELIST:
-      OPEN "VOC" TO VOCF ELSE
+      OPEN MVMASTER TO VOCF ELSE
          STATUS = 5 ; RESULT = "no VOC"
          RETURN
       END

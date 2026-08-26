@@ -97,7 +97,7 @@ CALL GIT.REPO(REPO)
 *     arm left it 0 -- it is only ever set inside the account walk -- so even
 *     with WHOLE on, `GIT ADD VOC` skipped every one of them for the very file
 *     they exist for (mv_git#141).
-      FILE = ARG3 ; ISVOC = (ARG3 = "VOC") ; NSTAGED = 0 ; BLANKET = 0
+      FILE = ARG3 ; ISVOC = (ARG3 = MVMASTER) ; NSTAGED = 0 ; BLANKET = 0
 *     NAMING A FILE IS NOT NAMING A RECORD.  `GIT ADD VOC` used to turn every
 *     wholesale exclusion off, so it staged the furniture, the stock records and
 *     the derived pointers that `GIT ADD -A` drops -- while the ENGINE draws the
@@ -126,9 +126,9 @@ CALL GIT.REPO(REPO)
 *        the account walk opened.  Reached from here it wrote to an unopened
 *        file variable and UniData took the whole verb down with
 *        "Can not access unopened file" (mv_git#141).
-         OPEN "VOC" TO VOCF ELSE
-            OPEN "MD" TO VOCF ELSE WHOLE = 0
-         END
+*        MVMASTER knows the name (mvx#142), so the old VOC-then-MD guess is
+*        gone with it.
+         OPEN MVMASTER TO VOCF ELSE WHOLE = 0
       END
 *     A NAMED RECORD stages just that record.  This arm ignored the id entirely
 *     and staged the whole file — `GIT ADD VOC ZZPULL` reported "617 record(s)
@@ -216,7 +216,7 @@ ADDALL:
 *  The master file is still opened here: STOCKOPEN writes its %GITSTOCK%
 *  pointer into it, and an account with no master file is broken rather than
 *  empty -- so that stays a reported error and not a quiet zero-file add.
-   OPEN "VOC" TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
+   OPEN MVMASTER TO VOCF ELSE PRINT "GIT: no VOC" ; RETURN
    FILES = "" ; FILEIDS = "" ; FURNIDS = "" ; TYPEDROP = ""
    CALL GIT.MASTER(REPO, FILES, FILEIDS, FURNIDS, TYPEDROP)
 *  THE ORDINARY FILES -- a README, notes, a script, .gitignore itself.  This
@@ -234,7 +234,7 @@ ADDALL:
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
       FTYPE = FIELD(FILES<K>, VM, 2)
-      ISVOC = (FILE = "VOC")
+      ISVOC = (FILE = MVMASTER)
       GOSUB STAGEDATA
       GOSUB STAGEDICT
 *     %FILE% ON EVERY ADD, native as well as open.

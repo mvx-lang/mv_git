@@ -54,7 +54,7 @@ $IFDEF JBASE
       IF BPFILE = "GIT.BP" THEN BPFILE = "BP"
       PKGACC = BPFILE
 $ELSE
-      OPEN "VOC" TO VOCF ELSE
+      OPEN MVMASTER TO VOCF ELSE
          PRINT "cannot open VOC"
          STOP
       END
