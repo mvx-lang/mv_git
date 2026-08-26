@@ -1230,7 +1230,7 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
     return 0;
 }
 
-#if defined(MVXGIT_UDT)
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
 /* UniData supplies its baseline as a FILE, so nothing has to be stood up.
  *
  * `newacct` copies the master VOC into the new account verbatim — its own
@@ -1252,6 +1252,7 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
  * engine takes a supplied file rather than knowing about either. */
 #define STOCK_PTR "%GITSTOCK%"
 
+#if defined(MVXGIT_UDT)
 static int stock_build_udt(mv_ctx *ctx, const char *master, const char *mdict,
                            const char *out) {
     mv_value voc, ptr, id, rec, stk;
@@ -1300,17 +1301,68 @@ done:
     return n;
 }
 
+#endif  /* MVXGIT_UDT: the pointer dance is UniData's alone */
+
+#if defined(MVXGIT_JBASE)
+/* jBASE supplies its baseline as a file too -- $JBCRELEASEDIR/src/MD]D, 240
+   records -- and unlike UniData it needs no pointer to reach it: JediOpen takes
+   a PATH, so the template opens directly.  Verified on 6.2.1.1: OPEN of that
+   path answers, and a SELECT over it counts 240.
+   Same output format as the udt builder, because the engine consumes one. */
+static int stock_build_jbase(mv_ctx *ctx, const char *tmpl, const char *out) {
+    mv_value f, id, rec;
+    mv_init(&f); mv_init(&id); mv_init(&rec);
+    int n = -1;
+    if (!open_named(ctx, tmpl, &f)) goto done;
+    FILE *fp = fopen(out, "w");
+    if (!fp) goto done;
+    fprintf(fp, "# stock MD for this jBASE release -- generated here,\n"
+                "# never committed: it belongs to %s (mv_git#46).\n", tmpl);
+    n = 0;
+    mv_select(ctx, &f);
+    while (mv_readnext(ctx, &id)) {
+        if (!mv_read(ctx, &rec, &f, &id, 0)) continue;
+        const char *cp;
+        char nb[40];
+        int64_t cl = mv_val_chars(&rec, nb, sizeof nb, &cp);
+        git_oid oid;
+        if (record_oid(cp, cl, &oid) != 0) continue;
+        char hex[GIT_OID_HEXSZ + 1];
+        git_oid_fmt(hex, &oid);
+        hex[GIT_OID_HEXSZ] = '\0';
+        char sid[256];
+        arg_str(&id, sid, sizeof sid);
+        fprintf(fp, "%s %s\n", hex, sid);
+        n++;
+    }
+    fclose(fp);
+done:
+    mv_clear(&f); mv_clear(&id); mv_clear(&rec);
+    return n;
+}
+#endif
+
 /* Point the engine at this clone's baseline, building it the first time.  Once
-   per process, and cached per clone beside git's own local-only state. */
-static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
+   per process, and cached per clone beside git's own local-only state.
+   NOT stock_ensure_udt any more: jBASE has a baseline too, and a name that says
+   udt while serving both is the kind of thing this file keeps being bitten by. */
+static void stock_ensure(mv_ctx *ctx, const char *rp) {
     static int done;
     if (done || g_stock_path[0]) return;
     done = 1;
+#if defined(MVXGIT_JBASE)
+    const char *home = getenv("JBCRELEASEDIR");
+    if (!home || !home[0]) return;
+    char master[4096], mdict[4096];
+    snprintf(master, sizeof master, "%s/src/MD]D", home);
+    mdict[0] = '\0';                       /* jBASE MD is its own dictionary */
+#else
     const char *home = getenv("UDTHOME");
     if (!home || !home[0]) return;
     char master[4096], mdict[4096];
     snprintf(master, sizeof master, "%s/sys/VOC", home);
     snprintf(mdict, sizeof mdict, "%s/sys/D_VOC", home);
+#endif
     if (access(master, R_OK) != 0) return;
 
     git_repository *r = NULL;
@@ -1319,12 +1371,22 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
     snprintf(dir, sizeof dir, "%smvgit", git_repository_path(r));
     git_repository_free(r);
     mkdir(dir, 0700);
+#if defined(MVXGIT_JBASE)
+    snprintf(path, sizeof path, "%s/stock-jbase", dir);
+#else
     snprintf(path, sizeof path, "%s/stock-udt", dir);
+#endif
 
     if (access(path, R_OK) != 0) {
+#if defined(MVXGIT_JBASE)
+        fprintf(stderr, "git: learning what a stock jBASE account holds "
+                        "(once per clone)\n");
+        if (stock_build_jbase(ctx, master, path) < 0) {
+#else
         fprintf(stderr, "git: learning what a stock UniData account holds "
                         "(once per clone)\n");
         if (stock_build_udt(ctx, master, mdict, path) < 0) {
+#endif
             unlink(path);
             fprintf(stderr, "git: could not read %s; commits will carry the "
                             "system's own VOC records (mv_git#46)\n", master);
@@ -1334,7 +1396,7 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
     mv_git_set_stock(path);
 }
 #else
-#define stock_ensure_udt(ctx, rp) ((void)0)
+#define stock_ensure(ctx, rp) ((void)0)
 #endif
 
 /* --- account furniture ---------------------------------------------------
@@ -2298,7 +2360,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        left stock_match() a no-op for every wholesale add: the baseline was
        learned, announced, and then ignored, and the commit carried the
        system's own VOC (mv_git#70). */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
        sentences, menus, phrases (portable PROCs that must run on the other
@@ -3487,7 +3549,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
-    stock_ensure_udt(ctx, rp);          /* subtract the system's own VOC (#46) */
+    stock_ensure(ctx, rp);          /* subtract the system's own VOC (#46) */
     const char *acct = getenv("MVXACCOUNT");
     if (!acct || !acct[0]) acct = ".";
     int64_t nfiles = 0;
@@ -4142,7 +4204,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     openaccount_sync(rp);
     /* status must apply exactly what add applies, or a record add never stages
        reads as untracked forever. */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
@@ -5469,7 +5531,7 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
        a clone and a pull remove records the tree does not carry, and the stock
        ones it deliberately never carried must survive that.  Idempotent and
        once per process, so calling it on the common path is free. */
-    stock_ensure_udt(ctx, git_repository_workdir(repo));
+    stock_ensure(ctx, git_repository_workdir(repo));
     /* Below a repository root, this account's files live in its own subtree. */
     git_tree *owned = NULL;
     if (g_prefix[0]) {
@@ -5800,7 +5862,7 @@ void mvx_sub_GITCHECKOUT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        "extra".  Without it a clone strips the destination's own VOC — the
        symptom is a stock verb like CT vanishing from a freshly cloned
        account. */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
     git_reference *br = NULL;

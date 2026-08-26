@@ -395,7 +395,30 @@ int mv_openaccount(void) {
     return e && *e && *e != '0';
 }
 
+/* jBASE's MD is not a VOC, and most of what mv_voc_class classifies elsewhere
+   simply is not there.  Measured on 6.2.1.1, a fresh CREATE-ACCOUNT MD holds 240
+   records:
+     t x204   the stock verb definitions
+     A x8  Z x5  I x4   dictionary descriptors (I carries SUBR(...))
+     Q x2  C x2         pointers, and a catalog entry
+   plus a handful whose attribute 1 is data rather than a type code.
+
+   CLASS 2 IS Q AND ONLY Q.  `CREATE-FILE CUST` writes NO MD record at all --
+   CUST and its CUST]D appear on disk and MD is untouched -- so a jBASE file is
+   found by the directory scan in mv_filelist(), never by a master-file pointer.
+   `SET-FILE` does write, and what it writes is a Q pointer.  So the "a pointer
+   to a file this repository carries" rule has exactly one spelling here.
+
+   CLASS 1 IS DELIBERATELY EMPTY.  There is no V: a verb is a `t` record, and a
+   fresh account already has 204 of them.  Dropping every `t` would be the right
+   answer for those and the wrong one for a verb the user wrote, and which of
+   those is true depends on whether jBASE's catalog rewrites the MD record --
+   not yet measured.  The stock records are handled by the stock-record
+   subtraction (mv_git#46) rather than by class, so leaving class 1 empty loses
+   nothing today and guesses nothing.  Returning 0 for everything was the old
+   behaviour; this records WHY it is nearly right rather than calling it a TODO
+   (mv_git#114). */
 int mv_voc_class(const char *type, int64_t len) {
-    (void)type; (void)len;
-    return 0;   /* TODO(#114): the jBASE MD/VOC type codes */
+    if (len == 1 && (type[0] == 'Q' || type[0] == 'q')) return 2;
+    return 0;
 }
