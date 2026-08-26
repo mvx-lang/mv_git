@@ -1,0 +1,176 @@
+# mv_git — CI.  Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
+#
+# Runs tests/git-tests.sh — the whole suite, not a smoke test — on every port,
+# on every merge to main and develop and on every pull request.  Before this
+# existed the only thing between a broken tree and a published release was
+# someone remembering to run the suite by hand on three VMs (mv_git#159).
+#
+# `release.yml` will not publish anything unless the run this produces for the
+# tagged commit concluded `success`, so a red port here is a blocked release.
+#
+# The suite needs no internet: its clone/fetch/push tests use a bare repo it
+# creates in its own temp dir, so SKIP_NET=0 is right even on an offline runner.
+#
+# udt and uv are licensed products that cannot run on a GitHub-hosted runner.
+# They run in their builder containers on the self-hosted runners that already
+# build their release artifacts, driven by udt-run / uv-run.
+#
+# jBASE is not here yet — its port is still in progress (mv_git#114).  It joins
+# the matrix when its suite passes.
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push supersedes an in-flight run of the same ref — but never on a
+# branch a release can be cut from: cancelling there would leave the tagged
+# commit with a cancelled run, and the release gate (correctly) refuses that.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---- MVX: the native runtime, on a stock GitHub runner ---------------------
+  mvx:
+    name: mvx
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out mv_git
+        uses: actions/checkout@v5
+        with:
+          path: mv_git
+
+      # mkpkg.sh builds and catalogs the package; mkaccount.sh is what the suite
+      # uses to make each test account.  Without mkpkg there is no CATALOG/GIT
+      # and every test fails "cannot execute .../CATALOG/GIT".
+      - name: Check out the mvx package tooling
+        uses: actions/checkout@v5
+        with:
+          repository: mvx-lang/mvx
+          path: .mvx-src
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up the mvx toolchain
+        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
+        with:
+          version: latest
+
+      - name: Install libgit2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgit2-dev pkg-config
+
+      - name: Build and catalog the git package
+        working-directory: mv_git
+        run: |
+          set -euo pipefail
+          MVXBASIC="$(command -v mvx-basic)" \
+            sh "$GITHUB_WORKSPACE/.mvx-src/scripts/mkpkg.sh" .
+          test -f LIB/libgit.so
+          test -x bin/mvx-git
+          test -e CATALOG/GIT
+
+      - name: Run the suite
+        working-directory: mv_git
+        run: |
+          set -euo pipefail
+          PLATFORM=mvx \
+          MVX="$(command -v mvx)" \
+          MVXC="$(command -v mvx-basic)" \
+          MVXGIT="$PWD/bin/mvx-git" \
+          GITPKG="$PWD" \
+          MKACCOUNT="$GITHUB_WORKSPACE/.mvx-src/scripts/mkaccount.sh" \
+          SKIP_NET=0 \
+            bash tests/git-tests.sh
+
+  # ---- UniData: build, install and test in one container invocation ----------
+  # One `udt-run` for all three: each invocation is a separate container, and
+  # install.sh catalogs into the UniData install itself, so a test run in a
+  # later container would be testing an install that no longer exists.
+  udt:
+    name: udt
+    runs-on: [self-hosted, linux, udt]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up the UniData toolchain
+        uses: mvx-lang/mv-package-registry/.github/actions/setup-udt@main
+
+      - name: Build, install and run the suite
+        shell: bash
+        # shellcheck disable=SC2016  # expanded inside the container by udt-run
+        run: |
+          udt-run 'set -eu
+            ROOT="$PWD"
+            rm -rf dist; mkdir -p dist
+            sh build-udt.sh "$ROOT/dist"
+
+            cd "$ROOT/dist/mv_git"
+            ./install.sh 2>&1 | tee "$ROOT/install.log"
+            # install.sh does NOT fail on a BASIC compile error: it leaves the
+            # OLD object in place and still reports success, so the suite would
+            # quietly test stale code.  Read the log, not the exit status.
+            if grep -qi "compilation failed" "$ROOT/install.log"; then
+              echo "::error::install.sh hit a BASIC compilation failure"
+              exit 1
+            fi
+
+            cd "$ROOT"
+            # A non-interactive shell has no TERM, and without one the GIT verb
+            # produces EMPTY output and the whole suite reads as a code
+            # regression.  Nothing in the failure says "TERM".
+            export TERM=vt100
+            PLATFORM=udt \
+            GITPKG="$ROOT/dist/mv_git" \
+            MVX="$UDTHOME/bin/udt" \
+            MVXGIT=/usr/local/bin/udt-git \
+            SKIP_NET=0 \
+              bash tests/git-tests.sh'
+
+  # ---- UniVerse: same shape, via uv-run --------------------------------------
+  uv:
+    name: uv
+    runs-on: [self-hosted, linux, uv]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up the UniVerse toolchain
+        uses: mvx-lang/mv-package-registry/.github/actions/setup-uv@main
+
+      - name: Build, install and run the suite
+        shell: bash
+        # shellcheck disable=SC2016  # expanded inside the container by uv-run
+        run: |
+          uv-run 'set -eu
+            ROOT="$PWD"
+            rm -rf dist; mkdir -p dist
+            sh build-uv.sh "$ROOT/dist"
+
+            cd "$ROOT/dist/mv_git"
+            ./install.sh 2>&1 | tee "$ROOT/install.log"
+            if grep -qi "compilation failed" "$ROOT/install.log"; then
+              echo "::error::install.sh hit a BASIC compilation failure"
+              exit 1
+            fi
+
+            cd "$ROOT"
+            export TERM=vt100
+            # UVGIT is what the suite runs; MVXGIT must be set too — the adopt
+            # block reads it and dies "MVXGIT: unbound variable" without it.
+            PLATFORM=uv \
+            GITPKG="$ROOT/dist/mv_git" \
+            MVX="${UVHOME:-/usr/uv}/bin/uv" \
+            UVGIT="$ROOT/dist/mv_git/bin/uv-git" \
+            MVXGIT="$ROOT/dist/mv_git/bin/uv-git" \
+            SKIP_NET=0 \
+              bash tests/git-tests.sh'
