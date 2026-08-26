@@ -257,12 +257,37 @@ ADDALL:
    DKOUT = ""
    CALL GIT.OBJ("ADDDISK", 2, REPO, FILEIDS, "", "", "", DKOUT)
    NF = DCOUNT(FILES, AM)
+*  A FILE'S DICTIONARY CAN BE FURNITURE, and the master file's always is.
+*
+*  This loop staged <file>.DICT for every file unconditionally, so a fresh
+*  UniData account committed sixty records of the VOC's own dictionary --
+*  VOC.DICT/@ID, F1..F27 and %FILE%.  Nobody writes those: every account is born
+*  with them and a clone gets its own from whatever created it, which is why
+*  mv_account_furniture() has named VOC.DICT and MD.DICT since mv_git#95, and
+*  why the package repositories were cleaned of exactly this file.
+*
+*  ASK THE ENGINE, once for the whole list.  Furniture matches strings and reads
+*  nothing, so it belongs there (mv_git#81, #133) -- and asking it here rather
+*  than re-deciding in BASIC is what stops the verb and the walk drifting, which
+*  is the fault this area keeps having.
+   DCANDS = ""
+   FOR K = 1 TO NF
+      DCANDS<-1> = FIELD(FILES<K>, VM, 1) : ".DICT"
+   NEXT K
+   DFURN = ""
+   IF DCANDS # "" THEN
+      CALL GIT.OBJ("FURNITURE", 2, REPO, DCANDS, "", "", "", DFURN)
+   END
    FOR K = 1 TO NF
       FILE  = FIELD(FILES<K>, VM, 1)
       FTYPE = FIELD(FILES<K>, VM, 2)
       ISVOC = (FILE = MVMASTER)
+      DICTFURN = 0
+      IF DFURN # "" THEN
+         LOCATE(FILE : ".DICT", DFURN; DFPOS) THEN DICTFURN = 1
+      END
       GOSUB STAGEDATA
-      GOSUB STAGEDICT
+      IF NOT(DICTFURN) THEN GOSUB STAGEDICT
 *     %FILE% ON EVERY ADD, native as well as open.
 *
 *     It carries the file's GEOMETRY — its type, and for a hash file its modulo
@@ -275,8 +300,13 @@ ADDALL:
 *     no geometry at all, and got away with it only because a native commit also
 *     keeps the platform's own VOC pointers — which are enough to recreate the
 *     file on the SAME platform and no use anywhere else.
-      GOSUB FILECLASS
-      CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
+*     ...and %FILE% goes with it when it does: the control lives IN the
+*     dictionary, so staging it while skipping the rest would leave one record
+*     of the platform's own furniture behind and the count at 1 instead of 0.
+      IF NOT(DICTFURN) THEN
+         GOSUB FILECLASS
+         CALL GIT.OBJ("STAGEBLOB", 3, REPO, PFX:FILE:".DICT/%FILE%", CTL, "", "", OBJOUT)
+      END
 *     Alternate-key indexes stay open-format: they are a portability feature,
 *     not part of the file's shape.
       IF OPENFMT THEN
