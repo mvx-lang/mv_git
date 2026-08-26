@@ -277,6 +277,21 @@ elif [ "$PLATFORM" = jbase ]; then
   # for the same reason, and doing it per account would recompile forty programs
   # for every test.
   JBLIB="$WORK/jblib"
+  # jb_objname NAME — the object file jBASE writes for a program of that name.
+  # It percent-encodes every character outside [A-Za-z0-9] as _HH, so GIT.ADD
+  # is cataloged as GIT_2EADD.o.  Looking for GIT.ADD.o instead finds nothing,
+  # which reports 62 perfectly healthy programs as failures and buries the 16
+  # real ones -- the check has to know the platform's naming to be a check.
+  jb_objname() {
+      local _s="$1" _o="" _i _c
+      for (( _i=0; _i<${#_s}; _i++ )); do
+          _c=${_s:_i:1}
+          case $_c in
+              [A-Za-z0-9]) _o="$_o$_c" ;;
+              *)           _o="$_o$(printf '_%02X' "'$_c")" ;;
+          esac
+      done
+      printf '%s' "$_o"; }
   LINK() {
       mkdir -p "$1/BP.INC"
       cp "$GITPKG/PLATFORM.H" "$1/BP.INC/PLATFORM.H" 2>/dev/null
@@ -285,7 +300,40 @@ elif [ "$PLATFORM" = jbase ]; then
       mkdir -p "$JBLIB/bin"
       ( cd "$1" && for p in BP/*; do
             printf 'BASIC BP %s\nCATALOG BP %s\n' "$(basename "$p")" "$(basename "$p")"
-        done | JBCDEV_LIB="$JBLIB" JBCDEV_BIN="$JBLIB/bin" "$MVX" ) >/dev/null 2>&1
+        done | JBCDEV_LIB="$JBLIB" JBCDEV_BIN="$JBLIB/bin" "$MVX" ) >"$JBLIB/catalog.log" 2>&1
+      # jBASE reports a failed compile on stdout and carries on, so a program
+      # that does not compile just leaves no object behind.  Assert the
+      # positive fact -- one .o per staged source -- rather than trusting the
+      # exit status, which is the status of the last CATALOG only.
+      # Ask the PACKAGE what it shipped, not the account's BP afterwards:
+      # jBASE writes each program's compiled form back beside the source as
+      # $NAME, so the directory holds 169 entries for 91 programs and every
+      # $NAME reads as a source that produced no object.
+      _miss=""; _n=0; _tot=0
+      for p in "$GITPKG"/BP/*; do
+          _b=$(basename "$p"); _tot=$((_tot+1))
+          # A SUBROUTINE lands in obj/ as an encoded .o; a main PROGRAM is
+          # cataloged into bin/ as an executable and has no .o at all.  Accept
+          # either, or the three programs in this package read as failures.
+          [ -f "$JBLIB/obj/$(jb_objname "$_b").o" ] || [ -f "$JBLIB/bin/$_b" ] || {
+              _miss="$_miss $_b"; _n=$((_n+1)); }
+      done
+      if [ "$_n" -gt 0 ]; then
+          echo "LINK: $_n of $_tot programs did not catalog:" >&2
+          for _b in $_miss; do
+              # The compiler names the word it choked on; say so here rather
+              # than making the reader open the log for the common case.
+              _why=$(grep -m1 "^\"$_b\"," "$JBLIB/catalog.log" | sed 's/   */ /g')
+              echo "  ${_why:-\"$_b\" -- no diagnostic, see log}" >&2
+          done
+          echo "  full log: $JBLIB/catalog.log" >&2
+          # The CLI arm never calls these; the verb arm does, and a verb run
+          # with subroutines missing from the library measures nothing.
+          if [ "${JBGIT_VIA:-cli}" = "verb" ]; then
+              echo "LINK: fatal -- JBGIT_VIA=verb needs every subroutine" >&2
+              exit 1
+          fi
+      fi
       touch "$JBLIB/.done"; }
   # JP is a hash file; UD is a unix DIRECTORY, which is what the open form's DIR
   # means.  JD is NOT a directory -- it is another regular file.
