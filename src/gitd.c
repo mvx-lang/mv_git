@@ -301,6 +301,11 @@ static opres op_init(const args *g) {
 /* STAGE(repo, file, id, record) — one record into the batched index.  The
    session has already READ it; marks become newlines in the blob (translate=1). */
 static opres op_stage(const args *g) {
+    /* The platform's own master-dictionary records never travel (mv_git#171).
+       The third staging path: UniVerse stages through the daemon, so a filter
+       in the CLI and the CallC verb alone would leave this one leaking. */
+    if (mv_git_platform_dict_record(A(g, 1), A(g, 2)))
+        return ok(NULL);
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", A(g, 1), A(g, 2));
     mv_git_batch_begin(rp(A(g, 0)));      /* idempotent */
