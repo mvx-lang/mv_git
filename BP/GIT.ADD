@@ -166,10 +166,36 @@ CALL GIT.REPO(REPO)
 *  is why this worked on UniData (CallC flushes per op) and not on UniVerse.
    IF BLANKET THEN
       NRC = DCOUNT(FILES, AM)
+*     ASK ABOUT THE DICTIONARY TOO, and ask the ENGINE -- the same question the
+*     walk asks, through the same op, so the two cannot drift.  This loop used
+*     to reconcile <file>.DICT unconditionally, so the master file's OWN
+*     dictionary was staged on every blanket add: 60 records on a fresh UniData
+*     account (VOC.DICT/@ID, F1..F27, %FILE%).  mv_account_furniture() has named
+*     VOC.DICT and MD.DICT since mv_git#95 -- "the VOC's own dictionary is the
+*     platform's, not the account's" -- and nothing here was asking it.
+*
+*     Nothing caught it because nothing asserted a fresh account stages none of
+*     the system's records; that test now exists, and this is what it found.
+*     One call for the whole list rather than one per file: FURNITURE filters.
+      DCANDS = ""
+      FOR RK = 1 TO NRC
+         DCANDS<-1> = FIELD(FILES<RK>, VM, 1) : ".DICT"
+      NEXT RK
+      DFURN = ""
+      IF DCANDS # "" THEN
+         CALL GIT.OBJ("FURNITURE", 2, REPO, DCANDS, "", "", "", DFURN)
+      END
       FOR RK = 1 TO NRC
          RCBASE = FIELD(FILES<RK>, VM, 1)
          RCFILE = RCBASE            ; GOSUB RECONCILE
-         RCFILE = RCBASE : ".DICT"  ; GOSUB RECONCILE
+         RCDICT = RCBASE : ".DICT"
+         DROPD = 0
+         IF DFURN # "" THEN
+            LOCATE(RCDICT, DFURN; DFPOS) THEN DROPD = 1
+         END
+         IF NOT(DROPD) THEN
+            RCFILE = RCDICT ; GOSUB RECONCILE
+         END
       NEXT RK
    END ELSE
       RCFILE = FILE           ; GOSUB RECONCILE
