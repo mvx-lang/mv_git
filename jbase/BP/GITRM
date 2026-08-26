@@ -1,0 +1,6 @@
+* GITRM - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITRM(REPO, FILE, ID, ANS)
+      DEFC VAR JBGITRM(VAR, VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITRM(REPO, FILE, ID, ANS)
+      RETURN

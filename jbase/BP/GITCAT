@@ -1,0 +1,6 @@
+* GITCAT - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITCAT(REPO, PATH, ANS)
+      DEFC VAR JBGITCAT(VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITCAT(REPO, PATH, ANS)
+      RETURN

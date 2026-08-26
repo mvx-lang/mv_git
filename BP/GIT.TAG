@@ -34,11 +34,11 @@ IF OP # "list" AND NM = "" THEN
    PRINT "usage: GIT TAG {name {commit} | -a name -m msg | -d name}"
    RETURN
 END
-$IFDEF MVX
-OUT = ""
-CALL GITTAG(".git", OP, NM, TGT, MSG, OUT)
-FOR I = 1 TO DCOUNT(OUT, @AM)
-   PRINT OUT<I>
+$IFDEF ENGINE
+GOUT = ""
+CALL GITTAG(".git", OP, NM, TGT, MSG, GOUT)
+FOR I = 1 TO DCOUNT(GOUT, @AM)
+   PRINT GOUT<I>
 NEXT I
 $ELSE
 CALL GIT.REPO(REPO)

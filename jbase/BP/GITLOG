@@ -1,0 +1,6 @@
+* GITLOG - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+      SUBROUTINE GITLOG(REPO, COUNT, ANS)
+      DEFC VAR JBGITLOG(VAR, VAR, VAR)
+      ANS = ""
+      X = JBGITLOG(REPO, COUNT, ANS)
+      RETURN

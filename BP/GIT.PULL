@@ -52,9 +52,9 @@ BEGIN CASE
    CASE PLAT = "MVX"
 $IFDEF MVX
 *     The engine IS the runtime here and reads the records itself.
-      OUT = ""
-      CALL GITPULL(".git", RNAME, BR, OUT)
-      PRINT OUT
+      GOUT = ""
+      CALL GITPULL(".git", RNAME, BR, GOUT)
+      PRINT GOUT
 $ENDIF
    CASE 1
 *     IN-SESSION, not a shell-out.  The git-object half (fetch, move the ref,

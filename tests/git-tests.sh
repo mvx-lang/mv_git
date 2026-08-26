@@ -19,6 +19,12 @@
 # Exit non-zero if any assertion fails.
 set -u
 PLATFORM="${PLATFORM:-mvx}"
+# THE ACCOUNT'S OWN MASTER FILE, under the name the platform uses for it.
+# Every MV system calls it VOC except jBASE, which calls it MD -- and there is
+# no VOC there to open, so a test that hardcodes "VOC" writes nothing at all and
+# then reports that nothing travelled (mv_git#114).
+MASTER=VOC
+[ "$PLATFORM" = jbase ] && MASTER=MD
 UDT_NEWACCT="${UDT_NEWACCT:-${UDTHOME:-/usr/ud83}/bin/newacct}"
 SKIP_NET="${SKIP_NET:-0}"
 : "${MVX:?set MVX to the runtime (mvx)}"
@@ -211,6 +217,103 @@ elif [ "$PLATFORM" = uv ]; then
   SEED() { uv_wait_seat; local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
+elif [ "$PLATFORM" = jbase ]; then
+  # jbase: an account is simply a DIRECTORY -- there is no VOC and no account
+  # bootstrap -- and $MVX is jsh, jBASE's own shell, which reads TCL from stdin.
+  #
+  # This arm drives the CLI (jb-git), the way UV_VIA=cli does for UniVerse.  The
+  # in-session verb exists and works, but a CATALOGed subroutine cannot resolve
+  # a DEFC function without the library being forced into the process -- which is
+  # jBASE's behaviour for DEFC generally, not something mv_git does (mv_git#114).
+  # Driving the verb here would test that packaging question rather than mv_git.
+  # CREATE-ACCOUNT, not mkdir.  A jBASE account has an MD (its dictionary is
+  # MD]D), a bin and a lib, and `mkdir` gives none of them -- so a bare
+  # directory has nowhere for a Q pointer to live, cannot run SET-FILE, and has
+  # no account bin for a catalogued verb.  Every test here used to run against
+  # one, which meant the suite was green about something no user would have
+  # (mv_git#114).
+  #
+  # JEDIFILENAME_MD is how a session finds the MD, and CREATE-ACCOUNT sets it to
+  # the account's own directory; the tests drive jsh directly rather than
+  # logging in, so they have to set it themselves.
+  # THE NAME IS REGISTERED, NOT THE PATH.  CREATE-ACCOUNT records the account
+  # NAME -- the basename -- in jBASE's SYSTEM file and REFUSES one already
+  # there.  $WORK is a fresh mktemp per run but the basenames are not (A, B,
+  # mfwalk), so every run after the first was refused, fell through to the old
+  # `|| mkdir -p`, and tested a bare directory: no MD, no bin, no lib.  That is
+  # how 48 assertions were green about something no user would ever have
+  # (mv_git#114).  Removing the directory does NOT remove the registration.
+  #
+  # DELETE-ACCOUNT -f also DELETES THE DIRECTORY its registration points at, so
+  # it runs BEFORE the directory exists and never after.
+  jb_unregister() { DELETE-ACCOUNT -f "$(basename "$1")" >/dev/null 2>&1 || true; }
+  ACCT() { rm -rf "$1"
+           jb_unregister "$1"
+           if ! CREATE-ACCOUNT "$1" >/dev/null 2>&1; then
+             bad "FIXTURE: CREATE-ACCOUNT $1" "an account" "refused"
+             say "   the old code fell through to mkdir here and every"
+             say "   assertion below went green against a bare directory"
+             exit 1
+           fi
+           # AND PROVE IT IS ONE.  Measured on 6.2.1.1: CREATE-ACCOUNT leaves
+           # bin, lib and MD]D (the master file IS its dictionary there).  A
+           # fixture that cannot say what it built is the thing being fixed.
+           for part in "MD]D" bin lib; do
+             [ -e "$1/$part" ] || {
+               bad "FIXTURE: $1 has no $part" "a jBASE account" "a directory"
+               exit 1; }
+           done
+           ( cd "$1" && printf 'CREATE-FILE BP 1 11 TYPE=UD\n' | "$MVX" ) >/dev/null 2>&1
+           printf '# jBASE account descriptor\nname = %s\nversion = 1\n' \
+                  "$(basename "$1")" > "$1/.jbase"; }
+  # JBGIT_VIA=verb drives the in-session verb, as the mvx and udt arms do; the
+  # DEFAULT is the CLI, because the verb path's catalog step does not work yet
+  # (the shared library is not being produced, so the session cannot find GIT)
+  # and a default that fails tells you nothing about mv_git.  UV_VIA has the
+  # same shape for the same kind of reason.
+  #
+  # The handlers and the jBASE shims are CATALOGed ONCE into a shared library
+  # every test account reaches through $JBCOBJECTLIST -- udt catalogs globally
+  # for the same reason, and doing it per account would recompile forty programs
+  # for every test.
+  JBLIB="$WORK/jblib"
+  LINK() {
+      mkdir -p "$1/BP.INC"
+      cp "$GITPKG/PLATFORM.H" "$1/BP.INC/PLATFORM.H" 2>/dev/null
+      cp "$GITPKG"/BP/* "$1/BP/" 2>/dev/null
+      [ -f "$JBLIB/.done" ] && return 0
+      mkdir -p "$JBLIB/bin"
+      ( cd "$1" && for p in BP/*; do
+            printf 'BASIC BP %s\nCATALOG BP %s\n' "$(basename "$p")" "$(basename "$p")"
+        done | JBCDEV_LIB="$JBLIB" JBCDEV_BIN="$JBLIB/bin" "$MVX" ) >/dev/null 2>&1
+      touch "$JBLIB/.done"; }
+  # JP is a hash file; UD is a unix DIRECTORY, which is what the open form's DIR
+  # means.  JD is NOT a directory -- it is another regular file.
+  CF()   { ( cd "$1" && printf 'CREATE-FILE %s 1 11\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  DF()   { ( cd "$1" && printf 'DELETE-FILE %s\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  # LD_PRELOAD is not a workaround for anything mv_git does: a CATALOGed
+  # subroutine cannot resolve a DEFC function unless the library is forced into
+  # the process, and that is jBASE's behaviour for DEFC generally -- reproduced
+  # with five lines of C and no mv_git at all (mv_git#114).
+  JBPRE="${JBGIT_LIB:-$GITPKG/libjbgit.so}"
+  if [ "${JBGIT_VIA:-cli}" = cli ]; then
+    GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  else
+    GITV() { local a="$1"; shift; local s="$*"
+             ( cd "$a" && printf '%s\n' "$s" \
+               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             ( cd "$a" && printf '%s\n%s' "$s" "$k" \
+               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+  fi
+  CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
+  SEED() { local a="$1" body="$2"
+           printf '%s\n' "$body" > "$a/BP/SEEDT"
+           ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
   #
@@ -277,6 +380,28 @@ say "== mv_git comprehensive suite — platform=$PLATFORM  net=$([ "$SKIP_NET" =
 A="$WORK/A"; ACCT "$A"; LINK "$A"; CF "$A" CUST
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"London" ON F, "C1"'
+
+# A FRESH ACCOUNT COMMITS NOTHING.  Nothing asserted this, and it is the one
+# question that catches a whole class of bug: the system's own furniture staged
+# as if it were the user's.  It went uncaught on jBASE until measured by hand --
+# making the master file visible to the walk (mv_git#114) had a fresh, empty
+# account staging 478 files, 239 stock MD records plus 239 MD.DICT ones, while
+# the suite stayed green at 45/0.
+#
+# Counted, not sampled: a COUNT of the master file's records is the only form of
+# this that cannot pass by looking at the wrong end of a list.
+#
+# The master file specifically, not "nothing at all": LINK puts the package's
+# own BP into the account, and those ninety-odd programs are content.  What must
+# be zero is the SYSTEM's contribution -- the stock master-file records and the
+# stock dictionary beside them.
+EMPTY="$WORK/emptyacct"; ACCT "$EMPTY"; LINK "$EMPTY"
+( cd "$EMPTY" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add -A >/dev/null 2>&1 )
+te "a fresh account stages none of the system's master-file records" "0" \
+   "$( cd "$EMPTY" && git diff --cached --name-only \
+        | grep -cE "^($MASTER|$MASTER\.DICT)/" )"
 
 say "-- lifecycle: init / config / add -A / status / commit / log --"
 t  "init"        "repository"        "$(GITV "$A" GIT INIT)"
@@ -402,8 +527,20 @@ esac
 # the registry, the validation and the staging, in C, which is exactly what
 # "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
 # where this is tested on UniVerse, and it runs there in full.
-if [ "$PLATFORM" = uv ] && [ "${UV_VIA:-verb}" = cli ]; then
-  skip "GIT ATTR" "in-session verb; covered by the UV_VIA=verb run"
+# GIT ATTR is an in-session VERB -- registry, validation, staging and a
+# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
+# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
+# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
+# the CLI, therefore ran all 32 of these against a command that cannot exist
+# and reported them as port failures.  Ask how the arm is DRIVEN, not which
+# platform it is.
+case "$PLATFORM" in
+  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
+  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
+  *)     ATTR_VIA=verb ;;
+esac
+if [ "$ATTR_VIA" = cli ]; then
+  skip "GIT ATTR" "in-session verb; not reachable through a CLI-driven arm"
 else
 say "-- GIT ATTR: the attribute editor (mv_git#15) --"
 # Every one of these runs through the SWITCHES, which is why the switches exist:
@@ -671,7 +808,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   # one platform is how that would go unnoticed -- and while they were scoped,
   # uv-git failed four of them.
   case "$PLATFORM" in
-    udt|uv)
+    udt|uv|jbase)
       P="$WORK/plainco"
       git clone -q "$REM" "$P" 2>/dev/null
       t  "plain checkout has the open form" "CUST" \
@@ -1175,18 +1312,18 @@ say "-- a wholesale add reaches EVERY master-file record (mv_git#131) --"
 # -- and this bug was in the engine's.  The udt arm drives the verb everywhere
 # else, which is exactly why nothing saw it.
 MF="$WORK/mfwalk"; ACCT "$MF"; LINK "$MF"
-SEED "$MF" 'OPEN "VOC" TO V ELSE STOP
-P = ""
-P<1> = "PA"
-P<2> = "HELLO"
+SEED "$MF" "OPEN \"$MASTER\" TO V ELSE STOP
+P = \"\"
+P<1> = \"PA\"
+P<2> = \"HELLO\"
 FOR I = 1 TO 30
-   WRITE P ON V, "MYPARA":I
-NEXT I'
+   WRITE P ON V, \"MYPARA\":I
+NEXT I"
 ( cd "$MF" && git init -q . >/dev/null 2>&1
   "$MVXGIT" init >/dev/null 2>&1
-  "$MVXGIT" add VOC >/dev/null 2>&1 )
+  "$MVXGIT" add "$MASTER" >/dev/null 2>&1 )
 te "all thirty of the account's own master-file records travel" "30" \
-   "$( cd "$MF" && git diff --cached --name-only | grep -c '^VOC/MYPARA' )"
+   "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
 say "-- a file's own pointer is derived, not content (mv_git#131) --"
 # CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and

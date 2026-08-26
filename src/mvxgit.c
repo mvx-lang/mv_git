@@ -208,7 +208,7 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
  * native records while `status` hashed projected ones, so a cloned account
  * never read clean and a commit from inside the session would have written
  * native spellings into a portable repository (mv_git#108). */
-#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT)
+#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
 #define MVXGIT_OPENDICT 1
 #endif
 
@@ -230,6 +230,8 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
  * what identifies a natively-committed descriptor in a tree, so every build
  * needs to be able to say it.  The four sites that wrote or matched one spelled
  * ".mvx" outright, which is right on exactly one platform. */
+static const char *voc_local_name(void);   /* defined below */
+
 static const char *desc_native_name(void) {
 #if defined(MVXGIT_UDT)
     return ".udt";
@@ -241,6 +243,17 @@ static const char *desc_native_name(void) {
     return ".mvx";
 #endif
 }
+
+/* Platforms whose native D/I item carries the single/multi flag at attribute 6
+   and the association at 7 -- the order the canonical open form swaps, since it
+   is mvx-shaped (association at 6, single/multi at 7).
+   UniData and jBASE agree, both verified against a live account; UniVerse does
+   not want it.  Named for the fact rather than the platform list, because a
+   guard that enumerates platforms is how jBASE ended up with none of this in
+   the first place (mv_git#108, #114). */
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
+#define MVXGIT_DICT_SM_AT_6 1
+#endif
 
 #ifdef MVXGIT_OPENDICT
 /* --- I-type expression translation, canonical <-> UniData (mv_git#90) -----
@@ -565,7 +578,7 @@ static char *open_dict_project(const char *rec, int64_t len, int64_t *outlen) {
     char *cur = NULL;
     const char *p = rec;
     int64_t l = len;
-#ifdef MVXGIT_UDT
+#ifdef MVXGIT_DICT_SM_AT_6
     {
         int64_t dl;
         char *sw = dict_item_swap(p, l, &dl);
@@ -688,7 +701,27 @@ const char *mv_git_id_item(void) {
 #if defined(MVXGIT_D3)
     return "ID";
 #else
-    return "@ID";               /* MVX, UniData, UniVerse */
+    /* MVX, UniData, UniVerse -- and jBASE, deliberately.
+     *
+     * jBASE names no key item: a CREATE-FILE there leaves the dictionary EMPTY,
+     * where UniData and UniVerse each add their own and say so.  The obvious
+     * reading is that jBASE therefore wants @ID dropped -- and that is wrong,
+     * because it would silently discard an edited one.  @ID is not only the
+     * fact "this is the key": it carries a heading, a conversion and a width
+     * that somebody may have deliberately set, and a platform forgetting a
+     * change the user made is worse than carrying an item it does not generate.
+     *
+     * The hazard the rename exists to prevent is an account holding BOTH @ID and
+     * a local ID meaning the same thing -- two copies of one fact to keep in
+     * step.  That can only arise where the platform AUTO-CREATES its own key
+     * item, which is exactly what jBASE does not do.  With nothing to collide
+     * with, the canonical name is safe here: a checkout writes @ID, a commit
+     * reads it back, and an edit survives the crossing in both directions
+     * (mv_git#114).
+     *
+     * So a fresh jBASE file simply has no key item and commits none, which is a
+     * legitimate state -- and a clone from UniData gives it one. */
+    return "@ID";
 #endif
 }
 
@@ -711,8 +744,17 @@ static int dict_of_open_account(const char *fn) {
     return l > 5 && strcmp(fn + l - 5, ".DICT") == 0 && mv_openaccount();
 }
 
+static const char *local_to_tree(const char *fn, char *buf, size_t cap);
+
 static void record_path(char *out, size_t cap, const char *fn, const char *id) {
-    snprintf(out, cap, "%s%s/%s", g_prefix, fn, id);
+    /* The one place a LOCAL file name becomes a GIT path, so the one place the
+       master file's name is translated: an open jBASE account commits its MD
+       records under VOC, because VOC is the portable spelling and another
+       platform has to be able to read them.  A native account keeps MD
+       (local_to_tree is the identity when openaccount is off). */
+    char tbuf[320];
+    const char *tfn = local_to_tree(fn, tbuf, sizeof tbuf);
+    snprintf(out, cap, "%s%s/%s", g_prefix, tfn, id);
 }
 
 #ifdef MVXGIT_OPENDICT
@@ -1188,7 +1230,7 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
     return 0;
 }
 
-#if defined(MVXGIT_UDT)
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
 /* UniData supplies its baseline as a FILE, so nothing has to be stood up.
  *
  * `newacct` copies the master VOC into the new account verbatim — its own
@@ -1210,12 +1252,13 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
  * engine takes a supplied file rather than knowing about either. */
 #define STOCK_PTR "%GITSTOCK%"
 
+#if defined(MVXGIT_UDT)
 static int stock_build_udt(mv_ctx *ctx, const char *master, const char *mdict,
                            const char *out) {
     mv_value voc, ptr, id, rec, stk;
     mv_init(&voc); mv_init(&ptr); mv_init(&id); mv_init(&rec); mv_init(&stk);
     int n = -1;
-    if (!open_named(ctx, "VOC", &voc)) goto done;
+    if (!open_named(ctx, voc_local_name(), &voc)) goto done;
 
     char body[9000];
     int bl = snprintf(body, sizeof body, "F%c%s%c%s", 0xFE, master, 0xFE, mdict);
@@ -1258,17 +1301,68 @@ done:
     return n;
 }
 
+#endif  /* MVXGIT_UDT: the pointer dance is UniData's alone */
+
+#if defined(MVXGIT_JBASE)
+/* jBASE supplies its baseline as a file too -- $JBCRELEASEDIR/src/MD]D, 240
+   records -- and unlike UniData it needs no pointer to reach it: JediOpen takes
+   a PATH, so the template opens directly.  Verified on 6.2.1.1: OPEN of that
+   path answers, and a SELECT over it counts 240.
+   Same output format as the udt builder, because the engine consumes one. */
+static int stock_build_jbase(mv_ctx *ctx, const char *tmpl, const char *out) {
+    mv_value f, id, rec;
+    mv_init(&f); mv_init(&id); mv_init(&rec);
+    int n = -1;
+    if (!open_named(ctx, tmpl, &f)) goto done;
+    FILE *fp = fopen(out, "w");
+    if (!fp) goto done;
+    fprintf(fp, "# stock MD for this jBASE release -- generated here,\n"
+                "# never committed: it belongs to %s (mv_git#46).\n", tmpl);
+    n = 0;
+    mv_select(ctx, &f);
+    while (mv_readnext(ctx, &id)) {
+        if (!mv_read(ctx, &rec, &f, &id, 0)) continue;
+        const char *cp;
+        char nb[40];
+        int64_t cl = mv_val_chars(&rec, nb, sizeof nb, &cp);
+        git_oid oid;
+        if (record_oid(cp, cl, &oid) != 0) continue;
+        char hex[GIT_OID_HEXSZ + 1];
+        git_oid_fmt(hex, &oid);
+        hex[GIT_OID_HEXSZ] = '\0';
+        char sid[256];
+        arg_str(&id, sid, sizeof sid);
+        fprintf(fp, "%s %s\n", hex, sid);
+        n++;
+    }
+    fclose(fp);
+done:
+    mv_clear(&f); mv_clear(&id); mv_clear(&rec);
+    return n;
+}
+#endif
+
 /* Point the engine at this clone's baseline, building it the first time.  Once
-   per process, and cached per clone beside git's own local-only state. */
-static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
+   per process, and cached per clone beside git's own local-only state.
+   NOT stock_ensure_udt any more: jBASE has a baseline too, and a name that says
+   udt while serving both is the kind of thing this file keeps being bitten by. */
+static void stock_ensure(mv_ctx *ctx, const char *rp) {
     static int done;
     if (done || g_stock_path[0]) return;
     done = 1;
+#if defined(MVXGIT_JBASE)
+    const char *home = getenv("JBCRELEASEDIR");
+    if (!home || !home[0]) return;
+    char master[4096], mdict[4096];
+    snprintf(master, sizeof master, "%s/src/MD]D", home);
+    mdict[0] = '\0';                       /* jBASE MD is its own dictionary */
+#else
     const char *home = getenv("UDTHOME");
     if (!home || !home[0]) return;
     char master[4096], mdict[4096];
     snprintf(master, sizeof master, "%s/sys/VOC", home);
     snprintf(mdict, sizeof mdict, "%s/sys/D_VOC", home);
+#endif
     if (access(master, R_OK) != 0) return;
 
     git_repository *r = NULL;
@@ -1277,12 +1371,22 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
     snprintf(dir, sizeof dir, "%smvgit", git_repository_path(r));
     git_repository_free(r);
     mkdir(dir, 0700);
+#if defined(MVXGIT_JBASE)
+    snprintf(path, sizeof path, "%s/stock-jbase", dir);
+#else
     snprintf(path, sizeof path, "%s/stock-udt", dir);
+#endif
 
     if (access(path, R_OK) != 0) {
+#if defined(MVXGIT_JBASE)
+        fprintf(stderr, "git: learning what a stock jBASE account holds "
+                        "(once per clone)\n");
+        if (stock_build_jbase(ctx, master, path) < 0) {
+#else
         fprintf(stderr, "git: learning what a stock UniData account holds "
                         "(once per clone)\n");
         if (stock_build_udt(ctx, master, mdict, path) < 0) {
+#endif
             unlink(path);
             fprintf(stderr, "git: could not read %s; commits will carry the "
                             "system's own VOC records (mv_git#46)\n", master);
@@ -1292,7 +1396,7 @@ static void stock_ensure_udt(mv_ctx *ctx, const char *rp) {
     mv_git_set_stock(path);
 }
 #else
-#define stock_ensure_udt(ctx, rp) ((void)0)
+#define stock_ensure(ctx, rp) ((void)0)
 #endif
 
 /* --- account furniture ---------------------------------------------------
@@ -1789,6 +1893,68 @@ int mv_git_worktree_clear(char *why, size_t wcap) {
 /* This platform's native descriptor name, for a driver that has to tell whether
    a checkout is native to THIS system or another one -- which is what decides
    whether `adopt` asks about the open form (mv_git#124). */
+/* The account's master file, under the name THIS platform gives it.
+ *
+ * In git it is always `VOC`: the open form has one portable spelling, the way
+ * the descriptor is always `.mv-account` there.  On disk it is whatever the
+ * platform calls it -- and jBASE calls it MD, in an account that also has a
+ * bin and a lib, all created by CREATE-ACCOUNT.  A bare directory has no master
+ * file at all, which is why opening "VOC" there simply failed.
+ *
+ * So a checkout onto jBASE writes the committed VOC records into MD, and a
+ * commit from jBASE writes MD's records out as VOC (mv_git#114). */
+static const char *voc_local_name(void) {
+#ifdef MVXGIT_JBASE
+    return "MD";
+#else
+    return "VOC";
+#endif
+}
+
+const char *mv_git_voc_local_name(void) { return voc_local_name(); }
+
+/* The two directions of that name, for a whole file or its dictionary.
+ *
+ * git always says VOC; the account says whatever the platform calls it.  On
+ * every platform but jBASE these are the identity, which is why nothing needed
+ * them until now -- MVX, UniData and UniVerse all agree on VOC, so the first
+ * disagreement is also the first time the translation exists at all.
+ *
+ * `VOC` <-> `MD`, and `VOC.DICT` <-> `MD.DICT`: the dictionary travels under
+ * the same portable stem as its file, so the suffix is preserved rather than
+ * translated into the platform's own dictionary spelling (jBASE's `MD]D` is a
+ * NATIVE detail, and the open form never carries native detail). */
+static const char *tree_to_local(const char *fn, char *buf, size_t cap) {
+    const char *loc = voc_local_name();
+    if (!strcmp(loc, "VOC")) return fn;                 /* identity */
+    /* ONLY in the open form.  A native jBASE account commits its MD as MD --
+       native means native, the same way the descriptor is `.jbase` there and
+       `.mv-account` only when the account is open.  Turning openaccount on is
+       what renames it to VOC, because VOC is the portable spelling and the
+       whole point of the open form is that another platform can read it. */
+    if (!mv_openaccount()) return fn;
+    if (strcasecmp(fn, "VOC") == 0) { snprintf(buf, cap, "%s", loc); return buf; }
+    if (strcasecmp(fn, "VOC.DICT") == 0) {
+        snprintf(buf, cap, "%s.DICT", loc);
+        return buf;
+    }
+    return fn;
+}
+
+static const char *local_to_tree(const char *fn, char *buf, size_t cap) {
+    const char *loc = voc_local_name();
+    if (!strcmp(loc, "VOC")) return fn;                 /* identity */
+    if (!mv_openaccount()) return fn;                   /* native keeps MD */
+    size_t ll = strlen(loc);
+    if (strcasecmp(fn, loc) == 0) { snprintf(buf, cap, "VOC"); return buf; }
+    if (strlen(fn) == ll + 5 && strncasecmp(fn, loc, ll) == 0 &&
+        strcasecmp(fn + ll, ".DICT") == 0) {
+        snprintf(buf, cap, "VOC.DICT");
+        return buf;
+    }
+    return fn;
+}
+
 const char *mv_git_desc_native_name(void) { return desc_native_name(); }
 
 /* What, if anything, should `adopt` ask about the open form?
@@ -1953,6 +2119,39 @@ int mv_git_desc_for(char *path, size_t pcap, char *desc, size_t dcap,
                      base, fl[0] ? "flavour = " : "", fl, fl[0] ? "\n" : "");
         }
         snprintf(path, pcap, "%s.uv", pfx);
+#elif defined(MVXGIT_JBASE)
+        /* Synthesised like UniData's and UniVerse's: an account should not have
+           to have had a descriptor written into it before its first commit.
+           jBASE keeps no flavour of its own the way UniVerse does, so there is
+           nothing here that cannot be regenerated -- but an existing .jbase is
+           still read for anything it carries, so a hand-set key survives a
+           round trip rather than being quietly dropped (mv_git#114). */
+        {
+            char extra[256];
+            extra[0] = '\0';
+            FILE *j = fopen(".jbase", "rb");
+            if (j) {
+                char line[512];
+                while (fgets(line, sizeof line, j)) {
+                    if (line[0] == '#') continue;
+                    if (strstr(line, "name") || strstr(line, "version")) continue;
+                    char *nl = strpbrk(line, "\r\n");
+                    if (nl) *nl = '\0';
+                    if (!line[0]) continue;
+                    size_t have = strlen(extra), add = strlen(line) + 1;
+                    if (have + add < sizeof extra) {
+                        memcpy(extra + have, line, add - 1);
+                        extra[have + add - 1] = '\n';
+                        extra[have + add] = '\0';
+                    }
+                }
+                fclose(j);
+            }
+            snprintf(desc, dcap,
+                     "# jBASE account descriptor\nname = %s\nversion = 1\n%s",
+                     base, extra);
+        }
+        snprintf(path, pcap, "%s.jbase", pfx);
 #else
         (void)desc; (void)path; (void)pcap; (void)dcap;
         return 0;               /* MVX writes a real .mvx; it travels as a file */
@@ -2161,7 +2360,7 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        left stock_match() a no-op for every wholesale add: the baseline was
        learned, announced, and then ignored, and the commit carried the
        system's own VOC (mv_git#70). */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
 
     /* Committing the master VOC keeps the user's own items — paragraphs,
        sentences, menus, phrases (portable PROCs that must run on the other
@@ -2560,6 +2759,71 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
         snprintf(gp, sizeof gp, "%s/.git", top);
         if (stat(gp, &gs) == 0) return 1;
     }
+#ifdef MVXGIT_JBASE
+    /* A jBASE dictionary is a REGULAR FILE beside its data file, named
+       `<file>]D` -- so unlike U2, where a dictionary is a directory the record
+       pass claims, this pass sees an ordinary blob and stages it.  It must not:
+       a dictionary travels as <file>.DICT/ records, and committing the hash
+       file as well puts the same dictionary in the repository twice, once
+       portable and once as a binary nothing else can read.  It also comes back
+       to bite status, which derives the files to scan from the paths in the
+       index and would then open `<file>]D` as a file in its own right and
+       report its dictionary items as untracked records. */
+    {
+        size_t tl = strlen(top);
+        if (tl > 2 && strcmp(top + tl - 2, "]D") == 0) return 1;
+        /* ...and neither does the DATA file it belongs to.  A jBASE hash file
+           is one regular file too (VOC is 49152 bytes of it), so this pass saw
+           an ordinary blob and committed the whole hash structure -- a binary
+           nothing else can read, beside the very records it already carries in
+           portable form.  A regular file with a `]D` beside it is an MV file:
+           its RECORDS travel and its bytes do not.  That pairing is the same
+           test mv_filelist uses to decide the file is a file at all, so the two
+           passes agree by construction rather than by two lists kept in step. */
+        {
+            struct stat ds;
+            char dictpath[1200];
+            snprintf(dictpath, sizeof dictpath, "%s]D", top);
+            if (stat(dictpath, &ds) == 0) return 1;
+        }
+        /* Compiled BASIC, which jBASE writes beside the source.  Object code
+           is not source and does not travel -- the rule BP.O gets on UniVerse.
+
+           The extension is the HOST's, not a jBASE constant: .so on Linux and
+           AIX, .dll on Windows, .sl on HP-UX, .dylib on macOS, and jBASE leaves
+           an `.el` export-list companion beside each.  Matched case-insensitively
+           because Windows is.  A repository is shared BETWEEN hosts, so a Linux
+           checkout has to recognise a .dll committed from Windows and vice
+           versa -- testing only the local platform's extension would let each
+           host commit the others' object code.
+
+           Deliberately not here: `.a`, which jcompile -a produces, because a
+           static archive is normally collected into a named library rather than
+           left beside a source -- and the bare executable jcompile -o leaves,
+           which has no extension at all and nothing distinguishes from a data
+           file.  Over-excluding silently drops somebody's records, which is
+           worse than committing an object (TODO #114). */
+        {
+            static const char *const objext[] = {
+                ".so", ".dll", ".dylib", ".sl",
+                ".so.el", ".dll.el", ".dylib.el", ".sl.el", NULL };
+            for (int oi = 0; objext[oi]; oi++) {
+                size_t el = strlen(objext[oi]);
+                if (tl > el && strcasecmp(top + tl - el, objext[oi]) == 0)
+                    return 1;
+            }
+        }
+        /* And CATALOG's own bookkeeping: cataloguing BP/GIT.STATUS leaves a
+           `$GIT.STATUS` entry beside the source, which is the catalogued object
+           and not something anybody wrote.  A `$` name inside a FILE is jBASE's,
+           the same way BP.O is UniVerse's. */
+        {
+            const char *slash = strchr(rel, '/');
+            if (slash && slash[1] == '$') return 1;
+        }
+        if (top[0] == '$') return 1;
+    }
+#endif
     /* At the repository root — no prefix — a top-level directory that is itself
        an account belongs to that account's own pass.  Without this the root pass
        would sweep every account's records up as ordinary blobs, which is exactly
@@ -3240,7 +3504,7 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
  * there the control IS a record and `add` already stages it — synthesising a
  * second one would be inventing content over the account's own. */
 static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
-#if !defined(MVXGIT_GITD) && !defined(MVXGIT_UDT)
+#ifdef MVXGIT_MVXRT
     (void)ctx; (void)rp; (void)name;
     return;                     /* MVX: the file's control is its own record */
 #else
@@ -3285,7 +3549,7 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     char rp[4096];
     arg_str(argv[0], rp, sizeof rp);
     openaccount_sync(rp);               /* verb path: honour mvx.openaccount */
-    stock_ensure_udt(ctx, rp);          /* subtract the system's own VOC (#46) */
+    stock_ensure(ctx, rp);          /* subtract the system's own VOC (#46) */
     const char *acct = getenv("MVXACCOUNT");
     if (!acct || !acct[0]) acct = ".";
     int64_t nfiles = 0;
@@ -3357,10 +3621,22 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
+                    /* ASK ABOUT THE DICTIONARY TOO.  The furniture test above
+                       is asked about the FILE; the dictionary name is derived
+                       here and used to be staged unconditionally, so
+                       mv_account_furniture() never saw it -- even though it has
+                       named VOC.DICT and MD.DICT since mv_git#95 ("the VOC's own
+                       dictionary is the platform's, not the account's"), which
+                       is the same rule the repositories were cleaned under.
+                       It never showed while the master file was invisible to the
+                       walk; making jBASE's MD visible (#114) is what surfaced it,
+                       as 239 MD.DICT records on a fresh, empty account. */
                     char dn[300];
                     snprintf(dn, sizeof dn, "%s.DICT", name);
-                    const char *a2[] = {rp, dn, ""};
-                    addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    if (!mv_account_furniture(dn, strlen(dn))) {
+                        const char *a2[] = {rp, dn, ""};
+                        addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    }
                     stage_file_control(ctx, rp, name);
                     nfiles++;
                 }
@@ -3940,7 +4216,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     openaccount_sync(rp);
     /* status must apply exactly what add applies, or a record add never stages
        reads as untracked forever. */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
     git_repository *repo = NULL;
     git_index *index = NULL;
     if (repo_open(rp, &repo, &index) != 0) { fail(argv[1], "open"); return; }
@@ -4232,23 +4508,36 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                form and compare that against the committed blob, so a local
                permit/deny edit is invisible while a real identity change shows. */
             if (mv_openaccount() && strcmp(d->new_file.path, ".mv-account") == 0) {
-                FILE *df = fopen(".mvx", "rb");
                 int clean = 0;
+                char open[2048];
+                int ol = 0;
+                FILE *df = fopen(desc_native_name(), "rb");
                 if (df) {
                     char buf[65536];
                     size_t bn = fread(buf, 1, sizeof buf, df);
                     fclose(df);
                     acct_desc ad;
                     desc_parse(buf, bn, &ad);
-                    char open[1024];
-                    int ol = desc_render_open(&ad, open, sizeof open);
-                    git_oid woid;
-                    if (ol > 0 &&
-                        git_odb_hash(&woid, open, (size_t)ol,
-                                     GIT_OBJECT_BLOB) == 0 &&
-                        git_oid_equal(&woid, &d->old_file.id))
-                        clean = 1;
+                    ol = desc_render_open(&ad, open, sizeof open);
+                } else {
+                    /* No native descriptor on disk, which is the NORMAL state
+                       everywhere but MVX: the portable one is synthesised from
+                       the account rather than stored, so there is no file to
+                       project down.  Compare what a commit would write instead
+                       -- otherwise a freshly cloned account reports
+                       `M .mv-account` for ever with nothing to fix, and no
+                       edit could make it clean (mv_git#114). */
+                    char dpath[700], ddesc[2048];
+                    if (mv_git_desc_for(dpath, sizeof dpath, ddesc,
+                                        sizeof ddesc, mv_git_prefix(), 1))
+                        ol = snprintf(open, sizeof open, "%s", ddesc);
                 }
+                git_oid woid;
+                if (ol > 0 &&
+                    git_odb_hash(&woid, open, (size_t)ol,
+                                 GIT_OBJECT_BLOB) == 0 &&
+                    git_oid_equal(&woid, &d->old_file.id))
+                    clean = 1;
                 if (clean) continue;
                 sb_line(&s, " M .mv-account");
                 continue;
@@ -4510,7 +4799,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
                 /* descriptor: on disk it is native `.mvx`; diff its portable
                    projection (open form) against the committed `.mv-account`, so
                    a local permit/deny edit is not shown as a change */
-                FILE *df = fopen(".mvx", "rb");
+                FILE *df = fopen(desc_native_name(), "rb");
                 if (df) {
                     char raw[65536];
                     size_t rn = fread(raw, 1, sizeof raw, df);
@@ -4931,7 +5220,7 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
         const char *bc = git_blob_rawcontent(b);
         int64_t bl = (int64_t)git_blob_rawsize(b);
         control_type(bc, bl, out, cap);
-#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD)
+#ifdef MVXGIT_MVXRT
         /* THE NATIVE CONTROL NAMES THE FILE'S BACKEND, and it was being thrown
            away: everything that was not "dir" fell through to the account's
            default, so a clone put every file on local LMDB however the original
@@ -4979,7 +5268,11 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
            dictionary in git still gets created. */
         mv_value spec;
         mv_init(&spec);
-        mv_set_str(&spec, base, (int64_t)strlen(base));
+        /* The tree says VOC; the account may call it something else.  A
+           checkout onto jBASE therefore creates MD, not a VOC directory. */
+        char lbuf[320];
+        const char *lbase = tree_to_local(base, lbuf, sizeof lbuf);
+        mv_set_str(&spec, lbase, (int64_t)strlen(lbase));
         if (type[0]) {
             mv_value tv;
             mv_init(&tv);
@@ -4991,7 +5284,9 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         }
         mv_clear(&spec);
     }
-    if (!open_named(ctx, fn, &fvar)) {
+    char lfbuf[320];
+    const char *lfn = tree_to_local(fn, lfbuf, sizeof lfbuf);
+    if (!open_named(ctx, lfn, &fvar)) {
         mv_clear(&fvar); mv_clear(&id); mv_clear(&rec);
         return;
     }
@@ -5248,7 +5543,7 @@ static void materialize_tree_x(mv_ctx *ctx, git_repository *repo,
        a clone and a pull remove records the tree does not carry, and the stock
        ones it deliberately never carried must survive that.  Idempotent and
        once per process, so calling it on the common path is free. */
-    stock_ensure_udt(ctx, git_repository_workdir(repo));
+    stock_ensure(ctx, git_repository_workdir(repo));
     /* Below a repository root, this account's files live in its own subtree. */
     git_tree *owned = NULL;
     if (g_prefix[0]) {
@@ -5579,7 +5874,7 @@ void mvx_sub_GITCHECKOUT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
        "extra".  Without it a clone strips the destination's own VOC — the
        symptom is a stock verb like CT vanishing from a freshly cloned
        account. */
-    stock_ensure_udt(ctx, rp);
+    stock_ensure(ctx, rp);
     git_repository *repo = NULL;
     if (git_repository_open(&repo, rp) != 0) { fail(argv[2], "open"); return; }
     git_reference *br = NULL;

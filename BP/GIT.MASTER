@@ -44,10 +44,13 @@
 *  record access at all.  A plain IFNDEF around the body, never an $ELSE arm:
 *  a guard nested in an $ELSE is the case the preprocessor gets wrong.
 $IFNDEF MVX
-*     The master file, whatever this system calls it.
-      OPEN "VOC" TO FIMF ELSE
-         OPEN "MD" TO FIMF ELSE RETURN
-      END
+*     The master file, under the name this platform uses for it.  MVMASTER is
+*     an EQU in the generated PLATFORM.H (mvx#142) -- VOC everywhere, MD on
+*     jBASE -- so there is nothing to fall back to.  This used to try VOC and
+*     then MD, which is a guess dressed as a fallback: it costs a failed OPEN
+*     every call, and on a system where both names exist it silently takes
+*     whichever opens first.
+      OPEN MVMASTER TO FIMF ELSE RETURN
       FIALL = ""
       FIRAW = ""
       FITYPE = ""
