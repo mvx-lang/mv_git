@@ -12,6 +12,7 @@
 *  * @version 4.0
 *  */
 SUBROUTINE GIT.SHOW
+$INCLUDE BP.INC PLATFORM.H
 CALL GIT.SENT(S)
 FN = FIELD(S, " ", 3)
 ID = FIELD(S, " ", 4)

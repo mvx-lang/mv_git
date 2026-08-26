@@ -14,6 +14,7 @@
 * GIT IMPORT file — import a hash file from its directory file (after a
 * pull or checkout changed it).
 SUBROUTINE GIT.IMPORT
+$INCLUDE BP.INC PLATFORM.H
 CALL GIT.SENT(S)
 FN = FIELD(S, " ", 3)
 IF FN = "" THEN

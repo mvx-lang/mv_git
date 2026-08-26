@@ -12,6 +12,7 @@
 *  * @version 1.0
 *  */
 SUBROUTINE GIT.REMOTE
+$INCLUDE BP.INC PLATFORM.H
 CALL GIT.SENT(S)
 ACT = FIELD(S, " ", 3)
 NM = FIELD(S, " ", 4)

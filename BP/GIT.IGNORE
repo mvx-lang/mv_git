@@ -13,6 +13,7 @@
 *  */
 * GIT IGNORE pattern — keep matching records out of history.
 SUBROUTINE GIT.IGNORE
+$INCLUDE BP.INC PLATFORM.H
 CALL GIT.SENT(S)
 PAT = FIELD(S, " ", 3, 99)
 IF PAT = "" THEN
