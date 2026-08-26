@@ -2339,6 +2339,44 @@ void mvx_sub_GITINIT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
 
 /* Stage the current content of one MVX file's records (or one record)
    into the index.  GITADD(repo, file, record-or-empty, out) */
+/* A record the PLATFORM wrote into the MASTER FILE's dictionary.
+ *
+ * UniData ships F1..F27 there, and again as f1..f27 -- 58 records nobody wrote,
+ * which every account is born with and a clone gets its own of.  They were
+ * staged on every fresh account (mv_git#171).
+ *
+ * NARROW, DELIBERATELY.  It is tempting to reach for mv_account_furniture(),
+ * which already calls the whole of VOC.DICT furniture (#95) -- and that
+ * over-matches in both directions: it takes @ID and %FILE%, which are the
+ * ACCOUNT's and travel legitimately, and applied to a derived <file>.DICT it
+ * catches ordinary files too, which unstaged PTRTEST.DICT/%FILE% and left
+ * CUST.DICT/@ID untracked when it was tried.  So: the master file's dictionary
+ * only, and only an id of F<digits>.
+ *
+ * ONE PREDICATE, THREE CALLERS, because there are three staging paths and they
+ * do not share one: the CLI stages through mvx_sub_GITADD, the UniData verb
+ * through GITSTAGE, and UniVerse through the daemon's op_stage.  Filtering in
+ * mv_git_project() would have caught the last two and left `udt-git add -A`
+ * leaking -- the half-fix that produced #51, #78 and #95.
+ *
+ * The name may arrive prefixed (`<acct>/VOC.DICT`), so compare the last
+ * component. */
+int mv_git_platform_dict_record(const char *file, const char *id) {
+    if (!file || !id || !*id) return 0;
+    const char *base = strrchr(file, '/');
+    base = base ? base + 1 : file;
+    size_t bl = strlen(base);
+    if (bl <= 5 || strcmp(base + bl - 5, ".DICT") != 0) return 0;
+    size_t nl = bl - 5;
+    if (!((nl == 3 && strncasecmp(base, "VOC", 3) == 0) ||
+          (nl == 2 && strncasecmp(base, "MD", 2) == 0))) return 0;
+    if (id[0] != 'F' && id[0] != 'f') return 0;
+    if (!id[1]) return 0;
+    for (const char *q = id + 1; *q; q++)
+        if (*q < '0' || *q > '9') return 0;
+    return 1;
+}
+
 void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (argc < 4) return;
     ensure_init();
@@ -2493,6 +2531,8 @@ void mvx_sub_GITADD(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             char idb[256], nb[40];
             arg_str(&id, idb, sizeof idb);
+            /* The platform's own dictionary records never travel (#171). */
+            if (mv_git_platform_dict_record(fn, idb)) { skipped++; continue; }
             {
                 /* Two ignore namespaces, and they are not the same path.  The
                    account's own GIT IGNORE list is account-relative, so it sees

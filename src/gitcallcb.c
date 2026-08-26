@@ -117,6 +117,11 @@ char *GITPULLREF(char *repo, char *remote, char *branch) {
 /* GITSTAGE(repo, file, id, record) — stage one record at file/id into the
    batched index, @AM (0xFE) marks -> newlines.  The verb has already READ it. */
 char *GITSTAGE(char *repo, char *file, char *id, char *record) {
+    /* The platform's own master-dictionary records never travel (mv_git#171).
+       Asked here as well as in the CLI's walk because the two do not share a
+       staging path -- see mv_git_platform_dict_record(). */
+    if (mv_git_platform_dict_record(file ? file : "", id ? id : ""))
+        return emit(repo, NULL);
     char path[1200];
     snprintf(path, sizeof path, "%s/%s", file ? file : "", id ? id : "");
     mv_git_batch_begin(rp(repo));       /* idempotent */
