@@ -461,10 +461,24 @@ WRITE "Ada":@AM:"London" ON F, "C1"'
 # What must be zero is F<digits> in the master file's dictionary: UniData ships
 # F1..F27 and again as f1..f27 -- 58 records nobody wrote, which every account is
 # born with (mv_git#171).
+#
+# DRIVE IT THE WAY THE ARM UNDER TEST DRIVES.  This used to call $MVXGIT
+# directly, which is unset on an arm that runs the in-session verb -- and under
+# `set -u` that aborts the subshell, so nothing was staged, the count came back
+# 0, and the assertion PASSED.  It reported the rule holding while measuring an
+# account nobody had added to (mv_git#180).
 EMPTY="$WORK/emptyacct"; ACCT "$EMPTY"; LINK "$EMPTY"
-( cd "$EMPTY" && git init -q . >/dev/null 2>&1
-  "$MVXGIT" init >/dev/null 2>&1
-  "$MVXGIT" add -A >/dev/null 2>&1 )
+( cd "$EMPTY" && git init -q . >/dev/null 2>&1 )
+GITV "$EMPTY" GIT INIT   >/dev/null 2>&1
+GITV "$EMPTY" GIT ADD -A >/dev/null 2>&1
+# AND PROVE THE ADD HAPPENED, because "none of them travelled" is the same
+# answer as "nothing travelled".  LINK put the package's own BP in the account,
+# so a working add always stages something.
+# A COUNT NEEDS A NUMERIC TEST, not `tn`: that is a substring check, and "90"
+# contains "0".
+staged_any="$( cd "$EMPTY" && git diff --cached --name-only | wc -l | tr -d ' ' )"
+te "the fresh-account fixture actually staged something" "yes" \
+   "$( [ "${staged_any:-0}" -gt 0 ] && echo yes || echo no )"
 te "a fresh account stages none of the platform's own dictionary records" "0" \
    "$( cd "$EMPTY" && git diff --cached --name-only \
         | grep -ciE "^$MASTER\.DICT/f[0-9]+$" )"
