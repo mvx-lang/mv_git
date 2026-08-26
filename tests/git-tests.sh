@@ -113,7 +113,17 @@ elif [ "$PLATFORM" = uv ]; then
   # descriptor carries the VOC flavour, which UniVerse records nowhere readable
   # and a clone therefore cannot recover any other way (mv_git#15, #52).  Real
   # users get this from `uv-git adopt`; here it is written directly.
-  ACCT() { mkdir -p "$1"; ( cd "$1" && printf 'Y\n3\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+  # An account is BORN by running uv in an empty directory, which is a session
+  # like any other -- so it waits for a seat, and it says whether it got one.
+  # Losing the race here leaves a bare directory that every assertion below then
+  # measures, which is the jBASE lesson (mv_git#114) in the other arm.
+  ACCT() { uv_wait_seat
+           mkdir -p "$1"; ( cd "$1" && printf 'Y\n3\nQUIT\n' | "$MVX" ) >/dev/null 2>&1
+           # A UniVerse ACCOUNT HAS A VOC.  A directory does not.
+           if [ ! -d "$1/VOC" ] && [ ! -f "$1/VOC" ]; then
+             bad "FIXTURE: ACCT $(basename "$1")" "an account with a VOC" "a directory"
+             exit 1
+           fi
            printf '# UV account descriptor\nname = %s\nversion = 1\nflavour = PICK\n' \
                   "$(basename "$1")" > "$1/.uv"; }
   # The package directory IS an account, and install.sh installs into itself —
@@ -138,7 +148,37 @@ elif [ "$PLATFORM" = uv ]; then
                --exclude=./BP.O   --exclude=./D_BP.O \
                --exclude='./&SAVEDLISTS&' --exclude='./D_&SAVEDLISTS&' . ) \
              | ( cd "$1" && tar xf - ) 2>/dev/null
-           ( cd "$1" && ./install.sh ) >/dev/null 2>&1; }
+           # install.sh COMPILES AND CATALOGS, so it starts uv sessions -- and
+           # this was the one shim that raced for a seat instead of waiting for
+           # one.  Everything else here calls uv_wait_seat; LINK did not.
+           local _log="$WORK/install.$(basename "$1").log" _try=1
+           while [ $_try -le 2 ]; do
+             uv_wait_idle
+             ( cd "$1" && ./install.sh ) >"$_log" 2>&1
+             [ -f "$1/BP.O/GIT" ] && break
+             # A SECOND GO, not a shrug.  The first can still lose a seat to a
+             # session that had not finished letting go; what must never happen
+             # is CARRYING ON with a half-installed account, which is what the
+             # discarded exit status used to do.
+             [ $_try -eq 1 ] && say "   (LINK $(basename "$1"): install.sh left no BP.O/GIT — retrying)"
+             _try=$((_try+1))
+           done
+           # AND IT MUST HAVE PRODUCED THE VERB.  Discarding install.sh's output
+           # AND its status meant a catalog that failed left the account with a
+           # VOC entry pointing at an object nobody wrote, and nothing said so
+           # until a verb ran there -- as an EMPTY answer from GIT PULL, two
+           # hundred assertions later, in a different account, with the licence
+           # showing two free seats.  Three symptoms, none of them the cause
+           # (mv_git#187).
+           if [ ! -f "$1/BP.O/GIT" ]; then
+             bad "FIXTURE: LINK $(basename "$1") cataloged the verb" \
+                 "BP.O/GIT" "missing after install.sh"
+             # THE TAIL, not the head: the install announces itself for a dozen
+             # lines before it does anything, so the head is the same whether it
+             # worked or not.  What went wrong is where it stopped.
+             say "     --- last of $_log ---"
+             tail -25 "$_log" | sed 's/^/     /'
+           fi; }
   # THE LICENCE IS TWO SEATS, AND THIS SUITE IS FASTER THAN THEY ARE RELEASED.
   #
   # `uvlictool` reports them; a session that has just quit does not give its seat
@@ -155,6 +195,28 @@ elif [ "$PLATFORM" = uv ]; then
   uv_seats_free() {
     "${UVHOME:-/usr/uv}/bin/uvlictool" 2>/dev/null \
       | awk '/license seats are available/ {print $1; exit}'
+  }
+  # uv_wait_idle — wait until NOTHING holds a seat.
+  #
+  # uv_wait_seat waits for ONE free seat, which is right for a shim that opens
+  # one session.  install.sh opens several, one after another, and a seat that
+  # has not yet been returned by the previous session leaves it short partway
+  # through -- so the wait has to be for an idle licence, not a free seat
+  # (mv_git#187).
+  uv_seats_used() {
+    "${UVHOME:-/usr/uv}/bin/uvlictool" 2>/dev/null \
+      | awk '/license seats are in use/ {print $1; exit}'
+  }
+  uv_wait_idle() {
+    local n i=0
+    while [ $i -lt 200 ]; do                 # ~20s, then proceed and let it fail loudly
+      n="$(uv_seats_used)"
+      case "$n" in ''|*[!0-9]*) return 0 ;; esac   # no tool / unparsable: do not block
+      [ "$n" -eq 0 ] && return 0
+      i=$((i+1)); sleep 0.1
+    done
+    say "   (waited for the licence to go idle and it did not — see mv_git#187)"
+    return 0
   }
   uv_wait_seat() {
     local n i=0
@@ -204,8 +266,23 @@ elif [ "$PLATFORM" = uv ]; then
     # greets every session and prompts between commands, and an exact-match
     # assertion against a banner fails no matter how right the verb was.  That
     # is what the fence is FOR, so the tests use it rather than scraping.
-    GITV() { uv_wait_seat; local a="$1"; shift; local s="$*"
-             ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
+    GITV() { uv_wait_seat; local a="$1"; shift; local s="$*" raw
+             raw="$( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" 2>&1 )"
+             # NO FENCE MEANS THE VERB NEVER SPOKE.  awk hands back "" for that,
+             # and "" is also what a verb that legitimately printed nothing
+             # gives -- so an assertion reports a bare mismatch with no clue
+             # which of the two happened, and a session that failed to start at
+             # all reads exactly like a wrong answer (mv_git#187).
+             #
+             # Say what the session actually said, and how many seats there
+             # were when it said it.
+             case "$raw" in
+               *'<<<GIT-BEGIN>>>'*) ;;
+               *) printf 'NO-FENCE(seats=%s) %s\n' "$(uv_seats_free)" \
+                    "$(printf '%s' "$raw" | tr '\n' ' ')"
+                  return 0 ;;
+             esac
+             printf '%s\n' "$raw" \
                | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   fi
   # The session script IS stdin, so the editor's keystrokes simply follow the
