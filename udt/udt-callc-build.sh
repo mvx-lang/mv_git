@@ -143,21 +143,39 @@ echo "udt-callc: $NPKG package(s), $(grep -c ':' FUN 2>/dev/null || echo 0) func
 # installer uses (callc.d/git beside callc.d/mvx-lang_git), shadowing every
 # rebuild that followed.
 #
-# A warning, not an error: an existing box may have a duplicate right now, and
-# refusing to link would take its GIT verb away with no way to get it back.  But
-# it says both owners and which won, which is all anyone needed.
+# FATAL, because the failure it causes is undetectable downstream.  The library
+# simply does not contain the code that was just built, and nothing that runs
+# afterwards can tell: the install reports success, the verb answers, and it
+# answers with a stale engine.  In mv_git#163 that ran in CI for a month --
+# every udt suite run exercising a 29 Jul build while reporting on the current
+# one -- and it produced two full rounds of byte-level "evidence" for an
+# encoding bug that did not exist.
+#
+# The old behaviour was a warning, deliberately, and the reason was sound: an
+# existing box may have a duplicate right now, and refusing to link would take
+# its GIT verb away with no way to get it back.  So keep the way back rather
+# than the silence -- $UDT_CALLC_ALLOW_DUPES=1 proceeds exactly as before, and
+# the error says so.  A person who needs to link anyway can; a build that has
+# nobody reading its output stops.
 if [ -f OWN ]; then
 	DUPS=$(cut -f1 OWN | sort | uniq -d)
 	if [ -n "$DUPS" ]; then
-		echo "udt-callc: WARNING — the same object is staged by more than one package:" >&2
 		for dup in $DUPS; do
 			owners=$(awk -F'\t' -v o="$dup" '$1==o {printf "%s ", $2}' OWN)
 			winner=$(awk -F'\t' -v o="$dup" '$1==o {print $2; exit}' OWN)
 			echo "udt-callc:   $dup  <- $owners" >&2
-			echo "udt-callc:      '$winner' wins; the others' copies are NOT in the library" >&2
+			echo "udt-callc:      '$winner' would win; the others' copies would NOT be in the library" >&2
 		done
 		echo "udt-callc:   a stale fragment shadows every rebuild until it is removed:" >&2
 		echo "udt-callc:      ls $CALLCD    then    udt-callc-build.sh remove <name>" >&2
+		if [ "${UDT_CALLC_ALLOW_DUPES:-0}" = 1 ]; then
+			echo "udt-callc: WARNING — linking anyway (UDT_CALLC_ALLOW_DUPES=1); the library will NOT contain the losers' objects" >&2
+		else
+			echo "udt-callc: ERROR — the same object is staged by more than one package (above)." >&2
+			echo "udt-callc:   Refusing to build a library that silently omits what was just compiled." >&2
+			echo "udt-callc:   Remove the stale fragment, or set UDT_CALLC_ALLOW_DUPES=1 to link regardless." >&2
+			exit 1
+		fi
 	fi
 fi
 
