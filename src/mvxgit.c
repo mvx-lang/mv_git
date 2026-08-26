@@ -3621,10 +3621,22 @@ void mvx_sub_GITADDALL(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     !git_path_ignored(repo, name)) {
                     const char *a[] = {rp, name, ""};
                     addall_call(mvx_sub_GITADD, ctx, a, 3);
+                    /* ASK ABOUT THE DICTIONARY TOO.  The furniture test above
+                       is asked about the FILE; the dictionary name is derived
+                       here and used to be staged unconditionally, so
+                       mv_account_furniture() never saw it -- even though it has
+                       named VOC.DICT and MD.DICT since mv_git#95 ("the VOC's own
+                       dictionary is the platform's, not the account's"), which
+                       is the same rule the repositories were cleaned under.
+                       It never showed while the master file was invisible to the
+                       walk; making jBASE's MD visible (#114) is what surfaced it,
+                       as 239 MD.DICT records on a fresh, empty account. */
                     char dn[300];
                     snprintf(dn, sizeof dn, "%s.DICT", name);
-                    const char *a2[] = {rp, dn, ""};
-                    addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    if (!mv_account_furniture(dn, strlen(dn))) {
+                        const char *a2[] = {rp, dn, ""};
+                        addall_call(mvx_sub_GITADD, ctx, a2, 3);
+                    }
                     stage_file_control(ctx, rp, name);
                     nfiles++;
                 }
