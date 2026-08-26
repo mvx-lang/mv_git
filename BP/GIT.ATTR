@@ -52,6 +52,16 @@
       $IFDEF UV
       PLAT = "UV"
       $ENDIF
+      $IFDEF JBASE
+      PLAT = "JBASE"
+      $ENDIF
+*     THE FALLBACK IS NOT A DEFAULT, it is the last platform that had no guard.
+*     jBASE had none, so it answered "MVX" to everything: the editor told a
+*     jBASE user their account was "a native MVX repository", and the account
+*     descriptor below was written as `.mvx` beside a `.jbase` that already
+*     existed -- status then reported the account edit twice and never came
+*     clean, because the descriptor it staged was not the one on disk
+*     (mv_git#183).
       IF PLAT = "" THEN PLAT = "MVX"
 *
 *     Every output this program hands to a subroutine starts assigned, so the
@@ -195,6 +205,7 @@ SUBJECT:
          NATV = ".mvx"
          IF PLAT = "UDT" THEN NATV = ".udt"
          IF PLAT = "UV" THEN NATV = ".uv"
+         IF PLAT = "JBASE" THEN NATV = ".jbase"
          GPATH = PFX : NATV ; GOSUB GETBLOB
          PATH = GPATH ; SRC = GSRC
          IF SRC = "" THEN
@@ -857,7 +868,18 @@ STAGE:
 *     The CONVERT FUNCTION, not the statement: mvx-basic has the three-argument
 *     function and every platform here has it, while the `CONVERT x TO y IN z`
 *     statement is not universal.
+*     ...AND THE ARGUMENT ORDER IS NOT THE SAME EVERYWHERE.  MVX, UniData and
+*     UniVerse read CONVERT(from, to, expr); jBASE reads CONVERT(expr, from, to).
+*     Neither one is a compile error on the other, so the wrong order returns
+*     quietly: on jBASE CONVERT(AM, LF, SRC) converts LF to SRC *inside the
+*     single character AM* and hands back that character.  The whole attribute
+*     record then staged as two bytes -- one attribute mark and a newline -- and
+*     every later read found nothing declared (mv_git#183).
+      $IFDEF JBASE
+      SRCOUT = CONVERT(SRC, AM, LF)
+      $ELSE
       SRCOUT = CONVERT(AM, LF, SRC)
+      $ENDIF
       IF SRCOUT[LEN(SRCOUT), 1] # LF THEN SRCOUT = SRCOUT : LF
       CALL GIT.OBJ("STAGECTL", 3, REPO, PATH, SRCOUT, "", "", OBJOUT)
       IF OBJOUT # "" THEN CALL GIT.ECHO(OBJOUT)

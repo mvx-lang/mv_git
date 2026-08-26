@@ -44,14 +44,19 @@ $ENDIF
 $IFDEF UV
 PLAT = "UV"
 $ENDIF
+$IFDEF JBASE
+PLAT = "JBASE"
+$ENDIF
 IF PLAT = "" THEN
    PRINT "GIT PULL: this build defines no platform - check BP.INC PLATFORM.H"
    RETURN
 END
 BEGIN CASE
-   CASE PLAT = "MVX"
-$IFDEF MVX
-*     The engine IS the runtime here and reads the records itself.
+   CASE PLAT = "MVX" OR PLAT = "JBASE"
+$IFDEF ENGINE
+*     The engine IS the runtime here and reads the records itself.  Guarded on
+*     ENGINE rather than MVX: jBASE is the other platform where that is true,
+*     and it has the same GITPULL to call (mv_git#183).
       GOUT = ""
       CALL GITPULL(".git", RNAME, BR, GOUT)
       PRINT GOUT

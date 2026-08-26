@@ -1,6 +1,13 @@
 * GITUDIFF - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
-      SUBROUTINE GITUDIFF(REPO, OLDTEXT, NEWTEXT, PATH, ANS)
-      DEFC VAR JBGITUDIFF(VAR, VAR, VAR, VAR, VAR)
+*
+* NO REPO PARAMETER, unlike every other op here: a unified diff is computed from
+* two CONTENTS and never opens a repository.  The C side always ignored the one
+* it was given (it was copied from the UniData CallC entry point, which carries
+* repo for symmetry), and the extra parameter made this shim disagree with the
+* shared CALL in GIT.OBJ -- SUBROUTINE_PARM_ERROR the moment jBASE started
+* taking the engine branch (mv_git#183).
+      SUBROUTINE GITUDIFF(OLDTEXT, NEWTEXT, PATH, ANS)
+      DEFC VAR JBGITUDIFF(VAR, VAR, VAR, VAR)
       ANS = ""
-      X = JBGITUDIFF(REPO, OLDTEXT, NEWTEXT, PATH, ANS)
+      X = JBGITUDIFF(OLDTEXT, NEWTEXT, PATH, ANS)
       RETURN

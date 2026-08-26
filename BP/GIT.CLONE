@@ -73,6 +73,9 @@ $ENDIF
 $IFDEF UV
 PLAT = "UV"
 $ENDIF
+$IFDEF JBASE
+PLAT = "JBASE"
+$ENDIF
 IF PLAT = "" THEN
    PRINT "GIT CLONE: this build defines no platform - check BP.INC PLATFORM.H"
    RETURN
@@ -128,6 +131,22 @@ $ENDIF
       FOR CI = 1 TO DCOUNT(COUT, @AM)
          IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
       NEXT CI
+   CASE PLAT = "JBASE"
+$IFDEF JBASE
+*     jBASE is the UniData/UniVerse case, NOT the MVX one: an account is born by
+*     running CREATE-ACCOUNT, so a session cannot materialise one for itself --
+*     and jb-git clone already creates the account and materialises into it,
+*     exactly as udt-git and uv-git do.
+*
+*     The verb cannot hand over to it yet, because jBASE has no shell escape for
+*     EXECUTE to use: SH, `!`, SHELL and DOS are all "No such file or directory"
+*     on 6.2.1.1, so there is nothing to hand over WITH.  EXECUTE ... CAPTURING
+*     itself works; it just has no OS command to run.
+*
+*     SAY SO, rather than falling into the UniData arm below and running a CLI
+*     for another platform (mv_git#184).
+      PRINT "GIT CLONE: not available in-session on jBASE yet - use: jb-git clone"
+$ENDIF
    CASE 1
 *     UniData, for the same reason and by the same route as UniVerse above.  It
 *     used to call the engine's plain clone over CallC, and that is the very
