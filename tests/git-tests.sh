@@ -373,7 +373,7 @@ elif [ "$PLATFORM" = jbase ]; then
   else
     GITV() { local a="$1"; shift; local s="$*"
              ( cd "$a" && printf '%s\n' "$s" \
-               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
                  JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
     # KEYSTROKES CANNOT GO THROUGH jsh's COMMAND LOOP.  jsh reads its own input
     # line-buffered, so a sentence followed by keystrokes on the same stdin
@@ -389,7 +389,7 @@ elif [ "$PLATFORM" = jbase ]; then
     # (mv_git#183).
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
              ( cd "$a" && printf '%s' "$k" \
-               | PATH="$JBLIB/bin:$PATH" LD_PRELOAD="$JBPRE" \
+               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
                  JBCOBJECTLIST="$JBLIB" $s ) 2>&1; }
   fi
   CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
@@ -838,19 +838,6 @@ if [ "$SKIP_NET" = 1 ]; then
   skip "remote/clone/fetch/pull/push" "SKIP_NET=1"
 else
   say "-- remotes: bare remote + push + clone + pull (fast-forward) --"
-  # THE jBASE VERB PATH CANNOT CLONE IN-SESSION.  An account there is born by
-  # running CREATE-ACCOUNT, so the session cannot materialise one for itself and
-  # the verb has to hand over to the CLI the way UniData and UniVerse do.  It
-  # cannot: jBASE has no shell escape for EXECUTE to use -- SH, `!`, SHELL and
-  # DOS are all "No such file or directory" on 6.2.1.1 -- so there is nothing to
-  # hand over WITH (mv_git#184).  jb-git clone itself works, which is why the
-  # CLI arm runs all of this and stays green.
-  #
-  # Only the assertions that need the CLONED account are skipped.  The remote,
-  # the push, the descfiles helper and the C3 commit all still run, because the
-  # adopt tests below are built on them.
-  NOCLONE=0
-  if [ "$PLATFORM" = jbase ] && [ "${JBGIT_VIA:-cli}" = verb ]; then NOCLONE=1; fi
   REM="$WORK/rem.git"; git init --bare -q "$REM"
   # Point the bare repo's HEAD at the branch the ENGINE creates.  `git init
   # --bare` sets HEAD from the host's init.defaultBranch (still `master` on a
@@ -868,12 +855,8 @@ else
   # afterwards, and this repository's history carries no record of one (mv_git#15),
   # so uv-git refuses to guess and asks.  PICK matches the flavour ACCT() answers
   # (menu 3).  Harmless on the platforms that do not need it.
-  if [ "$NOCLONE" = 1 ]; then
-    skip "clone / pull" "in-session clone needs a shell escape jBASE lacks (mv_git#184)"
-  else
   clone_out="$(GITV "$A" GIT CLONE "$REM" "$B" --flavour=PICK)"
   t  "clone"         "cloned"        "$clone_out"
-  fi
 
   # --- the account descriptor -------------------------------------------
   #
@@ -908,7 +891,6 @@ else
                     [ -f "$d/$n" ] && out="$out$n"
                 done
                 printf '%s' "$out"; }
-  if [ "$NOCLONE" = 0 ]; then
   case "$PLATFORM" in
     mvx)   te "descriptor is a file here"      ".mvx" "$(descfiles "$B")" ;;
     uv)    te "no descriptor file on disk"     ""     "$(descfiles "$B")" ;;
@@ -930,16 +912,13 @@ else
   LINK "$B"
   GITV "$B" GIT CONFIG user.name Test >/dev/null
   GITV "$B" GIT CONFIG user.email test@example.com >/dev/null
-  fi
   # A adds C3, pushes; B pulls -> fast-forward re-materialises
   SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m c3 >/dev/null
   GITV "$A" GIT PUSH origin "$(BR "$A")" >/dev/null 2>&1
-  if [ "$NOCLONE" = 0 ]; then
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin "$(BR "$B")" 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
-  fi
 
   # --- adopt: a PLAIN-GIT checkout becomes a live account ----------------
   #

@@ -134,18 +134,41 @@ $ENDIF
    CASE PLAT = "JBASE"
 $IFDEF JBASE
 *     jBASE is the UniData/UniVerse case, NOT the MVX one: an account is born by
-*     running CREATE-ACCOUNT, so a session cannot materialise one for itself --
-*     and jb-git clone already creates the account and materialises into it,
-*     exactly as udt-git and uv-git do.
+*     running CREATE-ACCOUNT, so a session cannot materialise one for itself.
+*     jb-git clone already creates the account and materialises into it, exactly
+*     as udt-git and uv-git do, so the verb hands the whole job over the same way
+*     -- the developer types GIT CLONE and never sees a shell.
 *
-*     The verb cannot hand over to it yet, because jBASE has no shell escape for
-*     EXECUTE to use: SH, `!`, SHELL and DOS are all "No such file or directory"
-*     on 6.2.1.1, so there is nothing to hand over WITH.  EXECUTE ... CAPTURING
-*     itself works; it just has no OS command to run.
+*     AND THERE IS NO SHELL IN THE WAY.  jBASE's EXECUTE runs an OS command
+*     directly: `EXECUTE "CREATE-ACCOUNT /tmp/x" CAPTURING C` creates the
+*     account and answers `Account "x" created.`  So this arm needs no `SH -c`
+*     wrapper and has no shell quoting to get wrong.
 *
-*     SAY SO, rather than falling into the UniData arm below and running a CLI
-*     for another platform (mv_git#184).
-      PRINT "GIT CLONE: not available in-session on jBASE yet - use: jb-git clone"
+*     It also has no `2>&1`, because that is shell syntax and there is no shell.
+*     CAPTURING takes stdout alone, so a failure jb-git reports on stderr
+*     reaches the user's terminal directly rather than arriving in COUT -- the
+*     opposite of the UniVerse arm's problem, where the shell swallowed it and
+*     a failed clone came back as silence.
+*
+*     THE COST IS A SECOND SESSION.  jb-git makes its own with
+*     JBASESessionObjectFactory, so for the length of the clone two exist, and on
+*     an install whose licence counts them that is two seats.  udt-git and uv-git
+*     are handed clone the same way and pay the same price; every OTHER verb
+*     avoids it by working in the session it is already in, which is what #54
+*     was about.
+*
+*     The way to spend one seat instead is to do the job here: a primitive that
+*     runs CREATE-ACCOUNT -- the ONLY part a session cannot do for itself, and a
+*     brief one -- and then materialise the records through the session already
+*     held, rather than handing the whole clone to another process.  That needs
+*     an engine-side materialiser jBASE does not have yet (GITMATERIALISEACCT
+*     has no shim here), so it is mv_git#184 and not this commit.
+      CMD = "jb-git clone " : URL : " " : GDIR
+      IF REF # "" THEN CMD := " " : REF
+      EXECUTE CMD CAPTURING COUT
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
+      NEXT CI
 $ENDIF
    CASE 1
 *     UniData, for the same reason and by the same route as UniVerse above.  It
