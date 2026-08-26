@@ -230,8 +230,33 @@ elif [ "$PLATFORM" = jbase ]; then
   # JEDIFILENAME_MD is how a session finds the MD, and CREATE-ACCOUNT sets it to
   # the account's own directory; the tests drive jsh directly rather than
   # logging in, so they have to set it themselves.
+  # THE NAME IS REGISTERED, NOT THE PATH.  CREATE-ACCOUNT records the account
+  # NAME -- the basename -- in jBASE's SYSTEM file and REFUSES one already
+  # there.  $WORK is a fresh mktemp per run but the basenames are not (A, B,
+  # mfwalk), so every run after the first was refused, fell through to the old
+  # `|| mkdir -p`, and tested a bare directory: no MD, no bin, no lib.  That is
+  # how 48 assertions were green about something no user would ever have
+  # (mv_git#114).  Removing the directory does NOT remove the registration.
+  #
+  # DELETE-ACCOUNT -f also DELETES THE DIRECTORY its registration points at, so
+  # it runs BEFORE the directory exists and never after.
+  jb_unregister() { DELETE-ACCOUNT -f "$(basename "$1")" >/dev/null 2>&1 || true; }
   ACCT() { rm -rf "$1"
-           CREATE-ACCOUNT "$1" >/dev/null 2>&1 || mkdir -p "$1"
+           jb_unregister "$1"
+           if ! CREATE-ACCOUNT "$1" >/dev/null 2>&1; then
+             bad "FIXTURE: CREATE-ACCOUNT $1" "an account" "refused"
+             say "   the old code fell through to mkdir here and every"
+             say "   assertion below went green against a bare directory"
+             exit 1
+           fi
+           # AND PROVE IT IS ONE.  Measured on 6.2.1.1: CREATE-ACCOUNT leaves
+           # bin, lib and MD]D (the master file IS its dictionary there).  A
+           # fixture that cannot say what it built is the thing being fixed.
+           for part in "MD]D" bin lib; do
+             [ -e "$1/$part" ] || {
+               bad "FIXTURE: $1 has no $part" "a jBASE account" "a directory"
+               exit 1; }
+           done
            ( cd "$1" && printf 'CREATE-FILE BP 1 11 TYPE=UD\n' | "$MVX" ) >/dev/null 2>&1
            printf '# jBASE account descriptor\nname = %s\nversion = 1\n' \
                   "$(basename "$1")" > "$1/.jbase"; }
