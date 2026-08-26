@@ -311,6 +311,25 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
         const char *nm = e->d_name;
         if (nm[0] == '.') continue;                    /* . .. .git .jbase */
         size_t l = strlen(nm);
+        /* THE MASTER FILE IS ITS OWN DICTIONARY, and the rule below hid it.
+           jBASE's MD exists ONLY as `MD]D`: `jstat MD` reports File .../MD]D,
+           and `CT MD` and `CT DICT MD` return the same records, so there is no
+           `MD` data file on disk to enumerate.  Skipping every `]D` name as a
+           dictionary therefore made the account's own master file invisible to
+           the walk -- which is why the master-file direction of a commit had
+           never run here at all (mv_git#114).
+           Emit it under the name the account uses.  Every OTHER `]D` really is
+           the dictionary of the file beside it, and still skips below. */
+        if (l == 4 && !strcmp(nm, "MD]D")) {
+            static const char md[] = "MD", mdtype[] = "hash";
+            size_t need = sizeof md - 1 + 1 + sizeof mdtype - 1 + 1;
+            if (n + need >= sizeof buf) break;
+            if (n) buf[n++] = (char)0xFE;
+            memcpy(buf + n, md, sizeof md - 1); n += sizeof md - 1;
+            buf[n++] = (char)0xFD;
+            memcpy(buf + n, mdtype, sizeof mdtype - 1); n += sizeof mdtype - 1;
+            continue;
+        }
         if (l > 2 && !strcmp(nm + l - 2, "]D")) continue;  /* a dictionary */
         /* ...and so is <file>.DICT, which is what an OPEN-FORM clone puts on
            disk.  jBASE has no VOC, so this walk is a directory scan and a
