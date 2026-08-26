@@ -29,29 +29,29 @@
 *
 * Not needed on MVX: its callers reach the same state as a record in the account
 * file, which is the native shape there.
-      SUBROUTINE GIT.OSFILE(OP, PATH, DATA, OK)
+      SUBROUTINE GIT.OSFILE(OP, PATH, GDATA, OK)
       $INCLUDE BP.INC PLATFORM.H
       OK = 0
 *
       $IFDEF UDT
       IF OP = "READ" THEN
-         OSREAD DATA FROM PATH THEN OK = 1 ELSE DATA = ""
+         OSREAD GDATA FROM PATH THEN OK = 1 ELSE GDATA = ""
       END ELSE
-         OSWRITE DATA ON PATH
+         OSWRITE GDATA ON PATH
          OK = 1
       END
       $ENDIF
 *
       $IFDEF UV
       IF OP = "READ" THEN
-         DATA = ""
+         GDATA = ""
          OPENSEQ PATH TO OSF THEN
 *           Read to the end in chunks.  A regular file DOES short-return at EOF
 *           (a FIFO does not — see GIT.RPC), so a short chunk means the end.
             LOOP
                CHUNK = ""
                READBLK CHUNK FROM OSF, 8192 THEN
-                  DATA = DATA : CHUNK
+                  GDATA = GDATA : CHUNK
                   IF LEN(CHUNK) < 8192 THEN EXIT
                END ELSE
                   EXIT
@@ -60,7 +60,7 @@
             CLOSESEQ OSF
             OK = 1
          END ELSE
-            DATA = ""
+            GDATA = ""
          END
       END ELSE
          OPENSEQ PATH TO OSF ELSE
@@ -68,7 +68,7 @@
          END
 *        WEOFSEQ after the write truncates at the current position, so replacing
 *        the contents with something SHORTER does not leave the old tail behind.
-         WRITEBLK DATA TO OSF THEN OK = 1 ELSE OK = 0
+         WRITEBLK GDATA TO OSF THEN OK = 1 ELSE OK = 0
          WEOFSEQ OSF
          CLOSESEQ OSF
       END

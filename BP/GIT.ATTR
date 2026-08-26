@@ -655,10 +655,10 @@ SCREND:
 *     does MVX's own KEYIN; UniData and UniVerse hand back the raw character.
 *     EDITKEY reads both, so neither convention has to be normalised away.
 SCRKEY:
-      KEY = ""
+      GKEY = ""
       $IFDEF UDT
       IF USECURS THEN
-         KEY = CALLC CURSKEY("")
+         GKEY = CALLC CURSKEY("")
          RETURN
       END
 *     UNIDATA HAS NO KEYIN.  `KEYIN()` does not parse there at all, and a bare
@@ -666,20 +666,20 @@ SCRKEY:
 *     is the worse of the two, because it compiles.  One character comes from
 *     INPUT with a length instead.  Excluded by the PREPROCESSOR on the other
 *     two, since MVX's INPUT takes no length.
-      INPUT KEY, 1
+      INPUT GKEY, 1
 *     AN EMPTY READ IS ENTER HERE, not the end of input: INPUT with a length
 *     returns "" when the character read was the line terminator.  Normalised at
 *     the seam, which is where a platform's own convention belongs — EDITKEY
 *     then reads the same "ENTER" curses and MVX's KEYIN hand it, and the empty
 *     string keeps its other meaning (nothing left to read) on the platforms
 *     where that is what it means.
-      IF KEY = "" THEN KEY = "ENTER"
+      IF GKEY = "" THEN GKEY = "ENTER"
       RETURN
       $ENDIF
 *     And this line must be excluded from UniData by the preprocessor too, not
 *     merely stepped over by the RETURN above: the text still has to COMPILE.
       $IFNDEF UDT
-      KEY = KEYIN()
+      GKEY = KEYIN()
       $ENDIF
       RETURN
 *
@@ -746,15 +746,15 @@ PAINT:
 *     KEYINs; letters are what works when the terminal sends something else, and
 *     they are what a piped test can send.
 EDITKEY:
-      EK = OCONV(KEY, "MCL")
-      EU = OCONV(KEY, "MCU")
+      EK = OCONV(GKEY, "MCL")
+      EU = OCONV(GKEY, "MCU")
       BEGIN CASE
 *     A raw escape sequence: ESC [ A|B is three keystrokes, and this is what a
 *     terminal sends where nothing has decoded it for us.
-      CASE KEY = CHAR(27)
+      CASE GKEY = CHAR(27)
          GOSUB SCRKEY ; GOSUB SCRKEY
-         IF KEY = "A" THEN CUR -= 1
-         IF KEY = "B" THEN CUR += 1
+         IF GKEY = "A" THEN CUR -= 1
+         IF GKEY = "B" THEN CUR += 1
 *     A decoded NAME.  Curses returns one, and so does MVX's own KEYIN, so the
 *     same three lines serve both.
       CASE EU = "UP" ; CUR -= 1
@@ -765,7 +765,7 @@ EDITKEY:
       CASE EK = "q" ; EDONE = 1 ; ECANCEL = 1
       CASE EK = "s" ; EDONE = 1
       CASE EK = "d" ; GOSUB EDCLEAR
-      CASE KEY = CHAR(13) OR KEY = CHAR(10) ; GOSUB EDVALUE
+      CASE GKEY = CHAR(13) OR GKEY = CHAR(10) ; GOSUB EDVALUE
 *     Nothing left to read — a closed input, not an instruction.  Treat it as
 *     abandoning rather than as staging whatever happens to be on screen.
       CASE EK = "" ; EDONE = 1 ; ECANCEL = 1

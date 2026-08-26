@@ -43,9 +43,9 @@ FOR WI = 1 TO NW
 NEXT WI
 S = CLEAN
 URL = FIELD(S, " ", 3)
-DIR = FIELD(S, " ", 4)
+GDIR = FIELD(S, " ", 4)
 REF = FIELD(S, " ", 5)
-IF URL = "" OR DIR = "" THEN
+IF URL = "" OR GDIR = "" THEN
    PRINT "usage: GIT CLONE url dir {ref}"
    RETURN
 END
@@ -94,11 +94,11 @@ $IFDEF MVX
 *     only tidier: SH is behind the runtime privilege gate, so shelling out
 *     would take CLONE away from the restricted user this verb exists to serve.
       GOUT = ""
-      CALL GITCLONE(URL, DIR, REF, GOUT)
+      CALL GITCLONE(URL, GDIR, REF, GOUT)
       PRINT GOUT
       IF INDEX(GOUT, "cloned", 1) > 0 THEN
          MOUT = ""
-         CALL GIT.OBJ("MATACCT", 2, REPO, DIR, "", "", "", MOUT)
+         CALL GIT.OBJ("MATACCT", 2, REPO, GDIR, "", "", "", MOUT)
          IF TRIM(MOUT) # "" THEN PRINT MOUT
       END
 $ENDIF
@@ -117,7 +117,7 @@ $ENDIF
 *     uv-git already does this correctly, so the verb hands over rather than
 *     keeping a second, broken implementation.  The developer still types
 *     GIT CLONE at the TCL prompt and never sees a shell.
-      CMD = "uv-git clone " : URL : " " : DIR
+      CMD = "uv-git clone " : URL : " " : GDIR
       IF REF # "" THEN CMD := " " : REF
       IF FLAV # "" THEN CMD := " --flavour=" : FLAV
 *     2>&1 because uv-git reports progress and failures on stderr and only the
@@ -153,7 +153,7 @@ $ENDIF
 *     So clone is the exception, and it costs the second licence honestly: the
 *     caller's session, plus one in the account being built.  Anything cheaper
 *     would mean this session leaving the user's account to become the new one.
-      CMD = "udt-git clone " : URL : " " : DIR
+      CMD = "udt-git clone " : URL : " " : GDIR
       IF REF # "" THEN CMD := " " : REF
 *     2>&1 because udt-git reports progress and failures on stderr and only the
 *     final line on stdout — CAPTURING takes stdout alone, so without this a

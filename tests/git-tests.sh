@@ -298,8 +298,15 @@ elif [ "$PLATFORM" = jbase ]; then
       cp "$GITPKG"/BP/* "$1/BP/" 2>/dev/null
       [ -f "$JBLIB/.done" ] && return 0
       mkdir -p "$JBLIB/bin"
+      # The package ships every program, but a platform only builds what it
+      # can use: NOCOMPILE names the ones with no job here (the UniVerse
+      # out-of-process pair).  Compile them and they fail, and the failure is
+      # indistinguishable from a real one.
+      _skip=" $(sed 's/#.*//' "$GITPKG/NOCOMPILE" 2>/dev/null | tr -s '[:space:]' ' ') "
       ( cd "$1" && for p in BP/*; do
-            printf 'BASIC BP %s\nCATALOG BP %s\n' "$(basename "$p")" "$(basename "$p")"
+            _pb=$(basename "$p")
+            case "$_skip" in *" $_pb "*) continue ;; esac
+            printf 'BASIC BP %s\nCATALOG BP %s\n' "$_pb" "$_pb"
         done | JBCDEV_LIB="$JBLIB" JBCDEV_BIN="$JBLIB/bin" "$MVX" ) >"$JBLIB/catalog.log" 2>&1
       # jBASE reports a failed compile on stdout and carries on, so a program
       # that does not compile just leaves no object behind.  Assert the
@@ -311,7 +318,9 @@ elif [ "$PLATFORM" = jbase ]; then
       # $NAME reads as a source that produced no object.
       _miss=""; _n=0; _tot=0
       for p in "$GITPKG"/BP/*; do
-          _b=$(basename "$p"); _tot=$((_tot+1))
+          _b=$(basename "$p")
+          case "$_skip" in *" $_b "*) continue ;; esac
+          _tot=$((_tot+1))
           # A SUBROUTINE lands in obj/ as an encoded .o; a main PROGRAM is
           # cataloged into bin/ as an executable and has no .o at all.  Accept
           # either, or the three programs in this package read as failures.
