@@ -30,6 +30,19 @@ say()  { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n     expected: %s\n     actual:   %s\n' "$1" "$2" "$3"; }
 skip() { SKIP=$((SKIP+1)); printf '  skip %s (%s)\n' "$1" "$2"; }
+# BR <account> — the repository's current branch.
+#
+# The tests used to guess: `PUSH origin main || PUSH origin master`, because
+# git's default branch name depends on version and config.  That fallback was
+# UNREACHABLE.  GITV ends in a pipeline (`| awk` for the fenced verb output),
+# so it exits with awk's status -- always 0 -- and the right-hand side never
+# ran.  A first attempt against the wrong branch therefore produced empty
+# output that the assertion took as the answer, which is one of the shapes the
+# intermittent uv failures wore (mv_git#165).
+#
+# Ask the repository instead.  There is nothing to fall back to when you know.
+BR() { git --git-dir="$1/.git" symbolic-ref --short HEAD 2>/dev/null || echo main; }
+
 # t NAME EXPECTED ACTUAL  — substring assertion (EXPECTED must appear in ACTUAL)
 t()    { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
 # tn NAME UNWANTED ACTUAL — asserts the output does NOT contain UNWANTED.
@@ -120,12 +133,51 @@ elif [ "$PLATFORM" = uv ]; then
                --exclude='./&SAVEDLISTS&' --exclude='./D_&SAVEDLISTS&' . ) \
              | ( cd "$1" && tar xf - ) 2>/dev/null
            ( cd "$1" && ./install.sh ) >/dev/null 2>&1; }
+  # THE LICENCE IS TWO SEATS, AND THIS SUITE IS FASTER THAN THEY ARE RELEASED.
+  #
+  # `uvlictool` reports them; a session that has just quit does not give its seat
+  # back instantly, so a rapid sequence of shim calls transiently wants a third.
+  # What the caller sees when that happens is never the same twice: the explicit
+  # "UniVerse user limit has been reached", or EMPTY output (the verb never ran,
+  # so there is nothing between the <<<GIT-BEGIN>>> fences to extract), or the
+  # NEXT command reporting a cold session's login banner.  Three presentations,
+  # one cause, and each one reads like a code bug (mv_git#165).
+  #
+  # So wait for a seat rather than race for it.  The udt arm has had this lesson
+  # written down since mv_git#54 -- "once the slots are gone every failure is
+  # misleading" -- and the uv arm was left to learn it again.
+  uv_seats_free() {
+    "${UVHOME:-/usr/uv}/bin/uvlictool" 2>/dev/null \
+      | awk '/license seats are available/ {print $1; exit}'
+  }
+  uv_wait_seat() {
+    local n i=0
+    while [ $i -lt 100 ]; do                 # ~10s, then proceed and let it fail loudly
+      n="$(uv_seats_free)"
+      case "$n" in ''|*[!0-9]*) return 0 ;; esac   # no tool / unparsable: do not block
+      [ "$n" -gt 0 ] && return 0
+      i=$((i+1)); sleep 0.1
+    done
+    say "   (waited for a licence seat and none came free — see mv_git#165)"
+    return 0
+  }
+  # PREFLIGHT: say what the licence holds before anything is measured against it.
+  if [ -x "${UVHOME:-/usr/uv}/bin/uvlictool" ]; then
+    uvfree="$(uv_seats_free)"
+    say "-- licence: ${uvfree:-?} seat(s) free before the run --"
+    case "$uvfree" in
+      ''|*[!0-9]*) ;;
+      *) [ "$uvfree" -lt 1 ] &&
+           say "   (no free seat — every failure below is suspect, see mv_git#165)" ;;
+    esac
+  fi
+
   # Seven answers, and the seventh is a FILE DESCRIPTION which UniVerse stores
   # in VOC attribute 1 as "F <description>" — leave it EMPTY or the account
   # scan, which matches attribute 1 against "F", cannot see the file.
-  CF()   { ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  CF()   { uv_wait_seat; ( cd "$1" && printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   # DELETE.FILE confirms before it acts; an unanswered prompt leaves the file.
-  DF()   { ( cd "$1" && printf 'DELETE.FILE %s\nY\nY\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
+  DF()   { uv_wait_seat; ( cd "$1" && printf 'DELETE.FILE %s\nY\nY\nQUIT\n' "$2" | "$MVX" ) >/dev/null 2>&1; }
   # strip the leading verb: uv-git takes the subcommand, not the whole sentence
   # TWO WAYS IN, and both are tested, because both ship (DECISIONS.md).
   #
@@ -139,24 +191,24 @@ elif [ "$PLATFORM" = uv ]; then
   # Testing only one of them is how the primary interface goes unexercised: for
   # a while this file tested the CLI on UniVerse and the verb everywhere else.
   if [ "${UV_VIA:-verb}" = cli ]; then
-    GITV() { local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
+    GITV() { uv_wait_seat; local a="$1"; shift; local s="$*"; "$UVGIT" -a "$a" ${s#GIT } 2>&1; }
   else
     # `GIT -M` fences the verb's own output with <<<GIT-BEGIN>>>/<<<GIT-END>>>,
     # which is precisely what makes a session's output assertable: UniVerse
     # greets every session and prompts between commands, and an exact-match
     # assertion against a banner fails no matter how right the verb was.  That
     # is what the fence is FOR, so the tests use it rather than scraping.
-    GITV() { local a="$1"; shift; local s="$*"
+    GITV() { uv_wait_seat; local a="$1"; shift; local s="$*"
              ( cd "$a" && printf 'GIT -M %s\nQUIT\n' "${s#GIT }" | "$MVX" ) 2>&1 \
                | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
   fi
   # The session script IS stdin, so the editor's keystrokes simply follow the
   # sentence that starts it.
-  GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+  GITK() { uv_wait_seat; local a="$1" k="$2"; shift 2; local s="$*"
            ( cd "$a" && printf 'GIT -M %s\n%sQUIT\n' "${s#GIT }" "$k" | "$MVX" ) 2>&1 \
              | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
-  CT()   { ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
-  SEED() { local a="$1" body="$2"
+  CT()   { uv_wait_seat; ( cd "$1" && printf 'CT %s %s\nQUIT\n' "$2" "$3" | "$MVX" ) 2>&1; }
+  SEED() { uv_wait_seat; local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\nQUIT\n' | "$MVX" ) >/dev/null 2>&1; }
 else
@@ -529,7 +581,7 @@ else
   git --git-dir="$REM" symbolic-ref HEAD refs/heads/main
   GITV "$A" GIT REMOTE ADD origin "$REM" >/dev/null
   t  "remote list"   "origin"        "$(GITV "$A" GIT REMOTE)"
-  t  "push"          "pushed"        "$(GITV "$A" GIT PUSH origin main || GITV "$A" GIT PUSH origin master)"
+  t  "push"          "pushed"        "$(GITV "$A" GIT PUSH origin "$(BR "$A")")"
   B="$WORK/B"
   # clone via the engine (GITCLONE) into a materialised account
   # --flavour: a UniVerse account is created WITH a flavour and cannot be asked
@@ -597,8 +649,8 @@ else
   SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m c3 >/dev/null
-  GITV "$A" GIT PUSH origin main >/dev/null 2>&1 || GITV "$A" GIT PUSH origin master >/dev/null 2>&1
-  t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin main 2>&1 || GITV "$B" GIT PULL origin master 2>&1)"
+  GITV "$A" GIT PUSH origin "$(BR "$A")" >/dev/null 2>&1
+  t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin "$(BR "$B")" 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
 
   # --- adopt: a PLAIN-GIT checkout becomes a live account ----------------
