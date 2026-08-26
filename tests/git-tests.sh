@@ -388,14 +388,20 @@ WRITE "Ada":@AM:"London" ON F, "C1"'
 # account staging 478 files, 239 stock MD records plus 239 MD.DICT ones, while
 # the suite stayed green at 45/0.
 #
-# Counted, not sampled: "staged nothing" is the only form of this assertion that
-# cannot pass by looking at the wrong end of a list.
+# Counted, not sampled: a COUNT of the master file's records is the only form of
+# this that cannot pass by looking at the wrong end of a list.
+#
+# The master file specifically, not "nothing at all": LINK puts the package's
+# own BP into the account, and those ninety-odd programs are content.  What must
+# be zero is the SYSTEM's contribution -- the stock master-file records and the
+# stock dictionary beside them.
 EMPTY="$WORK/emptyacct"; ACCT "$EMPTY"; LINK "$EMPTY"
 ( cd "$EMPTY" && git init -q . >/dev/null 2>&1
   "$MVXGIT" init >/dev/null 2>&1
   "$MVXGIT" add -A >/dev/null 2>&1 )
-te "a fresh account stages nothing of the system's own" "0" \
-   "$( cd "$EMPTY" && git diff --cached --name-only | wc -l | tr -d ' ' )"
+te "a fresh account stages none of the system's master-file records" "0" \
+   "$( cd "$EMPTY" && git diff --cached --name-only \
+        | grep -cE "^($MASTER|$MASTER\.DICT)/" )"
 
 say "-- lifecycle: init / config / add -A / status / commit / log --"
 t  "init"        "repository"        "$(GITV "$A" GIT INIT)"
