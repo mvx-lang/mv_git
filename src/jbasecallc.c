@@ -337,11 +337,12 @@ VAR *JBGITTAG(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *A4, 
     return Result;
 }
 
-VAR *JBGITUDIFF(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *A3, VAR *Out) {
+/* udiff works on two texts, not on a repository -- so unlike every other op
+   here it takes no repo, and the BASIC shim's signature matches MVX's. */
+VAR *JBGITUDIFF(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
     mv_jbase_use_session(dp);
     mv_ctx *ctx = mv_ctx_create();
-    /* udiff works on two texts, not on a repository. */
-    char *r = mv_git_udiff(ctx, sfb(dp, A1), sfb(dp, A2), sfb(dp, A3));
+    char *r = mv_git_udiff(ctx, sfb(dp, A0), sfb(dp, A1), sfb(dp, A2));
     mv_ctx_destroy(ctx);
     give(dp, Out, r);
     STORE_VBI(Result, 0);

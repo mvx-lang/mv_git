@@ -136,6 +136,41 @@ GIT.AGENT
 GIT.RPC
 NC
 
+# EVERY ENGINE OP MUST HAVE A SHIM THAT AGREES WITH THE SHARED CALL.
+#
+# GIT.OBJ's engine arm is compiled on jBASE now (mv_git#179), and it is written
+# against MVX's subroutine signatures.  A shim whose parameter list disagrees is
+# NOT a compile error -- it is SUBROUTINE_PARM_ERROR at run time, on whichever
+# assertion happens to reach that op, which is how GITUDIFF's spare repo
+# parameter survived (mv_git#183).  Compare the two here, where both are in hand.
+#
+# A missing shim is reported but not fatal: several engine ops belong to the
+# session-platform path and are compiled out of their callers on jBASE.
+mismatch=0
+sed -n '/\$IFDEF ENGINE/,/\$ENDIF/p' "$HERE/BP/GIT.OBJ" \
+  | grep -oE 'CALL GIT[A-Z]+\([^)]*\)' > "$STAGE/.engineops" || true
+while read -r call; do
+    [ -n "$call" ] || continue
+    name=$(printf '%s\n' "$call" | sed 's/CALL \([A-Z.]*\)(.*/\1/')
+    # printf '%s\n', not '%s': without the trailing newline `wc -l` counts one
+    # separator fewer than there are arguments, and every op reads as a mismatch.
+    want=$(printf '%s\n' "$call" | sed 's/.*(\(.*\))/\1/' | tr ',' '\n' | wc -l | tr -d ' ')
+    shim="$HERE/jbase/BP/$name"
+    if [ ! -f "$shim" ]; then
+        echo "  note: $name has no jBASE shim (session-platform op)"
+        continue
+    fi
+    got=$(grep -oE "SUBROUTINE $name\([^)]*\)" "$shim" \
+          | sed 's/.*(\(.*\))/\1/' | tr ',' '\n' | wc -l | tr -d ' ')
+    if [ "$want" != "$got" ]; then
+        echo "  ERROR: $name — GIT.OBJ calls it with $want args, shim declares $got" >&2
+        mismatch=1
+    fi
+done < "$STAGE/.engineops"
+rm -f "$STAGE/.engineops"
+[ "$mismatch" = 0 ] || { echo "build-jbase.sh: engine shim signatures disagree" >&2; exit 1; }
+echo "  engine shims agree with GIT.OBJ"
+
 cp "$HERE/jbase/install.sh" "$STAGE/mv_git/"; chmod +x "$STAGE/mv_git/install.sh"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/mv_git/"
 [ -f "$HERE/README.md" ] && cp "$HERE/README.md" "$STAGE/mv_git/"
