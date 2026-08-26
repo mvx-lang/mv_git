@@ -391,17 +391,26 @@ WRITE "Ada":@AM:"London" ON F, "C1"'
 # Counted, not sampled: a COUNT of the master file's records is the only form of
 # this that cannot pass by looking at the wrong end of a list.
 #
-# The master file specifically, not "nothing at all": LINK puts the package's
-# own BP into the account, and those ninety-odd programs are content.  What must
-# be zero is the SYSTEM's contribution -- the stock master-file records and the
-# stock dictionary beside them.
+# THE PLATFORM'S OWN DICTIONARY RECORDS, and only those.  Two narrowings, both
+# learned by getting it wrong:
+#
+#   not "nothing at all" -- LINK puts the package's own BP into the account, and
+#   those ninety-odd programs are content.  That version failed at 94.
+#
+#   not "the whole master dictionary" either -- @ID and %FILE% are the ACCOUNT's
+#   and travel legitimately.  That version failed on UniVerse at 1, which turned
+#   out to be VOC.DICT/%FILE%: the assertion was wrong, not the code.
+#
+# What must be zero is F<digits> in the master file's dictionary: UniData ships
+# F1..F27 and again as f1..f27 -- 58 records nobody wrote, which every account is
+# born with (mv_git#171).
 EMPTY="$WORK/emptyacct"; ACCT "$EMPTY"; LINK "$EMPTY"
 ( cd "$EMPTY" && git init -q . >/dev/null 2>&1
   "$MVXGIT" init >/dev/null 2>&1
   "$MVXGIT" add -A >/dev/null 2>&1 )
-te "a fresh account stages none of the system's master-file records" "0" \
+te "a fresh account stages none of the platform's own dictionary records" "0" \
    "$( cd "$EMPTY" && git diff --cached --name-only \
-        | grep -cE "^($MASTER|$MASTER\.DICT)/" )"
+        | grep -ciE "^$MASTER\.DICT/f[0-9]+$" )"
 
 say "-- lifecycle: init / config / add -A / status / commit / log --"
 t  "init"        "repository"        "$(GITV "$A" GIT INIT)"
