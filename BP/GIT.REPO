@@ -48,29 +48,29 @@
       ACCT = @PATH
       IF ACCT = "" THEN ACCT = "."
       $ENDIF
-      DIR = ACCT
+      GDIR = ACCT
       REPO = ""
 *     Both of GIT.OSFILE's outputs start assigned: on MVX neither of its platform
 *     arms is compiled in, so it leaves DATA untouched and the runtime warns
 *     about an unassigned variable on every step of the walk.
       HEADC = "" ; HOK = 0
       LOOP
-         CALL GIT.OSFILE("READ", DIR : "/.git/HEAD", HEADC, HOK)
+         CALL GIT.OSFILE("READ", GDIR : "/.git/HEAD", HEADC, HOK)
          IF HOK THEN
-            REPO = DIR : "/.git"
+            REPO = GDIR : "/.git"
             RETURN
          END
 *        Step up one directory.  Stop at the root: "/" has no parent, and a
 *        relative path that runs out of separators has nowhere left to go.
          SL = 0
-         FOR K = LEN(DIR) TO 2 STEP -1
-            IF DIR[K, 1] = "/" THEN
+         FOR K = LEN(GDIR) TO 2 STEP -1
+            IF GDIR[K, 1] = "/" THEN
                SL = K
                K = 1                      ;* found the last separator — stop
             END
          NEXT K
          IF SL < 2 THEN EXIT
-         DIR = DIR[1, SL - 1]
+         GDIR = GDIR[1, SL - 1]
       REPEAT
 *     No repository above us: this account is not in one yet.
       REPO = ACCT : "/.git"
