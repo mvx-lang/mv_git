@@ -381,6 +381,22 @@ A="$WORK/A"; ACCT "$A"; LINK "$A"; CF "$A" CUST
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"London" ON F, "C1"'
 
+# A FRESH ACCOUNT COMMITS NOTHING.  Nothing asserted this, and it is the one
+# question that catches a whole class of bug: the system's own furniture staged
+# as if it were the user's.  It went uncaught on jBASE until measured by hand --
+# making the master file visible to the walk (mv_git#114) had a fresh, empty
+# account staging 478 files, 239 stock MD records plus 239 MD.DICT ones, while
+# the suite stayed green at 45/0.
+#
+# Counted, not sampled: "staged nothing" is the only form of this assertion that
+# cannot pass by looking at the wrong end of a list.
+EMPTY="$WORK/emptyacct"; ACCT "$EMPTY"; LINK "$EMPTY"
+( cd "$EMPTY" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add -A >/dev/null 2>&1 )
+te "a fresh account stages nothing of the system's own" "0" \
+   "$( cd "$EMPTY" && git diff --cached --name-only | wc -l | tr -d ' ' )"
+
 say "-- lifecycle: init / config / add -A / status / commit / log --"
 t  "init"        "repository"        "$(GITV "$A" GIT INIT)"
 GITV "$A" GIT CONFIG user.name Test >/dev/null
