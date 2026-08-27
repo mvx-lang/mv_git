@@ -48,10 +48,43 @@
 
 /* --- helpers ----------------------------------------------------------- */
 
-static void ensure_init(void) {
+/* mv_git_libgit2_boot — bring libgit2 up, once, the way this product needs it.
+ *
+ * OWNERSHIP VALIDATION IS OFF.  libgit2 refuses to open a repository whose
+ * directory belongs to another user:
+ *
+ *   git: open: repository path '/…/ACCT/' is not owned by current user
+ *
+ * That check is built for a single-user desktop clone, where a repo you do not
+ * own is a repo someone else planted.  An MV account is the opposite case by
+ * design: it is owned by the operator or the account holder and WORKED IN by
+ * whoever is logged on -- udt-git installs as the operator for exactly this
+ * reason, and a root-owned catalog directory has broken upgrades here before.
+ * Refusing to open the account because the account is not yours makes the verb
+ * unusable in the deployment every MV site actually runs.
+ *
+ * It is also not a security boundary we are giving up: the account is reached
+ * through the runtime privilege gate, which is the check that means something
+ * (ARCHITECTURE non-negotiable 8).  A check that only refuses to READ a
+ * directory the user is already inside is decorative here.
+ *
+ * MVGIT_OWNER_VALIDATION=1 restores libgit2's behaviour for anyone who wants
+ * it, because "we turned a check off" should be answerable with "turn it on".
+ */
+void mv_git_libgit2_boot(void) {
     static int done;
-    if (!done) { git_libgit2_init(); done = 1; }
+    if (done) return;
+    done = 1;
+    git_libgit2_init();
+#if LIBGIT2_VER_MAJOR > 1 || (LIBGIT2_VER_MAJOR == 1 && LIBGIT2_VER_MINOR >= 5)
+    {
+        const char *e = getenv("MVGIT_OWNER_VALIDATION");
+        git_libgit2_opts(GIT_OPT_SET_OWNER_VALIDATION, (e && *e == '1') ? 1 : 0);
+    }
+#endif
 }
+
+static void ensure_init(void) { mv_git_libgit2_boot(); }
 
 static void arg_str(const mv_value *v, char *out, size_t cap) {
     char nb[40];

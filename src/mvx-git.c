@@ -194,7 +194,7 @@ static int convert_import(const char *acct) {
 static int head_has(const char *acct, const char *name) {
     char rp[PATH_MAX];
     snprintf(rp, sizeof rp, "%s/.git", acct);
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_repository *repo = NULL;
     int yes = 0;
     if (git_repository_open(&repo, rp) == 0) {
@@ -372,7 +372,7 @@ static void materialize_clone(const char *acct) {
    .git/modules/<path>/), so config reads/writes work for submodules too — a
    hardcoded "<acct>/.git/config" does not exist when .git is a file. */
 static void real_config_path(const char *acct, char *buf, size_t n) {
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_repository *gr = NULL;
     if (git_repository_open(&gr, acct) == 0) {
         snprintf(buf, n, "%sconfig", git_repository_path(gr));
@@ -411,7 +411,7 @@ static int open_config_on(const char *acct) {
 static void open_config_set(const char *acct) {
     char cfgpath[PATH_MAX + 64];
     real_config_path(acct, cfgpath, sizeof cfgpath);
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_config *cfg = NULL;
     if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
         git_config_set_bool(cfg, "mvx.openaccount", 1);
@@ -527,7 +527,7 @@ static void setup_textconv(void) {
     ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
     if (n > 0) self[n] = '\0'; else snprintf(self, sizeof self, "mvx-git");
 #endif
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_config *cfg = NULL;
     char icfg[PATH_MAX + 64];
     real_config_path(".", icfg, sizeof icfg);

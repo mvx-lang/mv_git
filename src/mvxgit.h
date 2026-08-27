@@ -74,6 +74,11 @@
 #  define mv_voc_class    mvx_voc_class
 #endif
 
+/* Bring libgit2 up the way this product needs it (see mvxgit.c).  Every
+   binary must use this rather than git_libgit2_init() directly, or it gets
+   libgit2's default ownership validation and refuses the operator's account. */
+void mv_git_libgit2_boot(void);
+
 char *mv_git_init(mv_ctx *ctx, const char *repo);
 /* textconv filter (tidy diffs): beautify a record blob at `path` to stdout for
    diff display only — the stored blob is untouched.  0 on success. */
