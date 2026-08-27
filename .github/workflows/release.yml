@@ -331,15 +331,25 @@ jobs:
   # nothing left to race with.
   mark:
     needs: [source, mvx-binary, udt-binary, uv-binary, jbase-binary]
-    if: ${{ contains(github.ref_name, '-') || github.ref_name == 'dev' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Mark it a pre-release, and not the latest
+      - name: Say what this release is
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh release edit "$TAG" --prerelease --latest=false
-          echo "$TAG is marked a pre-release and not latest."
+          # STABLE IS THE ONE THAT IS NOT A PRE-RELEASE.  dev, beta and rc all
+          # are, and a stable tag is anything with no suffix -- 2.1.0, not
+          # 2.1.0-rc1 and not dev.
+          #
+          # Both directions are set explicitly.  Leaving the stable case alone
+          # would mean it kept whatever the first publish step happened to
+          # decide, which is the thing this job exists to stop.
+          case "$TAG" in
+            dev|*-*) gh release edit "$TAG" --prerelease --latest=false
+                     echo "$TAG is a pre-release, and not latest." ;;
+            *)       gh release edit "$TAG" --prerelease=false --latest
+                     echo "$TAG is a stable release, and is latest." ;;
+          esac
