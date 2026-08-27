@@ -31,6 +31,12 @@ on:
       # release -- which is the only way a dev build is worth having.
       - "dev-*"
 
+  # A TAG PUSHED BY A WORKFLOW DOES NOT TRIGGER ONE.  GitHub will not let the
+  # default GITHUB_TOKEN start another run -- it is how recursion is prevented --
+  # so the nightly's tag lands and nothing happens.  It dispatches this workflow
+  # on the tag instead, which is the same build from the same ref (mv_git#195).
+  workflow_dispatch:
+
 permissions:
   contents: write
   actions: read      # ci-gate reads the ci run for this commit

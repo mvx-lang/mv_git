@@ -99,5 +99,12 @@ jobs:
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               tag -a "$TAG" -m "nightly dev build of develop at $SHA" "$SHA"
           git push origin "$TAG"
-          echo "tagged $TAG — release.yml builds it from here."
-          echo "### nightly: tagged \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # AND START THE BUILD.  Pushing the tag is not enough: GitHub will not
+          # let a push made with the default GITHUB_TOKEN trigger another
+          # workflow, which is how it stops a workflow feeding itself for ever.
+          # The tag lands, release.yml never wakes up, and the only symptom is a
+          # tag with no release against it (mv_git#195).
+          gh workflow run release.yml --ref "$TAG"
+          echo "tagged $TAG and dispatched release.yml on it."
+          echo "### nightly: tagged \`$TAG\` and started the build" >> "$GITHUB_STEP_SUMMARY"
