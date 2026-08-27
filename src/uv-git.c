@@ -81,7 +81,7 @@ void mv_agent_release(void);
  * (in which case the default ".git" is already right). */
 static int enclosing_repo(char *out, size_t cap) {
     if (access(".git", F_OK) == 0) return 0;      /* our own — not enclosing */
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_buf found = {0};
     /* across_fs = 0: do not wander over a mount boundary looking for a repo */
     if (git_repository_discover(&found, ".", 0, NULL) != 0) return 0;
@@ -412,7 +412,7 @@ static void exclude_dicts(const char *gitdir, const char *prefix) {
    are repo-wide, so a nested account's must carry its own prefix or they would
    match the wrong directory.  Returns 0 on success. */
 static int repo_place(char *gitdir, size_t gcap, char *prefix, size_t pcap) {
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_repository *repo = NULL;
     if (git_repository_open_ext(&repo, ".", 0, NULL) != 0) return -1;
     const char *gd = git_repository_path(repo);
@@ -674,7 +674,7 @@ static int adopt(int argc, char **argv, int i) {
        just wrote.  Without this the descriptor would claim one thing and the
        commits do another. */
     if (open_form) {
-        git_libgit2_init();
+        mv_git_libgit2_boot();
         git_repository *repo = NULL;
         if (git_repository_open_ext(&repo, ".", 0, NULL) == 0) {
             git_config *cfg = NULL;
@@ -749,7 +749,7 @@ static int adopt(int argc, char **argv, int i) {
  * mv_git_diff is record-based for the same reason and has no plain equivalent
  * here, so it is simply not offered — `git diff` is the tool for that. */
 static int plain_status(void) {
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_repository *repo = NULL;
     if (git_repository_open(&repo, ".") != 0) {
         fprintf(stderr, "uv-git: not a git repository\n");
@@ -902,7 +902,7 @@ static int run_account(int argc, char **argv, int i) {
        seed it from the repository's config so add and status agree with what the
        descriptor claims. */
     {
-        git_libgit2_init();
+        mv_git_libgit2_boot();
         git_repository *gr = NULL;
         if (git_repository_open_ext(&gr, ".", 0, NULL) == 0) {
             git_config *cfg = NULL;
@@ -1435,7 +1435,7 @@ static int run_accounts(const char *root, int argc, char **argv, int i) {
 /* A blob from HEAD, malloc'd, or NULL.  The working tree is empty at this point
    — that is the whole point — so anything we need must come from the objects. */
 static char *head_blob(const char *gitdir, const char *path, size_t *len) {
-    git_libgit2_init();
+    mv_git_libgit2_boot();
     git_repository *repo = NULL;
     char *out = NULL;
     if (git_repository_open(&repo, gitdir) != 0) return NULL;
@@ -1565,7 +1565,7 @@ static int clone_cmd(int argc, char **argv, int i) {
        guessed: an account built at the wrong flavour looks right and behaves
        differently. */
     if (!desc && head_blob(".git", "VOC", NULL) == NULL) {
-        git_libgit2_init();
+        mv_git_libgit2_boot();
         git_repository *r = NULL;
         int has_voc = 0;
         if (git_repository_open(&r, ".git") == 0) {
