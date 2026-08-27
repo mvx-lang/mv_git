@@ -152,15 +152,22 @@ elif [ "$PLATFORM" = uv ]; then
            # this was the one shim that raced for a seat instead of waiting for
            # one.  Everything else here calls uv_wait_seat; LINK did not.
            local _log="$WORK/install.$(basename "$1").log" _try=1
-           while [ $_try -le 2 ]; do
+           while [ $_try -le 4 ]; do
              uv_wait_idle
+             # AND THEN A MOMENT MORE.  uvlictool reporting nothing in use is
+             # not the same as the seat being back: install.sh opens a dozen
+             # short sessions in a row -- CREATE.FILE, CT VOC, BASIC, CATALOG --
+             # and two of them still settling is enough to put the third over a
+             # two-seat licence.  What that looks like is not an error: the
+             # CREATE.FILE simply does not happen, and `BASIC BP *` then reports
+             # "compiled 0 program(s)" (mv_git#187).
+             sleep 1
              ( cd "$1" && ./install.sh ) >"$_log" 2>&1
              [ -f "$1/BP.O/GIT" ] && break
-             # A SECOND GO, not a shrug.  The first can still lose a seat to a
-             # session that had not finished letting go; what must never happen
-             # is CARRYING ON with a half-installed account, which is what the
-             # discarded exit status used to do.
-             [ $_try -eq 1 ] && say "   (LINK $(basename "$1"): install.sh left no BP.O/GIT — retrying)"
+             # RETRY, not shrug.  Carrying on with a half-installed account is
+             # what the discarded exit status used to do, and the account then
+             # failed two hundred assertions later in a different test.
+             say "   (LINK $(basename "$1"): install.sh left no BP.O/GIT — attempt $_try)"
              _try=$((_try+1))
            done
            # AND IT MUST HAVE PRODUCED THE VERB.  Discarding install.sh's output
