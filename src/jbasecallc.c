@@ -26,13 +26,23 @@
  * add are inlined BASIC.  Here the engine does them, so both are exposed and
  * the in-session verb runs the same code the CLI does (mv_git#114).
  */
+/* -std=c11 is STRICT: strdup, popen, pclose and the <sys/wait.h> status macros
+   are POSIX, not ISO C, so without this they are not declared -- and an
+   undeclared function is assumed to return int, which truncates a 64-bit
+   pointer.  The failure has no message: free() on the truncated pointer takes
+   the process down with exit 201, so the CRT before the CALL prints and the one
+   after does not (mv_git#192). */
+#define _POSIX_C_SOURCE 200809L
+
 #include "mvxgit.h"
 #include "jbasegit_rt.h"
 
 #include <jsystem.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 
 #ifdef DPSTRUCT_DEF
 #define JBASEDP DPSTRUCT *dp,
@@ -54,6 +64,61 @@ static const char *sfb(DPSTRUCT *dp, VAR *v) {
 static void give(DPSTRUCT *dp, VAR *out, char *answer) {
     STORE_VBC(out, answer ? answer : "");
     free(answer);
+}
+
+/* JBGITRUN(cmd, out, status) — run an OS command and answer BOTH streams.
+ *
+ * jBASE's EXECUTE ... CAPTURING takes stdout ALONE, and its argument handling
+ * defeats the usual workaround: `/bin/sh -c "…"` arrives as a filename for sh
+ * to run, not as a command line.  So from BASIC there is no way to see what a
+ * command said on stderr -- which is exactly where a licence refusal appears.
+ * A clone that failed for want of a seat came back as SILENCE, and the verb
+ * had nothing to report but success.
+ *
+ * EXECUTE does not give the exit status either, so even "did it work?" was a
+ * guess.  This answers both, and folds stderr in with 2>&1.
+ *
+ * NOT A NEW CAPABILITY.  The verb can already EXECUTE an OS command and jb-git
+ * already calls system(); this is the same reach with the errors attached.  It
+ * runs as the logged-on user like everything else the account does, and the
+ * privilege gate above it is unchanged (ARCHITECTURE non-negotiable 8).
+ */
+VAR *JBGITRUN(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    const char *cmd = sfb(dp, A0);
+    size_t nc = strlen(cmd) + 8;
+    char *full = (char *)malloc(nc);
+    if (!full) { give(dp, Out, NULL); STORE_VBI(Result, -1); return Result; }
+    snprintf(full, nc, "%s 2>&1", cmd);
+    FILE *f = popen(full, "r");
+    free(full);
+    if (!f) { give(dp, Out, NULL); STORE_VBI(Result, -1); return Result; }
+
+    size_t cap = 4096, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (buf) {
+        int c;
+        while ((c = fgetc(f)) != EOF) {
+            if (len + 2 > cap) {
+                size_t ncap = cap * 2;
+                char *nb = (char *)realloc(buf, ncap);
+                if (!nb) break;
+                buf = nb; cap = ncap;
+            }
+            /* One line per attribute, which is what CAPTURING hands back and
+               what the callers already index with <n>. */
+            buf[len++] = (c == '\n') ? (char)0xFE : (char)c;
+        }
+        /* A trailing newline would leave an empty final attribute on every
+           call, and DCOUNT would count a line that is not there. */
+        if (len && (unsigned char)buf[len - 1] == 0xFE) len--;
+        buf[len] = '\0';
+    }
+    int rc = pclose(f);
+    give(dp, Out, buf);                 /* give() frees it */
+    /* THE STATUS COMES BACK AS THE RESULT, following every other entry point
+       here, which store only into Result. */
+    STORE_VBI(Result, WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
+    return Result;
 }
 
 VAR *JBGITADD(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {

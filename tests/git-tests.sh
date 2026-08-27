@@ -997,6 +997,29 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin "$(BR "$B")" 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
 
+  # A CLONE THAT COULD NOT RUN MUST SAY SO.  Every arm but MVX hands clone to a
+  # CLI that opens a SESSION OF ITS OWN, so a site at its licence limit gets a
+  # clone that never ran -- and each arm used to print whatever came back and
+  # return as though it had worked.  On jBASE there was not even that: stderr
+  # was not captured, so the failure was silence (mv_git#192).
+  #
+  # A URL that cannot be cloned stands in for the licence refusal: the point is
+  # that the verb NOTICES, not which reason it was.
+  # ...and only where the VERB is what is being driven.  The check lives in
+  # BP/GIT.CLONE, so a CLI-driven arm never reaches it -- there the CLI prints
+  # its own error, which is not this behaviour and must not be asserted as if
+  # it were.
+  clone_verb=0
+  case "$PLATFORM" in
+    udt)   clone_verb=1 ;;
+    uv)    [ "${UV_VIA:-verb}" = verb ] && clone_verb=1 ;;
+    jbase) [ "${JBGIT_VIA:-cli}" = verb ] && clone_verb=1 ;;
+  esac
+  if [ "$clone_verb" = 1 ]; then
+    t "a clone that fails says so" "did not complete" \
+      "$(GITV "$A" GIT CLONE "$WORK/no-such-remote.git" "$WORK/nope" --flavour=PICK)"
+  fi
+
   # --- adopt: a PLAIN-GIT checkout becomes a live account ----------------
   #
   # The path nobody had tested, and the one that was broken.  `git` gives you

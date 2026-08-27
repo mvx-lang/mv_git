@@ -63,6 +63,7 @@ END
 * and it turns the failure mode inside out: if the defines do not reach here the
 * handler SAYS so instead of returning in silence, which is what made this cost
 * an afternoon.
+GHAND = 0 ; GSTAT = 0 ; COUT = ""
 PLAT = ""
 $IFDEF MVX
 PLAT = "MVX"
@@ -128,6 +129,7 @@ $ENDIF
 *     clone that FAILED came back as silence.
       CMD := " 2>&1"
       EXECUTE "SH -c '" : CMD : "'" CAPTURING COUT
+      GHAND = 1
       FOR CI = 1 TO DCOUNT(COUT, @AM)
          IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
       NEXT CI
@@ -144,11 +146,12 @@ $IFDEF JBASE
 *     account and answers `Account "x" created.`  So this arm needs no `SH -c`
 *     wrapper and has no shell quoting to get wrong.
 *
-*     It also has no `2>&1`, because that is shell syntax and there is no shell.
-*     CAPTURING takes stdout alone, so a failure jb-git reports on stderr
-*     reaches the user's terminal directly rather than arriving in COUT -- the
-*     opposite of the UniVerse arm's problem, where the shell swallowed it and
-*     a failed clone came back as silence.
+*     STDERR NEEDS C.  EXECUTE ... CAPTURING takes stdout ALONE and gives no
+*     exit status, and jBASE's argument handling defeats the usual workaround --
+*     `/bin/sh -c "…"` arrives as a filename for sh to run.  So a failure jb-git
+*     reported on stderr, a licence refusal above all, reached this program as
+*     SILENCE and was reported as success.  GITRUN is the engine primitive that
+*     runs the command with 2>&1 and answers the status too (mv_git#192).
 *
 *     THE COST IS EXTRA SESSIONS, and there is no arrangement of this that costs
 *     one.  jb-git makes its own, and jb-git in turn runs CREATE-ACCOUNT, which
@@ -169,7 +172,8 @@ $IFDEF JBASE
 *     settled in mv_git#184.
       CMD = "jb-git clone " : URL : " " : GDIR
       IF REF # "" THEN CMD := " " : REF
-      EXECUTE CMD CAPTURING COUT
+      CALL GITRUN(CMD, COUT, GSTAT)
+      GHAND = 1
       FOR CI = 1 TO DCOUNT(COUT, @AM)
          IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
       NEXT CI
@@ -208,8 +212,48 @@ $ENDIF
 *     "!cmd", not "SH -c": UniData answers `SH` with "Not a verb" (measured on
 *     8.3), while UniVerse wants the SH form.  One line, two spellings.
       EXECUTE "!" : CMD CAPTURING COUT
+      GHAND = 1
       FOR CI = 1 TO DCOUNT(COUT, @AM)
          IF TRIM(COUT<CI>) # "" THEN PRINT COUT<CI>
       NEXT CI
 END CASE
+IF GHAND THEN GOSUB CLONEDONE
 RETURN
+*
+* ---- did the CLI actually do it? ------------------------------------------
+*
+* A CLI THAT SAID NOTHING DID NOT SAY YES.  All three arms hand clone to a CLI
+* that opens a SESSION OF ITS OWN beside this one, so a site at its licence
+* limit gets a clone that never ran -- and every arm used to print whatever came
+* back and return as though it had worked.  On jBASE there was not even that:
+* stderr was not captured, so the failure was silence.
+*
+* Every one of the four CLIs prints "cloned" when it succeeds, so its absence is
+* the signal.  Say what went wrong, and name the licence when the text shows it,
+* because "no seat" is the failure a site will actually hit and the one that
+* reads least like itself.
+CLONEDONE:
+      GDONE = 0
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         IF INDEX(OCONV(COUT<CI>, "MCU"), "CLONED", 1) # 0 THEN GDONE = 1
+      NEXT CI
+      IF GDONE THEN RETURN
+      PRINT "GIT CLONE: the clone did not complete."
+      IF GSTAT # 0 THEN PRINT "  the CLI exited with status " : GSTAT
+      GLIC = 0
+      FOR CI = 1 TO DCOUNT(COUT, @AM)
+         GLINE = OCONV(COUT<CI>, "MCU")
+         IF INDEX(GLINE, "LICEN", 1) # 0 THEN GLIC = 1
+         IF INDEX(GLINE, "USER LIMIT", 1) # 0 THEN GLIC = 1
+         IF INDEX(GLINE, "SEAT", 1) # 0 THEN GLIC = 1
+         IF INDEX(GLINE, "TOO MANY USERS", 1) # 0 THEN GLIC = 1
+      NEXT CI
+      IF GLIC THEN
+         PRINT "  No licence seat was free for it.  Clone is the one verb that"
+         PRINT "  hands the job to the CLI, which opens a session beside this"
+         PRINT "  one -- so it needs a seat this session is not already holding."
+      END
+      IF TRIM(COUT) = "" THEN
+         PRINT "  The command produced no output at all."
+      END
+      RETURN
