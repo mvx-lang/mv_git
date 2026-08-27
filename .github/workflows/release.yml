@@ -25,6 +25,11 @@ on:
   push:
     tags:
       - "[0-9]+.[0-9]+*"
+      # The nightly tags develop as dev-<date>-<sha> when there is something new
+      # and CI is green.  It builds through THIS workflow rather than a second
+      # copy of it, so a dev build is the same artifacts by the same steps as a
+      # release -- which is the only way a dev build is worth having.
+      - "dev-*"
 
 permissions:
   contents: write
@@ -95,14 +100,14 @@ jobs:
             # `index` on the first would silently ignore the rest.
             jobs="$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
                       --jq '[.jobs[] | select(.conclusion == "success") | .name]')"
-            for port in mvx udt uv; do
+            for port in mvx udt uv jbase; do
               printf '%s' "$jobs" | jq -e --arg p "$port" 'index($p)' >/dev/null || {
                 echo "::error::ci run $url has no successful '$port' job."
                 exit 1
               }
             done
 
-            echo "ci is green for $SHA on every port (mvx, udt, uv): $url"
+            echo "ci is green for $SHA on every port (mvx, udt, uv, jbase): $url"
             break
           done
 
@@ -258,3 +263,52 @@ jobs:
         with:
           package: mvx-lang/git
           artifact: mv_git
+
+  # ---- jBASE binary: jb-git, and the verb's DEFC library ---------------------
+  # Built ON the licensed machine rather than in a container: jBASE's licence is
+  # machine-bound, so the toolchain stays where it was licensed.  That also means
+  # there is no shared build action to call -- udt and uv have one because their
+  # containers are the same shape as each other, and this is not.
+  jbase-binary:
+    needs: ci-gate
+    runs-on: [self-hosted, linux, jbase]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the jBASE binary package
+        id: pkg
+        shell: bash
+        run: |
+          set -e
+          # jbase_env.sh is not written to survive `set -u`.
+          set +u
+          . /opt/jbase/CurrentVersion/jbase_env.sh
+          set -u
+          rm -rf dist && mkdir -p dist
+          sh build-jbase.sh "$PWD/dist"
+
+          DIST="$PWD/dist/mv_git"
+          BASE="mv_git-${GITHUB_REF_NAME}-jbase"
+
+          # WHAT THE PACKAGE PROMISES MUST BE IN IT.  jb-git is the CLI and
+          # libjbgit.so is what the in-session verb reaches through DEFC; a
+          # package missing either is one that installs and then cannot run.
+          for f in jb-git libjbgit.so install.sh PLATFORM.H NOCOMPILE; do
+            [ -e "$DIST/$f" ] || { echo "package has no $f" >&2; exit 1; }
+          done
+          [ "$(ls -1 "$DIST/BP" | wc -l)" -gt 0 ] || { echo "package has no BP" >&2; exit 1; }
+
+          tar czf "$BASE.tar.gz" -C "$DIST" .
+          sha256sum "$BASE.tar.gz" > "$BASE.tar.gz.sha256"
+          echo "tarball=$BASE.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=$BASE.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the jBASE binary asset
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.checksum }}
+          fail_on_unmatched_files: true

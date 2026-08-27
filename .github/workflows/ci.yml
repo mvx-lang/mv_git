@@ -174,3 +174,41 @@ jobs:
             MVXGIT="$ROOT/dist/mv_git/bin/uv-git" \
             SKIP_NET=0 \
               bash tests/git-tests.sh'
+
+  jbase:
+    name: jbase
+    runs-on: [self-hosted, linux, jbase]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and run the suite on both arms
+        shell: bash
+        run: |
+          set -e
+          # jBASE is INSTALLED on this runner, not containerised like udt and uv.
+          # Its licence is a machine-bound trial, so the toolchain stays where it
+          # was licensed and the runner comes to it.
+          #
+          # jbase_env.sh is not written to survive `set -u`, so it is sourced
+          # without it.  CurrentVersion, not 6.2.1.1: the version moves.
+          set +u
+          . /opt/jbase/CurrentVersion/jbase_env.sh
+          set -u
+          export TERM=vt100
+
+          ROOT="$PWD"
+          rm -rf dist && mkdir -p dist
+          sh build-jbase.sh "$ROOT/dist"
+          PKG="$ROOT/dist/mv_git"
+
+          # BOTH ARMS, because they are different code.  The CLI drives jb-git
+          # from the shell; the verb runs the handlers inside a jsh session and
+          # reaches the engine through DEFC.  A green CLI arm says nothing about
+          # the verb -- that is how thirteen handlers stayed uncompilable for a
+          # year (mv_git#175).
+          for via in cli verb; do
+            echo "== jBASE arm: $via =="
+            PLATFORM=jbase MVX=jsh GITPKG="$PKG" MVXGIT="$PKG/jb-git" \
+            JBGIT_VIA="$via" SKIP_NET=0 bash tests/git-tests.sh
+          done
