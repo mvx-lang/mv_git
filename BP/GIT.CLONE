@@ -150,19 +150,23 @@ $IFDEF JBASE
 *     opposite of the UniVerse arm's problem, where the shell swallowed it and
 *     a failed clone came back as silence.
 *
-*     THE COST IS A SECOND SESSION.  jb-git makes its own with
-*     JBASESessionObjectFactory, so for the length of the clone two exist, and on
-*     an install whose licence counts them that is two seats.  udt-git and uv-git
-*     are handed clone the same way and pay the same price; every OTHER verb
-*     avoids it by working in the session it is already in, which is what #54
-*     was about.
+*     THE COST IS EXTRA SESSIONS, and there is no arrangement of this that costs
+*     one.  jb-git makes its own, and jb-git in turn runs CREATE-ACCOUNT, which
+*     is a jBASE PROGRAM and not a shell script -- it links libjbase.so and
+*     establishes a session of its own.  So a clone from the shell holds two, and
+*     a clone from the verb holds three for a moment.
 *
-*     The way to spend one seat instead is to do the job here: a primitive that
-*     runs CREATE-ACCOUNT -- the ONLY part a session cannot do for itself, and a
-*     brief one -- and then materialise the records through the session already
-*     held, rather than handing the whole clone to another process.  That needs
-*     an engine-side materialiser jBASE does not have yet (GITMATERIALISEACCT
-*     has no shim here), so it is mv_git#184 and not this commit.
+*     Doing the materialise in this session would take the verb from three to
+*     two, not to one: the account still has to be created, and CREATE-ACCOUNT is
+*     the only thing that knows how.  Reimplementing it in the engine to save one
+*     transient seat is a bad trade -- jb-git already creates the account in an
+*     empty directory and moves the furniture in, deliberately, so that the
+*     product's own idea of an account is the one used.
+*
+*     Two is what udt-git and uv-git pay on their clone paths too, and clone is a
+*     once-per-account operation.  Every OTHER verb works in the session it is
+*     already in, which is the case that matters (mv_git#54).  Measured and
+*     settled in mv_git#184.
       CMD = "jb-git clone " : URL : " " : GDIR
       IF REF # "" THEN CMD := " " : REF
       EXECUTE CMD CAPTURING COUT
