@@ -271,10 +271,10 @@ jobs:
           artifact: mv_git
 
   # ---- jBASE binary: jb-git, and the verb's DEFC library ---------------------
-  # Built ON the licensed machine rather than in a container: jBASE's licence is
-  # machine-bound, so the toolchain stays where it was licensed.  That also means
-  # there is no shared build action to call -- udt and uv have one because their
-  # containers are the same shape as each other, and this is not.
+  # Built in the licensed container on the general VM, like udt and uv.  There is
+  # no shared build action to call: udt's and uv's exist because their containers
+  # are the same shape as each other, and this one is not -- it needs no account
+  # to build, only a compiler and the jBASE headers.
   jbase-binary:
     needs: ci-gate
     runs-on: [self-hosted, linux, jbase]
@@ -285,13 +285,10 @@ jobs:
         id: pkg
         shell: bash
         run: |
-          set -e
-          # jbase_env.sh is not written to survive `set -u`.
-          set +u
-          . /opt/jbase/CurrentVersion/jbase_env.sh
-          set -u
-          rm -rf dist && mkdir -p dist
-          sh build-jbase.sh "$PWD/dist"
+          set -eu
+          # In the container, like udt and uv -- see .github/jbase-run for why
+          # this is not a machine with jBASE installed on it (mv_git#199).
+          sh .github/jbase-run 'rm -rf dist && mkdir -p dist && sh build-jbase.sh /pkg/dist'
 
           DIST="$PWD/dist/mv_git"
           BASE="mv_git-${GITHUB_REF_NAME}-jbase"
