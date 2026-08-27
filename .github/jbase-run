@@ -1,0 +1,37 @@
+#!/bin/sh
+# jbase-run <command...> — run a command inside the licensed jBASE container,
+# with the current directory mounted at /pkg (the working dir).
+# Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only (see LICENSE).
+#
+# The same shape as mv-package-registry's uv-run and for the same reason: the
+# jBASE media and its licence cannot be shipped, so the toolchain lives in an
+# image on the runner host and the workflow reaches into it.
+#
+# WHY NOT ON A MACHINE WITH jBASE INSTALLED.  It was, briefly, and that machine
+# is where jBASE development happens -- so CI and a person would have been taking
+# turns with one licence and one /jbasedata, each able to break the other without
+# either knowing why.  A container is a fresh account space every run.
+#
+#   jbase-run 'sh build-jbase.sh /pkg/dist'
+#   jbase-run 'PLATFORM=jbase ... bash tests/git-tests.sh'
+set -eu
+
+IMAGE="${JBASE_BUILDER_IMAGE:-jbase-builder:6.2.1.1}"
+[ "$#" -gt 0 ] || { echo "usage: jbase-run <command...>" >&2; exit 2; }
+JBASE_RUN_CMD="$*"
+export JBASE_RUN_CMD
+
+# The container runs as root, so anything it creates in the mounted tree is
+# root-owned -- and a root-owned file blocks the runner's NEXT checkout.  Chown
+# back on the way out, whatever the command did.
+exec docker run --rm \
+  -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+  -e GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
+  -e JBASE_RUN_CMD \
+  -v "$PWD":/pkg -w /pkg "$IMAGE" \
+  bash -lc '
+    . /opt/jbase/CurrentVersion/jbase_env.sh 2>/dev/null || true
+    export TERM="${TERM:-vt100}"
+    rc=0; eval "$JBASE_RUN_CMD" || rc=$?
+    chown -R "$HOST_UID:$HOST_GID" . 2>/dev/null || true
+    exit $rc'
