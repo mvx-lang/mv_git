@@ -29,8 +29,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write     # to create the dev tag
-  actions: read       # to read the ci run for the commit
+  contents: write     # to move the dev tag
+  # WRITE, not read.  Reading the ci run for the commit needs read; DISPATCHING
+  # release.yml on the tag needs write, and without it the tag lands and the
+  # dispatch is refused with "403: Resource not accessible by integration" --
+  # leaving exactly the symptom this workflow exists to avoid, a dev tag with no
+  # build against it (mv_git#198).
+  actions: write
 
 jobs:
   decide:
