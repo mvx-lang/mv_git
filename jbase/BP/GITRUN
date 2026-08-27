@@ -1,0 +1,14 @@
+* GITRUN - run an OS command and see BOTH streams.  See BP/GITSTATUS.
+*
+* jBASE's own EXECUTE ... CAPTURING takes stdout alone and gives no exit status,
+* so a command that failed on stderr -- a licence refusal above all -- reached
+* BASIC as silence (mv_git#192).
+*
+* The status is the DEFC's return value, following every other shim here.  It
+* cannot be a third VAR: storing an integer into a VAR the caller passed takes
+* the process down with exit 201 and prints nothing.
+      SUBROUTINE GITRUN(CMD, ANS, ST)
+      DEFC VAR JBGITRUN(VAR, VAR)
+      ANS = ""
+      ST = JBGITRUN(CMD, ANS)
+      RETURN
