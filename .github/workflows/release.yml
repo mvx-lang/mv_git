@@ -25,11 +25,11 @@ on:
   push:
     tags:
       - "[0-9]+.[0-9]+*"
-      # The nightly tags develop as dev-<date>-<sha> when there is something new
-      # and CI is green.  It builds through THIS workflow rather than a second
-      # copy of it, so a dev build is the same artifacts by the same steps as a
-      # release -- which is the only way a dev build is worth having.
-      - "dev-*"
+      # ONE rolling dev tag, moved to develop's HEAD by the nightly when there
+      # is something new and CI is green.  It builds through THIS workflow
+      # rather than a second copy of it, so a dev build is the same artifacts by
+      # the same steps as a release -- the only way a dev build is worth having.
+      - "dev"
 
   # A TAG PUSHED BY A WORKFLOW DOES NOT TRIGGER ONE.  GitHub will not let the
   # default GITHUB_TOKEN start another run -- it is how recursion is prevented --
@@ -318,3 +318,28 @@ jobs:
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.checksum }}
           fail_on_unmatched_files: true
+
+  # ---- what kind of release is this? -----------------------------------------
+  # Every publish step above can CREATE the release, and they do not agree about
+  # what it is: this workflow's own steps mark a suffixed tag as a pre-release,
+  # while the shared udt/uv build actions do not set the field at all -- so
+  # whichever ran first decided, and an unset field defaults to "full release".
+  # A dev build promoted to "Latest" is what anyone installing by name would then
+  # get.
+  #
+  # So say it once, at the end, when the assets are all there and there is
+  # nothing left to race with.
+  mark:
+    needs: [source, mvx-binary, udt-binary, uv-binary, jbase-binary]
+    if: ${{ contains(github.ref_name, '-') || github.ref_name == 'dev' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark it a pre-release, and not the latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --prerelease --latest=false
+          echo "$TAG is marked a pre-release and not latest."

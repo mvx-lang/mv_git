@@ -4,16 +4,21 @@
 # A dev build of DEVELOP, once a night, and only when there is a reason for one:
 # something new to build, and a CI run that says it works.
 #
-# It does not build anything itself.  It decides, and then tags -- and the tag
-# is what release.yml already builds from, so a dev build is the same artifacts
-# produced by the same steps as a release, on every port including jBASE.  A dev
-# build assembled by a second, slightly different pipeline would be testing that
-# pipeline rather than the product.
+# It does not build anything itself.  It decides, and then moves ONE tag -- and
+# that tag is what release.yml already builds from, so a dev build is the same
+# artifacts produced by the same steps as a release, on every port including
+# jBASE.  A dev build assembled by a second, slightly different pipeline would be
+# testing that pipeline rather than the product.
 #
-# NOTHING NEW MEANS NO BUILD.  A nightly that publishes the same commit again
-# every night teaches everyone to ignore it, and buries the night something did
-# change.  "Is there anything new" is asked exactly: does a dev-* tag already
-# point at develop's HEAD.
+# ONE TAG, NOT ONE A NIGHT.  `dev` is moved to develop's HEAD, so there is never
+# more than one dev tag and the release keeps its identity: the same URL, the
+# same asset names, updated in place.  Dated tags would say the same thing at the
+# cost of a new tag and a new release every night, for ever.
+#
+# WHICH ALSO MAKES "has anything changed" EXACT.  The tag's current target IS the
+# last hash that was built -- not a note about it that can drift out of step with
+# what was actually published.  A nightly that rebuilds the same commit every
+# night teaches everyone to ignore it, and buries the night something did change.
 name: nightly
 
 on:
@@ -47,11 +52,13 @@ jobs:
           echo "develop is at $SHA"
 
           # --- is there anything new? ---------------------------------------
-          # Asked of the tags themselves rather than of a stored marker: a tag
-          # pointing at this commit IS the record that it was built, and it
-          # cannot drift out of step with what was published.
-          if git tag --points-at "$SHA" | grep -q '^dev-'; then
-            echo "already built: $(git tag --points-at "$SHA" | grep '^dev-' | tr '\n' ' ')"
+          LAST="$(git rev-parse -q --verify 'refs/tags/dev^{commit}' || true)"
+          if [ -n "$LAST" ]; then
+            echo "last dev build was $LAST"
+          else
+            echo "no dev tag yet — this is the first dev build"
+          fi
+          if [ "$LAST" = "$SHA" ]; then
             echo "nothing new since the last dev build — stopping."
             exit 0
           fi
@@ -90,15 +97,16 @@ jobs:
           done
           echo "ci is green on every port: $url"
 
-          # --- tag it -------------------------------------------------------
-          # The short sha is in the name so the tag says what it is without
-          # anyone having to look it up, and two builds on one day cannot
-          # collide.
-          TAG="dev-$(date -u +%Y%m%d)-$(git rev-parse --short=7 "$SHA")"
+          # --- move the tag -------------------------------------------------
+          # -f and --force, because the whole point is that `dev` MOVES.  An
+          # annotated tag carries the date and the commit it was made from, so
+          # what a given dev build was is still answerable after the tag has
+          # moved on -- by the release, which keeps its own record.
+          TAG=dev
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              tag -a "$TAG" -m "nightly dev build of develop at $SHA" "$SHA"
-          git push origin "$TAG"
+              tag -f -a "$TAG" -m "nightly dev build of develop at $SHA" "$SHA"
+          git push --force origin "$TAG"
 
           # AND START THE BUILD.  Pushing the tag is not enough: GitHub will not
           # let a push made with the default GITHUB_TOKEN trigger another
@@ -106,5 +114,5 @@ jobs:
           # The tag lands, release.yml never wakes up, and the only symptom is a
           # tag with no release against it (mv_git#195).
           gh workflow run release.yml --ref "$TAG"
-          echo "tagged $TAG and dispatched release.yml on it."
-          echo "### nightly: tagged \`$TAG\` and started the build" >> "$GITHUB_STEP_SUMMARY"
+          echo "moved $TAG to $SHA and dispatched release.yml on it."
+          echo "### nightly: \`$TAG\` now at \`$(git rev-parse --short=7 "$SHA")\`, build started" >> "$GITHUB_STEP_SUMMARY"
