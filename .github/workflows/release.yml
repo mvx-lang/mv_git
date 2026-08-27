@@ -330,6 +330,25 @@ jobs:
     needs: [source, mvx-binary, udt-binary, uv-binary, jbase-binary]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0        # the whole history and every tag, to say what changed
+
+      - name: Write the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # EVERY ISSUE, UNDER THE SYSTEM IT WAS ON.  Four ports ship from one
+          # tree, and "what changed" is a different answer for each: a UniVerse
+          # site reading a list that is nine tenths jBASE has to work out which
+          # nine tenths, every time.
+          sh .github/release-notes.sh "$TAG" > /tmp/notes.md
+          cat /tmp/notes.md
+          gh release edit "$TAG" --notes-file /tmp/notes.md
+
       - name: Say what this release is
         env:
           GH_TOKEN: ${{ github.token }}
