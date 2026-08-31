@@ -6,7 +6,8 @@
   "systems": [
     "mvx",
     "udt",
-    "uv"
+    "uv",
+    "jbase"
   ],
   "dependencies": [
     "mvx-lang/cmd"
