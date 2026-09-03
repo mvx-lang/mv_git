@@ -7,6 +7,7 @@
 #   mvx binary  (linux/x86_64,le) -> mv_git-<ver>-mvx-linux-x86_64-le.tar.gz
 #   udt binary  (linux/x86_64,le) -> mv_git-<ver>-udt-linux-x86_64-le.tar.gz
 #   uv  binary  (linux/x86_64,le) -> mv_git-<ver>-uv-linux-x86_64-le.tar.gz
+#   jbase binary (linux/x86_64,le) -> mv_git-<ver>-jbase-linux-x86_64-le.tar.gz
 #
 # git is native (libgit2).  The mvx binary is the compiled verbs plus the
 # libgit2 extension library and the mvx-git CLI, built against a published mvx
@@ -291,7 +292,18 @@ jobs:
           sh .github/jbase-run 'rm -rf dist && mkdir -p dist && sh build-jbase.sh /pkg/dist'
 
           DIST="$PWD/dist/mv_git"
-          BASE="mv_git-${GITHUB_REF_NAME}-jbase"
+          # FOUR-PART SUFFIX, like every other binary here.  The registry parses
+          # an asset name as "<base>-<version>-<suffix>" and only treats the
+          # suffix as a binary key when it splits into exactly
+          # <system>-<os>-<arch>-<endian>; a bare "jbase" is two parts, so the
+          # artifact was published, ignored by the indexer, and every jBASE
+          # install silently resolved to the source tarball instead.
+          VER="${GITHUB_REF_NAME}"
+          ARCH="$(uname -m)"; OS="linux"
+          case "$(printf '\1\2' | od -An -tx2 | tr -d ' \n')" in
+            0201*) ENDIAN=le ;; 0102*) ENDIAN=be ;; *) ENDIAN=le ;;
+          esac
+          BASE="mv_git-$VER-jbase-$OS-$ARCH-$ENDIAN"
 
           # WHAT THE PACKAGE PROMISES MUST BE IN IT.  jb-git is the CLI and
           # libjbgit.so is what the in-session verb reaches through DEFC; a
