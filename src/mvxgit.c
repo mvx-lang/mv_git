@@ -758,14 +758,43 @@ const char *mv_git_id_item(void) {
 #endif
 }
 
+/* The DEFAULT COLUMN LIST -- what a bare LIST shows -- is furniture, and the
+ * open account spells it %PH%, beside %FILE% and %MAP% (mvx#164).  Every other
+ * MV system keeps it in the file's own dictionary as `@`.
+ *
+ * One name in the interchange form and each platform's own on disk, exactly as
+ * with the key item above.  Guarded on MVXGIT_MVXRT rather than by listing the
+ * platforms that use `@`: MVX is the one whose native name IS the canonical
+ * one, so there is nothing to translate there, and a guard that enumerates the
+ * others is how jBASE ended up outside this kind of rule twice already.
+ *
+ * The env override is what makes the translation testable at all: every
+ * platform to hand agrees on `@`, so without it the mapping is only ever
+ * exercised in one direction on one system, and an untested translation rots. */
+#define MV_PH_CANON "%PH%"
+
+static const char *mv_git_ph_item(void) {
+    const char *env = getenv("MVGIT_PH_ITEM");
+    if (env && env[0]) return env;
+#ifdef MVXGIT_MVXRT
+    return MV_PH_CANON;
+#else
+    return "@";
+#endif
+}
+
 /* The canonical name a dictionary record is committed under. */
 static const char *id_item_to_canon(const char *id) {
-    return strcmp(id, mv_git_id_item()) == 0 ? MV_ID_CANON : id;
+    if (strcmp(id, mv_git_id_item()) == 0) return MV_ID_CANON;
+    if (strcmp(id, mv_git_ph_item()) == 0) return MV_PH_CANON;
+    return id;
 }
 
 /* The local name a committed dictionary record is written back under. */
 static const char *id_item_to_local(const char *name) {
-    return strcmp(name, MV_ID_CANON) == 0 ? mv_git_id_item() : name;
+    if (strcmp(name, MV_ID_CANON) == 0) return mv_git_id_item();
+    if (strcmp(name, MV_PH_CANON) == 0) return mv_git_ph_item();
+    return name;
 }
 
 /* The rename above has to be undone wherever a committed PATH is read back as a
