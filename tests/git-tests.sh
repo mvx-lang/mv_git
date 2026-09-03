@@ -999,8 +999,17 @@ else
   # A adds C3, pushes; B pulls -> fast-forward re-materialises
   SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Cy":@AM:"Oslo" ON F, "C3"'
-  GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m c3 >/dev/null
-  GITV "$A" GIT PUSH origin "$(BR "$A")" >/dev/null 2>&1
+  # The two assertions below read the CLONE after a push from A, so every step
+  # that puts C3 on the remote is a PRECONDITION for them.  Those steps ran
+  # silently, and a failure in any of them showed up only as "pull fast-forward"
+  # and "pulled record" failing TOGETHER -- which reads exactly like a
+  # regression in the pull path.  That is what #187 is: a commit or push that
+  # did not happen is indistinguishable, at this point in the suite, from a pull
+  # that does not work.  Assert them, so a broken precondition names itself
+  # instead of being chased through the pull path a third time.
+  GITV "$A" GIT ADD -A >/dev/null
+  t  "commit for fast-forward" "["      "$(GITV "$A" GIT COMMIT -m c3 2>&1)"
+  t  "push for fast-forward"   "pushed" "$(GITV "$A" GIT PUSH origin "$(BR "$A")" 2>&1)"
   t  "pull fast-forward" "fast-forward" "$(GITV "$B" GIT PULL origin "$(BR "$B")" 2>&1)"
   t  "pulled record"  "Oslo"         "$(CT "$B" CUST C3)"
 
