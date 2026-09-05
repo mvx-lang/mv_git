@@ -138,8 +138,16 @@ jobs:
   # ---- mvx binary: compiled verbs + libgit2 extension + mvx-git CLI -----------
   # Uses a published mvx toolchain (setup-mvx) — it ships the runtime headers +
   # libmvxrt, which build-native.sh finds via $MVXHOME.  No from-source build.
+  # needs: [source] — NOT for ordering, but so this job never CREATES the release.
+  # Every publish step creates it as a side effect of uploading, so jobs starting
+  # together each try to create it: one wins and the losers fail finalize with
+  # `Validation Failed: {"code":"already_exists","field":"tag_name"}`, leaving a
+  # stray draft release behind for the tag.  That is where the duplicate draft
+  # beside every tag comes from, and on mv_package#66 it went further — the job
+  # it killed was `source`, which other jobs need, so the release shipped with
+  # half its artifacts.  `source` alone creates it; the rest upload into it.
   mvx-binary:
-    needs: ci-gate
+    needs: [ci-gate, source]
     runs-on: ubuntu-24.04
     steps:
       - name: Check out mv_git
@@ -244,7 +252,7 @@ jobs:
   # libgit2 lives at the container default (/usr/local); the version is stamped
   # from GITHUB_REF_NAME, which udt-run forwards.
   udt-binary:
-    needs: ci-gate
+    needs: [ci-gate, source]
     runs-on: [self-hosted, linux, udt]
     steps:
       - uses: actions/checkout@v5
@@ -262,7 +270,7 @@ jobs:
   # linked against the platform it will run on rather than whatever the runner
   # happens to have.
   uv-binary:
-    needs: ci-gate
+    needs: [ci-gate, source]
     runs-on: [self-hosted, linux, uv]
     steps:
       - uses: actions/checkout@v5
@@ -277,7 +285,7 @@ jobs:
   # are the same shape as each other, and this one is not -- it needs no account
   # to build, only a compiler and the jBASE headers.
   jbase-binary:
-    needs: ci-gate
+    needs: [ci-gate, source]
     runs-on: [self-hosted, linux, jbase]
     steps:
       - uses: actions/checkout@v5
