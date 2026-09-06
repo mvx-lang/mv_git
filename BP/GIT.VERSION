@@ -19,6 +19,27 @@
       $INCLUDE BP.INC PLATFORM.H
       REPO = ""
       CALL GIT.REPO(REPO)
+*     THE ONE QUESTION THAT NEEDS NO REPOSITORY, and it has to answer outside
+*     one: `git --version` works in any directory, and the first thing anyone
+*     does with a new install is ask what it is -- from an account that is not a
+*     repository yet, which is exactly where this said
+*
+*         GIT: the engine did not answer VERSION
+*
+*     and read as a broken engine.  The engine was fine.  Off MVX the reply
+*     comes back through a file under the path handed in, and GIT.REPO does not
+*     answer "" when there is no repository -- it answers <account>/.git, a path
+*     that does not exist.  So the engine wrote its reply into a directory that
+*     was not there, the write failed silently, and nothing came back
+*     (mv_git#215).
+*
+*     ASK WHETHER THE PATH IS REAL, the same way GIT.REPO's own walk does, and
+*     fall back to the account: it is writable, it is where the verb is already
+*     running, and VERSION reads nothing back from it -- it is somewhere to
+*     leave a reply, not a repository being opened.
+      RHEAD = "" ; RHOK = 0
+      CALL GIT.OSFILE("READ", REPO : "/HEAD", RHEAD, RHOK)
+      IF RHOK = 0 THEN REPO = "."
       VOUT = ""
       CALL GIT.OBJ("VERSION", 1, REPO, "", "", "", "", VOUT)
       IF VOUT = "" THEN
