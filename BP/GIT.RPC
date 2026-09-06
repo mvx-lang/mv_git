@@ -37,16 +37,29 @@
 * The connection is held in COMMON so it is opened once per session and reused:
 * the pipes, the token and the open flag all outlive a single call.
       $INCLUDE BP.INC PLATFORM.H
-$IFDEF MVX
-*     NOT USED ON MVX, and excluded rather than merely unreached.  This is the
-*     client for the UniVerse background process; MVX's runtime IS the engine and
-*     calls it directly.  The body still has to COMPILE, because mkpkg bundles
-*     every BP item — and WRITEBLK/READBLK do not exist here, which failed the
-*     whole package build.
-      STATUS = 1 ; RESULT = "GIT.RPC: not used on MVX"
+$IFNDEF UV
+*     UNIVERSE ONLY, and excluded everywhere else rather than merely unreached.
+*     This is the client for the UniVerse background process, and GIT.OBJ reaches
+*     it only on UniVerse: MVX's runtime IS the engine, jBASE calls the
+*     engine directly (its PLATFORM.H defines ENGINE), and UniData goes through
+*     CallC.  The body still has to COMPILE wherever the package is built,
+*     because every BP item is bundled.
+*
+*     THE GUARD USED TO BE "NOT MVX", WHICH IS NOT THE SAME SET.  WRITEBLK and
+*     READBLK are UniVerse's FIFO primitives and do not exist on UniData either,
+*     so every UniData install compiled the UniVerse body and failed on
+*
+*       <line 100>       WRITEBLK HDR TO RPC.REQ ELSE
+*                  -----------------^
+*
+*     -- UniData parsing WRITEBLK as a variable.  That first error put the parser
+*     out of step, so it then reported the program as ending at the next END and
+*     ZPAD and CONNECT as labels used but never defined: three symptoms, one
+*     cause, and none of them naming the missing statement (mv_git#224).
+      STATUS = 1 ; RESULT = "GIT.RPC: not used on this platform"
       RETURN
 $ENDIF
-$IFNDEF MVX
+$IFDEF UV
       COMMON /GITRPC/ RPC.REQ, RPC.RSP, RPC.TOKEN, RPC.OPEN
 *
       MAGIC = "MVG1"
