@@ -636,6 +636,29 @@ t  "record round-trips" "London"     "$(CT "$A" CUST C1)"
 # The regression was not in the switch; it was in everything else.
 t  "version command"  "libgit2"     "$(GITV "$A" GIT VERSION)"
 t  "version switch"   "libgit2"     "$(GITV "$A" GIT --VERSION)"
+
+# AND IT HAS TO NAME THE BUILD.  Both assertions above pass on a label with no
+# version in it -- "libgit2" comes from the line BELOW the one that says what
+# mv_git is -- and that is exactly what the UniData in-session engine answered:
+# a bare flavour, while mvgitd, jb-git and mvx-git all stamped theirs in.  A
+# version command that will not tell you the version is not a version command,
+# and the number is the whole reason to ask when a verb and its engine have
+# drifted apart (mv_git#215).  The engine line is the FIRST one.
+VLINE="$(GITV "$A" GIT VERSION | head -1)"
+t  "version names the build" "yes" \
+   "$(printf '%s' "$VLINE" | grep -q '[0-9]' && echo yes || echo "no version in: $VLINE")"
+
+# AND IT HAS TO ANSWER OUTSIDE A REPOSITORY.  Both spellings run in $A, which is
+# a repository by now -- so the one place a version command matters most, the
+# first thing anyone types after installing, from an account that is not a
+# repository yet, was the one place never tried.  It did not work: off MVX the
+# reply comes back through a file under the repo path, and with no repository
+# the C side fell back to ".git" in an account that has none, so the write
+# failed silently and mv_git said "the engine did not answer VERSION" -- which
+# reads as a broken install rather than a missing directory (mv_git#215).
+NRA="$WORK/norepo"; ACCT "$NRA"; LINK "$NRA"
+t  "version outside a repository"        "libgit2" "$(GITV "$NRA" GIT VERSION)"
+t  "version switch outside a repository" "libgit2" "$(GITV "$NRA" GIT --VERSION)"
 t  "flags still parse after it" "[" "$(SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Zoe":@AM:"Perth" ON F, "CV"'; GITV "$A" GIT ADD -A >/dev/null; GITV "$A" GIT COMMIT -m after-version)"
 

@@ -86,8 +86,14 @@ mkdir -p udt-callc
 # a licence.  One is enough — the define makes any record primitive here refuse
 # rather than open a SECOND session back into the account we are already in
 # (mv_git#54).
+# -DMVXGIT_VERSION: THESE OBJECTS ARE AN ENGINE TOO, and an engine that cannot
+# say which build it is is the one you most want to ask.  mvgitd, jb-git and the
+# out-of-session udt-git all get their version stamped in; this loop was the one
+# that did not, so `GIT --VERSION` in a UniData session answered a flavour with
+# no version in it (mv_git#215).
 for c in gitcallcb agentcallc mvxgit udtgit_rt; do
     "$CC" -m64 -fPIC -O2 -DMVXGIT_UDT -DMVXGIT_INSESSION \
+        -DMVXGIT_VERSION="\"$UGVER\"" \
         -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
         -c "$SRC/$c.c" -o "udt-callc/$c.o"
 done

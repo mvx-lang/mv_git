@@ -25,6 +25,12 @@
 
 #include "mvxgit.h"
 
+/* Stamped by the build (-DMVXGIT_VERSION); the guard keeps a hand compile
+ * working, the way mvxgit.c does it. */
+#ifndef MVXGIT_VERSION
+#define MVXGIT_VERSION "0"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -275,9 +281,17 @@ char *GITSTAGEDESC(char *repo, char *prefix, char *open) {
     return emit(repo, NULL);
 }
 
-/* GITVERSION(repo) — what this account's engine actually is. */
+/* GITVERSION(repo) — what this account's engine actually is.
+ *
+ * IT HAS TO SAY WHICH BUILD, the way the other three engines do — mvgitd,
+ * jb-git and the out-of-session udt-git all stamp their version into the label,
+ * and this one alone answered a bare flavour with no version in it at all.
+ * `git --version` that will not tell you the version is not a version command,
+ * and the number is the whole reason to ask when a verb and its engine have
+ * drifted apart.  The cause was in the build, not here: the udt-callc objects
+ * were the only ones compiled with no -DMVXGIT_VERSION (mv_git#215). */
 char *GITVERSION(char *repo) {
-    return emit(repo, mv_git_versions("mv_git (in-session, UniData CallC)"));
+    return emit(repo, mv_git_versions("mv_git " MVXGIT_VERSION " (in-session, UniData CallC)"));
 }
 
 /* GITFURNITURE(repo, list) — the account-furniture rules, answered for the file
