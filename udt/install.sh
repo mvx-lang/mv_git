@@ -173,10 +173,26 @@ say "compiling + globally cataloging the GIT verb + its handler set"
 # Files only: BP/ can also hold a generated include DIRECTORY (BP/BP.INC, written
 # by mkpkg beside the sources), which is not a program to compile.
 GITBP="$(cd "$HERE/BP" 2>/dev/null && for f in *; do [ -f "$f" ] && printf '%s ' "$f"; done)"
+# THE COMPILER'S OUTPUT IS THE ONLY EVIDENCE, and this threw it away.  With
+# every message going to /dev/null, a program that failed to compile left the
+# OLD catalog object in place and the install said nothing -- and the CI step
+# that greps install.log for "compilation failed" could never fire, because the
+# text it looks for was discarded before the log was written.  GIT.RPC failed
+# here on every UniData install since the verb was written and was found by
+# reading a package manager's log, not this one (mv_git#224).
+GITCLOG="${TMPDIR:-/tmp}/mvgit-compile.$$"
+: > "$GITCLOG"
 ( cd "$HERE"
   for gn in $GITBP; do
-    printf 'BASIC BP %s\nCATALOG BP %s FORCE\n' "$gn" "$gn" | LANG="$LANG_OK" TERM=dumb "$UDT" >/dev/null 2>&1
+    printf 'BASIC BP %s\nCATALOG BP %s FORCE\n' "$gn" "$gn" | LANG="$LANG_OK" TERM=dumb "$UDT" >>"$GITCLOG" 2>&1
   done ) || true
+if grep -qi 'compilation failed' "$GITCLOG"; then
+    echo "install.sh: these programs did not compile:" >&2
+    awk '/^Compiling Unibasic:/ { src=$0 } /compilation failed/ { print "  " src }' "$GITCLOG" >&2
+    echo "  full output: $GITCLOG" >&2
+    die "BASIC compilation failed -- the verb would be left with stale or missing objects"
+fi
+rm -f "$GITCLOG"
 if ls "$UDTHOME"/sys/CTLG/*/GIT >/dev/null 2>&1; then
   say "GIT cataloged globally -> $(ls "$UDTHOME"/sys/CTLG/*/GIT 2>/dev/null | head -1)"
 else
