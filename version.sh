@@ -42,6 +42,29 @@ mv_git_version() {
     if [ -n "$_h" ]; then printf '%s+g%s' "$_v" "$_h"; else printf '%s' "$_v"; fi
 }
 
+# mv_git_require_version <version>
+#
+# A RELEASE MAY NOT SHIP A BUILD THAT CANNOT SAY WHAT IT IS.  mv_git 2.1.0-beta4
+# published a UniData binary answering "mv_git 0 (in-session, UniData CallC)":
+# the tag never reached the builder container, the fallback produced "0", and
+# nothing in the build objected.  Every check that could have caught it lived
+# somewhere the release does not run -- the suite passes on "0" because "0" is
+# the right answer for a dev tree with no history.
+#
+# So the release path says so out loud: on a tag, an unknown version is a
+# failure, not a default.  Anywhere else "0" is fine and this is a no-op.
+mv_git_require_version() {
+    [ "${GITHUB_REF_TYPE:-}" = tag ] || return 0
+    case "${1:-}" in
+        ""|0|0+*)
+            echo "version.sh: building tag '${GITHUB_REF_NAME:-?}' but the version resolved to '${1:-}'." >&2
+            echo "            The tag did not reach this build -- check that GITHUB_REF_TYPE and" >&2
+            echo "            GITHUB_REF_NAME are forwarded into the builder (mv_git#218)." >&2
+            return 1 ;;
+    esac
+    return 0
+}
+
 # mv_git_stamp_manifests <staged-dir> <version>
 #
 # Write the release's version into the PKG and mvpkg.json it ships.

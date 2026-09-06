@@ -30,6 +30,7 @@ SRC="$HERE/src"
 CC="${CC:-cc}"
 . "$HERE/version.sh"
 UGVER="${UDTGIT_VERSION:-$(mv_git_version)}"   # stamped for MVPKG self-registration
+mv_git_require_version "$UGVER" || exit 1     # a tag build must know its version
 
 # libgit2 build flags.  Two ways to supply them:
 #   * explicit LIBGIT2_CFLAGS / LIBGIT2_LIBS — for a distro/EPEL versioned lib
