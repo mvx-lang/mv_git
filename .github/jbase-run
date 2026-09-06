@@ -27,6 +27,7 @@ export JBASE_RUN_CMD
 exec docker run --rm \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -e GITHUB_REF_NAME="${GITHUB_REF_NAME:-}" \
+  -e GITHUB_REF_TYPE="${GITHUB_REF_TYPE:-}" \
   -e JBASE_RUN_CMD \
   -v "$PWD":/pkg -w /pkg "$IMAGE" \
   bash -lc '

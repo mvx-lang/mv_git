@@ -17,6 +17,7 @@ OUT="${1:-bin}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$(dirname "$0")/version.sh"
 UGVER="${MV_GIT_VERSION:-$(mv_git_version "$(dirname "$0")")}"
+mv_git_require_version "$UGVER" || exit 1     # a tag build must know its version
 SRC="$HERE/src"
 CC="${CC:-cc}"
 PREFIX="${LIBGIT2_PREFIX:-/usr/local}"

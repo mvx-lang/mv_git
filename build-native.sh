@@ -43,6 +43,7 @@ LDFLAGS="$(pkg-config --libs libgit2 2>/dev/null || echo -L/opt/homebrew/lib -lg
 
 . "$PKG/version.sh"
 UGVER="${MV_GIT_VERSION:-$(mv_git_version "$PKG")}"
+mv_git_require_version "$UGVER" || exit 1     # a tag build must know its version
 
 mkdir -p "$PKG/LIB"
 cc -O2 -fPIC -shared $UNDEF \
