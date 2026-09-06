@@ -33,6 +33,7 @@
     "od"
   ],
   "deploy": {
+    "include": "BP.INC",
     "verbs": [
       "GIT"
     ],
