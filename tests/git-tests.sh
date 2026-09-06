@@ -564,12 +564,20 @@ if [ -f "$GITSRC/version.sh" ]; then
         sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
   te "version: an override wins"            "9.9.9" \
      "$(env MV_GIT_VERSION=9.9.9 sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
-  t  "version: a branch is not a version"   "+g" \
+  tn "version: a branch is not the version"  "main" \
      "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
         sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
-  tn "version: and does not become one"     "main" \
-     "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
-        sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+  # CARRYING THE COMMIT NEEDS A HISTORY TO READ IT FROM.  The udt, uv and jbase
+  # arms build inside a container the source is COPIED into, with no .git at
+  # all, where version.sh correctly answers "0" -- so asserting "+g" there
+  # tested the checkout, not the stamp.
+  if [ -d "$GITSRC/.git" ]; then
+    t "version: a branch build carries the commit" "+g" \
+      "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
+         sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+  else
+    skip "version: a branch build carries the commit" "no .git in this build tree"
+  fi
 else
   skip "version stamp" "version.sh not reachable from the test tree"
 fi
