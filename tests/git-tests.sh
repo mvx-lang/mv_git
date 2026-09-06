@@ -586,6 +586,30 @@ else
 fi
 
 A="$WORK/A"; ACCT "$A"; LINK "$A"; CF "$A" CUST
+
+# --- the install has to be able to REPAIR an account, not only build one ------
+# A UniVerse file is a VOC record AND the directories behind it, and those come
+# apart: a clone carries the record across, and a half-finished install leaves
+# the record with its directories deleted.  install.sh asked only whether the
+# record was there, answered "already a file, nothing to do", and the compiler
+# then had nowhere to write -- "compiled 0 program(s)", which is not an error.
+# Where it had deleted the directories itself, CREATE.FILE refused to re-make
+# the name ("already in your VOC file as a file definition record") and every
+# retry took the same path, so the account was destroyed by the recovery rather
+# than by the fault.  Four CI runs were lost to it before it was reproduced
+# (mv_git#226).
+#
+# Nothing exercised repair -- every account the suite installs into is either
+# fresh or cloned-then-installed-once -- so make the broken shape on purpose.
+if [ "$PLATFORM" = uv ]; then
+  RCV="$WORK/recover"; ACCT "$RCV"; LINK "$RCV"
+  t  "fixture: the recovery account installed first" "yes" \
+     "$([ -f "$RCV/BP.O/GIT" ] && echo yes || echo no)"
+  rm -rf "$RCV/BP.O" "$RCV/D_BP.O"          # the VOC record deliberately stays
+  LINK "$RCV"
+  t  "install repairs a registered file with nothing behind it" "yes" \
+     "$([ -f "$RCV/BP.O/GIT" ] && echo yes || echo no)"
+fi
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"London" ON F, "C1"'
 

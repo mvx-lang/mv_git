@@ -92,8 +92,14 @@ fi
 # answered with an empty line, leaving a clean "F".
 #   dict: modulo 1, separation 2, type 3 (hashed)
 #   data: modulo 1, separation 2, type 19 (directory — it holds source items)
+# CREATE.FILE'S REFUSAL IS THE ONLY THING THAT SAYS WHY, and this threw it away.
+# When it declines -- "\"BP.O\" is already in your VOC file as a file definition
+# record.  File not created." -- the caller saw nothing but a missing directory
+# and reported "CREATE.FILE did not create BP.O", which names neither the reason
+# nor the remedy.  Four CI runs were spent on that message (mv_git#226).
+MKFILE_OUT=
 mkfile() {
-    printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$1" | uv >/dev/null 2>&1 || true
+    MKFILE_OUT=$(printf 'CREATE.FILE %s\n1\n2\n3\n1\n2\n19\n\nQUIT\n' "$1" | uv 2>&1) || true
 }
 
 # BP arrives as a plain directory of sources, which is NOT yet a UniVerse file:
@@ -112,20 +118,66 @@ mkfile() {
 # "compiled 0 program(s)" — no error, just a verb that never appears.
 #
 # So ask the VOC.  It is the thing the compiler consults.
+#
+# AND A QUESTION THAT COULD NOT BE ASKED IS NOT AN ANSWER OF "NO".  This piped a
+# session and grepped what came back, so when no session could be had -- a
+# two-seat licence and a build that opens a dozen in a row -- the empty output
+# read as "not registered", and ensure_file went on to delete the directories of
+# a file that WAS registered.  CREATE.FILE then refused to re-make it, because
+# the VOC record it had never looked at was still there, and every retry took
+# the same path: the account was destroyed by the recovery, not by the fault
+# (mv_git#226).
+#
+# The echoed command is the proof the session ran.  Without it, return 2 -- not
+# 0, and not 1 -- and let the caller refuse rather than guess.
 voc_has() {
-    printf 'CT VOC %s\nQUIT\n' "$1" | uv 2>/dev/null | grep -q '^0001[[:space:]]*F'
+    _vh=$(printf 'CT VOC %s\nQUIT\n' "$1" | uv 2>&1)
+    case "$_vh" in
+        *"CT VOC $1"*) ;;
+        *) return 2 ;;
+    esac
+    printf '%s\n' "$_vh" | grep -q '^0001[[:space:]]*F'
 }
 # Make $1 a real UniVerse file, whatever state the directory is in.  CREATE.FILE
 # builds the pointer, the dictionary and the directory TOGETHER and refuses when
 # any of the three is already there — so OS files with no pointer are debris in
 # its way, and they go first.  $2, when given, is content to put back afterwards.
 ensure_file() {
-    voc_has "$1" && return 0
+    # `|| _vr=$?`, not a bare call: this script runs under `set -e`, where a
+    # command that is not part of an AND-OR list and returns non-zero ends the
+    # script.  A bare `voc_has "$1"` therefore exited the installer the moment
+    # the answer was "not registered" -- the ordinary case on a fresh account.
+    _vr=0; voc_has "$1" || _vr=$?
+    # REGISTERED IS NOT THE SAME AS USABLE, and this asked only the first half.
+    # A clone carries the VOC record across without the directory behind it, and
+    # a failed earlier attempt leaves exactly the same shape -- so the answer was
+    # "already a file, nothing to do" for a name that names nothing.  The
+    # compiler then had nowhere to write and said "compiled 0 program(s)", which
+    # is not an error and mentions neither the file nor the VOC (mv_git#226).
+    # Ask both, and treat a record with nothing behind it as work to do.
+    if [ "$_vr" -eq 0 ] && [ -e "$1" ]; then return 0; fi
+    # 2 = the session never ran the command.  Guessing "not registered" here is
+    # what deletes a registered file's directories; stop instead.
+    if [ "$_vr" -eq 2 ]; then
+        echo "install.sh: could not ask VOC about $1 — no UniVerse session answered." >&2
+        echo "            Refusing to guess: guessing 'not registered' deletes the file." >&2
+        exit 1
+    fi
     say "registering $1 as a UniVerse file"
     if [ -n "${2:-}" ] && [ -d "$1" ]; then mv "$1" "$1.staged"; else rm -rf "$1"; fi
     rm -rf "D_$1"
+    # THE VOC RECORD OUTLIVES THE DIRECTORIES.  CREATE.FILE refuses a name that
+    # is already a file definition, so a record left behind by an earlier failed
+    # attempt -- or one that arrived with a clone, naming directories this
+    # install is about to replace -- makes the name permanently uncreatable.
+    # Clear it: the OS side is already gone by here, so the record names nothing.
+    printf 'DELETE VOC %s\nQUIT\n' "$1" | uv >/dev/null 2>&1 || true
     mkfile "$1"
-    [ -e "$1" ] || { echo "install.sh: CREATE.FILE did not create $1" >&2; exit 1; }
+    if [ ! -e "$1" ]; then
+        echo "install.sh: CREATE.FILE did not create $1.  It said:" >&2
+        printf '%s\n' "$MKFILE_OUT" | sed -n '1,20p' | sed 's/^/    /' >&2
+        exit 1
+    fi
     if [ -d "$1.staged" ]; then
         for f in "$1.staged"/*; do [ -f "$f" ] && cp "$f" "$1/"; done
         rm -rf "$1.staged"
