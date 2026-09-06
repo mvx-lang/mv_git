@@ -21,6 +21,7 @@ STAGE="${1:-stage}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/version.sh"
 UVVER="${MV_GIT_VERSION:-$(mv_git_version "$HERE")}"
+mv_git_require_version "$UVVER" || exit 1     # a tag build must know its version
 cd "$HERE"
 
 # ---- binaries ---------------------------------------------------------------

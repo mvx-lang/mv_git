@@ -24,6 +24,7 @@ CC="${CC:-cc}"
 
 . "$HERE/version.sh"
 UGVER="${MV_GIT_VERSION:-$(mv_git_version "$HERE")}"
+mv_git_require_version "$UGVER" || exit 1     # a tag build must know its version
 
 LG2_CFLAGS="${LIBGIT2_CFLAGS:-$(pkg-config --cflags libgit2 2>/dev/null || echo "-I${LIBGIT2_PREFIX:-/usr/local}/include")}"
 LG2_LIBS="${LIBGIT2_LIBS:-$(pkg-config --libs libgit2 2>/dev/null || echo "-L${LIBGIT2_PREFIX:-/usr/local}/lib -lgit2")}"
