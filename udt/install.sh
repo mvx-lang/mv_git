@@ -172,7 +172,18 @@ say "compiling + globally cataloging the GIT verb + its handler set"
 # but robust.
 # Files only: BP/ can also hold a generated include DIRECTORY (BP/BP.INC, written
 # by mkpkg beside the sources), which is not a program to compile.
-GITBP="$(cd "$HERE/BP" 2>/dev/null && for f in *; do [ -f "$f" ] && printf '%s ' "$f"; done)"
+#
+# AND _<PROG> IS THE COMPILED OBJECT, NOT A PROGRAM.  UniData writes objects
+# INSIDE the source file beside their sources, so after the first install BP/
+# holds a source and an object for each -- and this loop then fed every object
+# back to the compiler.  `BASIC BP _GIT` cannot compile and never could; the
+# failures were simply invisible while the output went to /dev/null, and
+# surfaced the moment it was captured (mv_git#224).  Dotfiles go with them.
+GITBP="$(cd "$HERE/BP" 2>/dev/null && for f in *; do
+    [ -f "$f" ] || continue
+    case "$f" in _*|.*) continue ;; esac
+    printf '%s ' "$f"
+done)"
 # THE COMPILER'S OUTPUT IS THE ONLY EVIDENCE, and this threw it away.  With
 # every message going to /dev/null, a program that failed to compile left the
 # OLD catalog object in place and the install said nothing -- and the CI step
