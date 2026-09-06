@@ -29,6 +29,10 @@ UDT_NEWACCT="${UDT_NEWACCT:-${UDTHOME:-/usr/ud83}/bin/newacct}"
 SKIP_NET="${SKIP_NET:-0}"
 : "${MVX:?set MVX to the runtime (mvx)}"
 : "${GITPKG:?set GITPKG to the built git package dir}"
+# The SOURCE tree this suite came from, as opposed to GITPKG (what was BUILT
+# from it).  The shell-only checks below read version.sh out of it; the suite
+# lives in <repo>/tests/.
+GITSRC="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 PASS=0; FAIL=0; SKIP=0
 
@@ -542,6 +546,33 @@ fi
 
 # ---------------------------------------------------------------------------
 say "== mv_git comprehensive suite — platform=$PLATFORM  net=$([ "$SKIP_NET" = 1 ] && echo off || echo on)"
+
+# --- what a build calls itself -----------------------------------------------
+# Shell only, no platform needed, and it runs before anything is built because
+# the answer here ends up in the binaries AND, through mv_git_stamp_manifests,
+# in the PKG and mvpkg.json a release ships.
+#
+# $GITHUB_REF_NAME IS SET ON EVERY ACTIONS RUN, not just the tag pushes the
+# stamp was written for -- so a build on main called itself "main" and a
+# pull-request build called itself "216/merge" (mv_git#218).  A branch name is
+# not a version, and "which tree is this really" is the whole question this
+# function exists to answer.
+if [ -f "$GITSRC/version.sh" ]; then
+  VS="$GITSRC/version.sh"
+  te "version: a tag is the version"        "2.1.0-beta4" \
+     "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=tag GITHUB_REF_NAME=2.1.0-beta4 \
+        sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+  te "version: an override wins"            "9.9.9" \
+     "$(env MV_GIT_VERSION=9.9.9 sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+  t  "version: a branch is not a version"   "+g" \
+     "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
+        sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+  tn "version: and does not become one"     "main" \
+     "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
+        sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
+else
+  skip "version stamp" "version.sh not reachable from the test tree"
+fi
 
 A="$WORK/A"; ACCT "$A"; LINK "$A"; CF "$A" CUST
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
