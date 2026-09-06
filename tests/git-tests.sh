@@ -567,16 +567,19 @@ if [ -f "$GITSRC/version.sh" ]; then
   tn "version: a branch is not the version"  "main" \
      "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
         sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
-  # CARRYING THE COMMIT NEEDS A HISTORY TO READ IT FROM.  The udt, uv and jbase
-  # arms build inside a container the source is COPIED into, with no .git at
-  # all, where version.sh correctly answers "0" -- so asserting "+g" there
-  # tested the checkout, not the stamp.
-  if [ -d "$GITSRC/.git" ]; then
+  # CARRYING THE COMMIT NEEDS A HISTORY GIT WILL READ.  The udt, uv and jbase
+  # arms build inside a container, where version.sh correctly answers "0" --
+  # so asserting "+g" there tests the checkout, not the stamp.  The condition is
+  # the one version.sh itself asks, not `[ -d .git ]`: the directory can be
+  # right there and git still refuse it (a checkout owned by another user is
+  # "dubious ownership"), which is exactly what happened when this was guarded
+  # on the directory instead -- three ports, failing on the checkout.
+  if git -C "$GITSRC" rev-parse --git-dir >/dev/null 2>&1; then
     t "version: a branch build carries the commit" "+g" \
       "$(env -u MV_GIT_VERSION GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main \
          sh -c ". \"$VS\"; mv_git_version \"$GITSRC\"")"
   else
-    skip "version: a branch build carries the commit" "no .git in this build tree"
+    skip "version: a branch build carries the commit" "no history git will read here"
   fi
 else
   skip "version stamp" "version.sh not reachable from the test tree"
