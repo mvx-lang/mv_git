@@ -16,7 +16,19 @@
 mv_git_version() {
     _d="${1:-$(dirname "$0")}"
 
-    _v="${MV_GIT_VERSION:-${GITHUB_REF_NAME:-}}"
+    # A REF NAME IS ONLY A VERSION WHEN THE REF IS A TAG.  $GITHUB_REF_NAME is
+    # set on EVERY Actions run, not just the tag pushes this was written for --
+    # so a build on main stamped itself "main" and a pull-request build stamped
+    # itself "216/merge", and both went into the binaries AND, through
+    # mv_git_stamp_manifests, into the PKG and mvpkg.json they ship.  That is
+    # precisely the "which tree is this really" question this function exists to
+    # answer, and it was answering it with the branch name (mv_git#218).
+    # $GITHUB_REF_TYPE says which kind of ref it is; off a tag, fall through to
+    # the describe below and carry the commit, the way any other dev build does.
+    _v="${MV_GIT_VERSION:-}"
+    if [ -z "$_v" ] && [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+        _v="${GITHUB_REF_NAME:-}"
+    fi
     if [ -n "$_v" ]; then printf '%s' "$_v"; return 0; fi
 
     if ! git -C "$_d" rev-parse --git-dir >/dev/null 2>&1; then
