@@ -609,6 +609,13 @@ if [ "$PLATFORM" = uv ]; then
   LINK "$RCV"
   t  "install repairs a registered file with nothing behind it" "yes" \
      "$([ -f "$RCV/BP.O/GIT" ] && echo yes || echo no)"
+  # AND IT SAYS SO.  Repairing silently is how the first cause of the split
+  # stayed unproven (#208): the state heals, the run goes green, and nothing
+  # records that it happened at all.  A repair in a CI log is the evidence, so
+  # the message is asserted rather than left to rot -- it used to print the same
+  # "registering" line as an ordinary first install.
+  t  "the repair names itself in the log" "REPAIRING BP.O" \
+     "$(cat "$WORK/install.recover.log" 2>/dev/null)"
 fi
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"London" ON F, "C1"'
