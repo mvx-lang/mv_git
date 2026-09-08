@@ -163,7 +163,20 @@ ensure_file() {
         echo "            Refusing to guess: guessing 'not registered' deletes the file." >&2
         exit 1
     fi
-    say "registering $1 as a UniVerse file"
+    # SAY WHICH OF THE TWO THIS IS.  Reaching here means either the name is not
+    # registered (the ordinary case on a fresh account) or it IS registered with
+    # nothing behind it -- the split that wedged four CI runs (#226) and whose
+    # first cause is still unproven (#208).  Both used to print "registering",
+    # so a repair was indistinguishable from an install and a recurrence left no
+    # trace: the state is healed now, which is exactly why nothing records that
+    # it happened.  Name it, and the next occurrence is evidence instead of a
+    # green run.
+    if [ "$_vr" -eq 0 ]; then
+        say "REPAIRING $1: a VOC record with nothing behind it (mv_git#208)"
+        say "  this is the split that wedges an install; please report the run"
+    else
+        say "registering $1 as a UniVerse file"
+    fi
     if [ -n "${2:-}" ] && [ -d "$1" ]; then mv "$1" "$1.staged"; else rm -rf "$1"; fi
     rm -rf "D_$1"
     # THE VOC RECORD OUTLIVES THE DIRECTORIES.  CREATE.FILE refuses a name that

@@ -609,6 +609,13 @@ if [ "$PLATFORM" = uv ]; then
   LINK "$RCV"
   t  "install repairs a registered file with nothing behind it" "yes" \
      "$([ -f "$RCV/BP.O/GIT" ] && echo yes || echo no)"
+  # AND IT SAYS SO.  Repairing silently is how the first cause of the split
+  # stayed unproven (#208): the state heals, the run goes green, and nothing
+  # records that it happened at all.  A repair in a CI log is the evidence, so
+  # the message is asserted rather than left to rot -- it used to print the same
+  # "registering" line as an ordinary first install.
+  t  "the repair names itself in the log" "REPAIRING BP.O" \
+     "$(cat "$WORK/install.recover.log" 2>/dev/null)"
 fi
 SEED "$A" 'OPEN "CUST" TO F ELSE STOP
 WRITE "Ada":@AM:"London" ON F, "C1"'
@@ -1165,6 +1172,34 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
       printf 'EDITED ON DISK\n' > "$Q/CUST/C1"
       ( cd "$Q" && "$MVXGIT" adopt $adopt_flav >/dev/null 2>&1 )
       t  "adopt carries a disk edit in" "EDITED ON DISK" "$(CT "$Q" CUST C1)"
+
+      # A REF ON CLONE IS HONOURED (#233).  Both CLIs read the url and the
+      # directory and let anything after them fall through, while their own help
+      # advertised "(url dir {ref})" and GIT.CLONE had always passed one -- so
+      # `clone <url> <dir> main` and `... 1.1.0` both produced the DEFAULT
+      # branch, silently, and MVPKG install name@ref built the wrong tree.
+      #
+      # The branch is made at main's own commit deliberately: this asserts WHICH
+      # REF was checked out, not which content arrived, so it fails for exactly
+      # one reason.  Without the fix the account comes up on main.
+      case "$PLATFORM" in
+        udt|uv)
+          git --git-dir="$REM" branch refclone refs/heads/main 2>/dev/null
+          R="$WORK/refclone"
+          "$MVXGIT" clone "$REM" "$R" refclone >/dev/null 2>&1
+          t  "clone honours its ref"     "refclone"  "$(BR "$R")"
+          # ...and still defaults when none is given.
+          D="$WORK/refdefault"
+          "$MVXGIT" clone "$REM" "$D" >/dev/null 2>&1
+          t  "clone without a ref"       "main"      "$(BR "$D")"
+          # A ref that cannot be one is refused by name rather than handed to a
+          # shell -- uv-git builds its clone as a shell string.
+          X="$WORK/refunsafe"
+          xout="$("$MVXGIT" clone "$REM" "$X" "main;touch $WORK/pwned" 2>&1)"
+          t  "clone refuses an unsafe ref" "not a usable ref name" "$xout"
+          te "an unsafe ref runs nothing"  ""  "$(ls "$WORK/pwned" 2>/dev/null)"
+          ;;
+      esac
 
       # ...and an account that is a SUBDIRECTORY of a repository (#44, #49).
       # There is no .git in it -- the repository's is above -- and adopt passed
