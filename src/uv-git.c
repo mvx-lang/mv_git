@@ -1465,11 +1465,17 @@ static char *head_blob(const char *gitdir, const char *path, size_t *len) {
 static int clone_cmd(int argc, char **argv, int i) {
     /* the positionals are the first two NON-flag arguments: uv-git's own flags
        may follow them (they are stripped from what git sees). */
-    const char *url = NULL, *dir = NULL;
+    /* THE THIRD POSITIONAL IS THE REF, and it used to be dropped here: the loop
+       took two and let anything after them fall through, while the help
+       advertised "(url dir {ref})" and GIT.CLONE had always passed one.  So
+       `clone <url> <dir> main` silently produced the default branch
+       (mv_git#233). */
+    const char *url = NULL, *dir = NULL, *ref = NULL;
     for (int k = i + 1; k < argc; k++) {
         if (argv[k][0] == '-') continue;
         if (!url) url = argv[k];
         else if (!dir) dir = argv[k];
+        else if (!ref) ref = argv[k];
     }
     const char *want_flavour = NULL;
     for (int k = i + 1; k < argc; k++) {
@@ -1480,8 +1486,19 @@ static int clone_cmd(int argc, char **argv, int i) {
         else if (!strcmp(argv[k], "--no-open-account")) g_open_flag = -1;
     }
     if (!url) {
-        fprintf(stderr, "usage: uv-git clone <url> [directory]\n");
+        fprintf(stderr, "usage: uv-git clone <url> [directory] [ref]\n");
         return 2;
+    }
+    /* A ref is a branch, tag or commit name.  Checked before it reaches the
+       command below, which is built as a SHELL string -- git's own character
+       set has nothing a shell would read, so anything outside it is refused by
+       name rather than passed on. */
+    if (ref) {
+        for (const char *p = ref; *p; p++)
+            if (!isalnum((unsigned char)*p) && !strchr("._/-", *p)) {
+                fprintf(stderr, "uv-git: '%s' is not a usable ref name\n", ref);
+                return 2;
+            }
     }
     char dbuf[4096];
     if (!dir) {
@@ -1497,7 +1514,14 @@ static int clone_cmd(int argc, char **argv, int i) {
     /* --no-checkout: the records go into the account, never onto the disk. */
     {
         char cmd[8500];
-        snprintf(cmd, sizeof cmd, "git clone --no-checkout '%s' '%s'", url, dir);
+        /* --branch when a ref was asked for: the account is materialised from
+           HEAD after this, so the ref has to be what HEAD points at by the time
+           git is done.  git takes a branch or a tag and fails loudly otherwise. */
+        if (ref)
+            snprintf(cmd, sizeof cmd,
+                     "git clone --no-checkout --branch '%s' '%s' '%s'", ref, url, dir);
+        else
+            snprintf(cmd, sizeof cmd, "git clone --no-checkout '%s' '%s'", url, dir);
         if (system(cmd) != 0) {
             fprintf(stderr, "uv-git clone: git clone failed\n");
             return 1;
