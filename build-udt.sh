@@ -163,7 +163,19 @@ cp udt/udt-callc-build.sh "$ACCT/udt-callc-build.sh"; chmod +x "$ACCT/udt-callc-
 cp udt-git "$ACCT/"
 cp mvpkg.json PKG LICENSE README.md "$ACCT/" 2>/dev/null || true
 mv_git_stamp_manifests "$ACCT" "$UGVER"   # the tag, not whatever is in the tree
-cp udt-callc/*.o udt-callc/funcs "$ACCT/udt-callc/" 2>/dev/null || true
+# NOT `|| true`.  These objects were compiled ~70 lines up; if they are missing,
+# the staged tree gets `funcs` — 42 CallC declarations — with nothing to define
+# them, and that is the one combination that damages the host.  UniData loads a
+# single libu2callc.so aggregated from every installed package, so a fragment
+# that declares without implementing does not merely fail to install itself: the
+# relink drops those symbols for every account that had them, surfacing far away
+# as `undefined symbol: AGOPEN` (mv_git#238, mv_package#143).  Releasing that
+# silently is the worst outcome, so fail the build instead.
+for o in gitcallcb agentcallc mvxgit udtgit_rt; do
+    [ -f "udt-callc/$o.o" ] || { echo "build-udt.sh: udt-callc/$o.o is missing — refusing to stage a" >&2
+        echo "              package whose funcs declare CallC functions it cannot provide." >&2; exit 1; }
+done
+cp udt-callc/*.o udt-callc/funcs "$ACCT/udt-callc/"
 # Generate udt-callc/libs from the ACTUAL libgit2 link flags this build used, so
 # the CallC library links the SAME libgit2 the udt-git binary does (a static
 # shipped libs would drift — e.g. an EPEL 1.7 build must not carry a 1.9 flag).
