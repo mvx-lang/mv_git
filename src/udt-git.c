@@ -26,6 +26,7 @@
 #include "mvxgit.h"
 #include "mvsession.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -541,9 +542,24 @@ static int run_accounts(int argc, char **argv, int subidx) {
    can be overridden with UDT_ACCT_OWNER / UDT_ACCT_GROUP. */
 static int provision(const char *dir, int adopted, const char *rev);
 
-static int do_clone(const char *repo, const char *dir) {
+/* A ref is a branch, tag or commit name: git's own character set, minus the
+   punctuation a shell would read.  Checked because uv-git builds its clone as a
+   shell string and this one is passed straight to git -- and because a ref that
+   cannot be one is better refused by name than handed on to fail obscurely. */
+static int ref_ok(const char *r) {
+    if (!r || !r[0]) return 0;
+    for (const char *p = r; *p; p++)
+        if (!isalnum((unsigned char)*p) && !strchr("._/-", *p)) return 0;
+    return 1;
+}
+
+static int do_clone(const char *repo, const char *dir, const char *ref) {
     if (!repo || !repo[0]) {
-        fprintf(stderr, "usage: udt-git clone <repo> [<dir>]\n");
+        fprintf(stderr, "usage: udt-git clone <repo> [<dir>] [<ref>]\n");
+        return 2;
+    }
+    if (ref && ref[0] && !ref_ok(ref)) {
+        fprintf(stderr, "udt-git: '%s' is not a usable ref name\n", ref);
         return 2;
     }
     char dbuf[4096];
@@ -561,9 +577,23 @@ static int do_clone(const char *repo, const char *dir) {
     }
 
     /* 1. clone without a working tree — materialise reads HEAD's tree directly
-          through libgit2, so a git checkout would only be wasted disk writes. */
-    const char *ga[] = { "git", "clone", "--no-checkout", repo, dir, NULL };
-    if (runcmd(ga) != 0) {
+          through libgit2, so a git checkout would only be wasted disk writes.
+
+          --branch WHEN A REF WAS ASKED FOR.  provision() below materialises
+          HEAD, so the ref has to be what HEAD points at by the time git is
+          done; setting it afterwards would mean materialising twice.  git takes
+          a branch or a tag here and fails loudly on anything else, which is the
+          right answer for a name that does not exist.
+
+          The ref used to be dropped on the floor: do_clone took two arguments
+          and the dispatch passed two, while the help advertised "(url dir
+          {ref})" and GIT.CLONE had always passed one.  `clone <url> <dir> main`
+          and `... 1.1.0` both silently produced the default branch
+          (mv_git#233). */
+    const char *ga[]  = { "git", "clone", "--no-checkout", repo, dir, NULL };
+    const char *gab[] = { "git", "clone", "--no-checkout",
+                          "--branch", ref, repo, dir, NULL };
+    if (runcmd((ref && ref[0]) ? gab : ga) != 0) {
         fprintf(stderr, "udt-git: git clone failed\n");
         return 1;
     }
@@ -1060,7 +1090,8 @@ int main(int argc, char **argv) {
     /* clone provisions a NEW account, so it runs before the chdir-into-an-
        existing-account path below (it creates the directory itself). */
     if (!strcmp(sub, "clone"))
-        return do_clone(arg(argc, argv, i), arg(argc, argv, i + 1));
+        return do_clone(arg(argc, argv, i), arg(argc, argv, i + 1),
+                        arg(argc, argv, i + 2));
 
     /* adopt provisions an account from a checkout that already exists, so it
        runs here too rather than under the chdir path -- the directory it is
