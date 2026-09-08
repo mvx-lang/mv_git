@@ -102,6 +102,14 @@ $ELSE
       IDS = ""
 *     Collect first, catalog second: EXECUTE while a select list is open is
 *     asking the next command to inherit what is left of it (mv_git#58).
+*
+*     The list variable is an OUTPUT of SELECT, but UniData still reads it
+*     first: left unassigned it warns at COMPILE time ("Variable 'GLIST' never
+*     assigned a value") and again at RUN time, printing
+*     "UNINITIALIZED VARIABLE USED! Zero Assumed!" into the middle of whatever
+*     the user just ran.  The other four SELECT-to-a-variable sites in this
+*     package already assign first; this one did not (#232).
+      GLIST = ""
       SELECT PKGBP TO GLIST
       LOOP
          READNEXT ID FROM GLIST ELSE EXIT
