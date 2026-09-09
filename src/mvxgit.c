@@ -2490,9 +2490,10 @@ static int is_mv_file(const char *n);
 static void backend_files_reset(void);
 static void split_top(const char *path, char *out, size_t cap);
 
-/* The record-git model tracks records as git blobs, never the binary LMDB
-   store — so the account's mvxdata.lmdb must never be staged, even when no
-   .gitignore lists it.
+/* The record-git model tracks records as git blobs, never the binary backend
+   store — so the account's mvxdata.* must never be staged, even when no
+   .gitignore lists it.  That is mvxdata.lmdb (a directory) and mvxdata.sqlite
+   with its -shm and -wal (files), and whatever a later backend adds.
 
    Nor may this pass stage anything that belongs to an MV FILE.  Those are
    records, and the record pass stages them with record semantics; letting the
@@ -2533,7 +2534,15 @@ static int caller_has_file(mv_ctx *ctx, const char *name) {
 
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
-    if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
+    /* ANY backend's local store, not just lmdb's (mv_git#240).
+       The record-git model tracks records as blobs and never the store that
+       holds them.  lmdb's is a DIRECTORY (mvxdata.lmdb) and was named here
+       literally; sqlite's is a FILE (mvxdata.sqlite, plus -shm and -wal), so
+       the literal test missed it and a sqlite-backed account committed its
+       whole database as one binary blob.  Match the naming convention -- every
+       backend's store is mvxdata.<something> in the account root -- so the next
+       one is covered without another edit here. */
+    if (strncmp(path, "mvxdata.", 8) == 0) return 1;
     /* git hands us a REPOSITORY-relative path; file names are account-relative.
        Below a repository root those differ by the account's prefix, and comparing
        the wrong one means every test here silently fails to match — which is how
@@ -2595,7 +2604,7 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        of opaque binary while `CUST.DICT/@ID` and `CUST.DICT/%FILE%` carried the
        same dictionary as RECORDS.  The dictionary went into the commit twice:
        once portably, once in a form no other MV system can read (mv_git#151).
-       Same shape as the mvxdata.lmdb rule at the top of this function -- a
+       Same shape as the mvxdata.* rule at the top of this function -- a
        platform's own binary, beside content it already carries properly.
        Its OBJECT file's dictionary too: `BP.O` is excluded as a file (#145), so
        caller_has_file() says no to it and `D_BP.O` would slip through the test

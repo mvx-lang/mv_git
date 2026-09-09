@@ -1214,7 +1214,8 @@ WRITE "Ada":@AM:"London" ON F, "M1"'
   t  "and the second"         "mB/CUST/M1"  "$paths"
   t  "repo files staged too"  "README.md"   "$paths"
   case "$paths" in
-    *lmdb*|*.uvdata*) bad "backend store kept out" "no store" "staged";;
+    *lmdb*|*.uvdata*|*mvxdata.sqlite*)
+      bad "backend store kept out" "no store" "staged";;
     *) ok "backend store kept out";;
   esac
   ;;
