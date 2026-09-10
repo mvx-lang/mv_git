@@ -849,10 +849,22 @@ t  "the plain directory did travel" "docs/README" "$pd_paths"
 # what is a file) both can.  Staging a %FILE% control for it is the platform
 # saying which it is, so read that rather than keeping a list of platform names
 # here to drift out of date.
-case "$pd_paths" in
+# AND ASK WHO ANSWERS `STATUS' HERE.  The rule this asserts lives in the shared
+# C engine, and only some arms reach it: MVX and jBASE call it from the verb
+# (PLATFORM.H says $DEFINE ENGINE), and a CLI-driven arm is the engine by
+# definition.  UniData and UniVerse answer from the BASIC handler instead, which
+# has its own copy of the question and is not what this change touched -- so an
+# assertion here would be reporting a different bug under this one's name.
+pd_engine=no
+grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
+[ "$ATTR_VIA" = cli ] && pd_engine=yes
+case "$pd_paths:$pd_engine" in
   *docs.DICT/*)
      skip "a plain directory is not a deleted file" \
           "this platform opens any directory as a file, so docs/ IS one here" ;;
+  *:no)
+     skip "a plain directory is not a deleted file" \
+          "status is answered by the BASIC handler here, not the shared engine" ;;
   *) tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)" ;;
 esac
 # Put the account back as it was: later assertions expect a clean status, and a
