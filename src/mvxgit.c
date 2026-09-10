@@ -2853,13 +2853,9 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
     if (!rel) return 1;                     /* another account's territory */
     /* ...AND AGAIN ACCOUNT-RELATIVE.  The test above sees the path git handed
        us, which is repository-relative: in a repository holding several
-       accounts the store is `mA/mvxdata.lmdb/...`, and "mvxdata." is not at the
-       front of it.  So the store was staged whenever the account sat below the
-       repository root -- and only escaped notice because the deleted-file sweep
-       then pruned it back out, mvxdata.lmdb having no dictionary and so looking
-       like a file that had gone.  Fixing that sweep (mv_git#247) took the
-       accident away and left the store in the commit, which is how a rule
-       nothing had tested since it was written came to light. */
+       accounts the store is `mA/mvxdata.lmdb/...', and "mvxdata." is not at
+       the front of that.  So the store was staged whenever the account sat
+       below the repository root (mv_git#247). */
     if (strncmp(rel, "mvxdata.", 8) == 0) return 1;
     char top[256];
     split_top(rel, top, sizeof top);
@@ -4251,26 +4247,7 @@ static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
         int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, base);
         int rn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, base);
         snprintf(ctl, sizeof ctl, "%s%s.DICT/%%FILE%%", g_prefix, base);
-        /* IT IS STILL ON DISK, SO IT IS NOT GONE (mv_git#247).
-           The scan below asks whether git ever tracked <base> as a file, and
-           `<base>/' matches any ordinary directory with tracked files under it
-           -- .github/, tests/, docs/ -- because nothing about that prefix says
-           MV FILE.  A clone of an account carrying one reported every file
-           beneath it ` D' for ever: not restorable, being present, and not
-           committable, being unchanged.
-
-           The cheap, exact answer is the one nobody asked: a deleted file is
-           NOT THERE.  Every platform that keeps a file as a directory removes
-           it on DELETE.FILE, and MVX keeps records in a backend so a live file
-           is not a directory at all -- so "a directory of this name exists"
-           never describes a deleted file, and always describes .github/.
-
-           Deliberately narrow: it can only ever make something LESS gone, and
-           only when the name is present on disk, so no platform's idea of what
-           the scan below means has to change. */
-        struct stat dsb;
-        int present = (stat(base, &dsb) == 0 && S_ISDIR(dsb.st_mode));
-        if (!present && dn > 0 && rn > 0) {
+        if (dn > 0 && rn > 0) {
             for (size_t i = 0; i < git_index_entrycount(index); i++) {
                 const git_index_entry *e = git_index_get_byindex(index, i);
                 if (!e) continue;
@@ -4587,6 +4564,23 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            moment its files were described. */
         if (!gone_file && strcmp(recid, "%FILE%") == 0) continue;
         if (gone_file) {                  /* the file itself went: all of it */
+            /* ...UNLESS IT IS STILL ON DISK (mv_git#247).
+               tracked_file_gone() answers "did git track this name as a file
+               that is now absent", and its scan accepts `<base>/' -- which
+               matches any ordinary directory holding tracked files, .github/
+               and docs/ among them.  Every entry beneath one was then reported
+               ` D' for ever: not restorable, being present, and not
+               committable, being unchanged.
+
+               Corrected HERE rather than in tracked_file_gone(), because that
+               function also drives the add-side sweep that decides what to
+               prune from the index.  Changing its answer there changed what got
+               committed, and a later checkout materialised records over the
+               account's own BP -- the mv_git programs LINK had just installed
+               -- leaving `GIT: unknown command TAG'.  The symptom is a status
+               one; fix it in status, where nothing else reads it. */
+            struct stat dsb;
+            if (stat(top, &dsb) == 0 && S_ISDIR(dsb.st_mode)) continue;
             char line[700];
             snprintf(line, sizeof line, " D %s", e->path);
             sb_line(&s, line);
