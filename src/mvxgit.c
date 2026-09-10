@@ -2851,6 +2851,16 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        plain files. */
     const char *rel = unprefix(path);
     if (!rel) return 1;                     /* another account's territory */
+    /* ...AND AGAIN ACCOUNT-RELATIVE.  The test above sees the path git handed
+       us, which is repository-relative: in a repository holding several
+       accounts the store is `mA/mvxdata.lmdb/...`, and "mvxdata." is not at the
+       front of it.  So the store was staged whenever the account sat below the
+       repository root -- and only escaped notice because the deleted-file sweep
+       then pruned it back out, mvxdata.lmdb having no dictionary and so looking
+       like a file that had gone.  Fixing that sweep (mv_git#247) took the
+       accident away and left the store in the commit, which is how a rule
+       nothing had tested since it was written came to light. */
+    if (strncmp(rel, "mvxdata.", 8) == 0) return 1;
     char top[256];
     split_top(rel, top, sizeof top);
     /* A SUBMODULE is a gitlink, not a directory of blobs.
