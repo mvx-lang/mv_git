@@ -2851,6 +2851,12 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        plain files. */
     const char *rel = unprefix(path);
     if (!rel) return 1;                     /* another account's territory */
+    /* ...AND AGAIN ACCOUNT-RELATIVE.  The test above sees the path git handed
+       us, which is repository-relative: in a repository holding several
+       accounts the store is `mA/mvxdata.lmdb/...', and "mvxdata." is not at
+       the front of that.  So the store was staged whenever the account sat
+       below the repository root (mv_git#247). */
+    if (strncmp(rel, "mvxdata.", 8) == 0) return 1;
     char top[256];
     split_top(rel, top, sizeof top);
     /* A SUBMODULE is a gitlink, not a directory of blobs.
@@ -4558,6 +4564,23 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            moment its files were described. */
         if (!gone_file && strcmp(recid, "%FILE%") == 0) continue;
         if (gone_file) {                  /* the file itself went: all of it */
+            /* ...UNLESS IT IS STILL ON DISK (mv_git#247).
+               tracked_file_gone() answers "did git track this name as a file
+               that is now absent", and its scan accepts `<base>/' -- which
+               matches any ordinary directory holding tracked files, .github/
+               and docs/ among them.  Every entry beneath one was then reported
+               ` D' for ever: not restorable, being present, and not
+               committable, being unchanged.
+
+               Corrected HERE rather than in tracked_file_gone(), because that
+               function also drives the add-side sweep that decides what to
+               prune from the index.  Changing its answer there changed what got
+               committed, and a later checkout materialised records over the
+               account's own BP -- the mv_git programs LINK had just installed
+               -- leaving `GIT: unknown command TAG'.  The symptom is a status
+               one; fix it in status, where nothing else reads it. */
+            struct stat dsb;
+            if (stat(top, &dsb) == 0 && S_ISDIR(dsb.st_mode)) continue;
             char line[700];
             snprintf(line, sizeof line, " D %s", e->path);
             sb_line(&s, line);

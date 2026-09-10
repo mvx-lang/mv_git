@@ -545,6 +545,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# HOW IS THIS ARM DRIVEN?  Decided once, here, because more than one test needs
+# it and it must be settled before any of them run -- the plain-directory
+# assertion below reached for it while it was still being set 50 lines later,
+# and `set -u` stopped the whole suite.
+# GIT ATTR is an in-session VERB -- registry, validation, staging and a
+# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
+# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
+# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
+# the CLI, therefore ran all 32 of these against a command that cannot exist
+# and reported them as port failures.  Ask how the arm is DRIVEN, not which
+# platform it is.
+case "$PLATFORM" in
+  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
+  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
+  *)     ATTR_VIA=verb ;;
+esac
+
 say "== mv_git comprehensive suite — platform=$PLATFORM  net=$([ "$SKIP_NET" = 1 ] && echo off || echo on)"
 
 # --- what a build calls itself -----------------------------------------------
@@ -820,6 +837,69 @@ GITV "$A" GIT COMMIT -m withfile >/dev/null
 t  "file committed"   "one"       "$(GITV "$A" GIT SHOW TMPF T1)"
 DF "$A" TMPF
 t  "file delete shows D" "TMPF"   "$(GITV "$A" GIT STATUS)"
+
+# AN ORDINARY TRACKED DIRECTORY IS NOT A DELETED FILE (mv_git#247).
+# Every repository has one -- .github/, tests/, docs/ -- and the rule that
+# decides "this name was an MV file and it is gone" used to accept "the index
+# holds something under <base>/" as evidence.  A plain directory matched, so a
+# clone of any account carrying one reported every file beneath it ` D' for
+# ever: not restorable, being present, and not committable, being unchanged.
+# Asserted here because the failure is invisible to every other test -- they
+# all use MV files, which are exactly the case that worked.
+#
+# ONE LEVEL DEEP, DELIBERATELY.  Where a directory IS a file, only its top
+# level holds records, so a nested file is not staged at all and an assertion
+# about one would pass by being absent rather than by being right.  A file
+# directly inside the directory is tracked everywhere, and is all the rule
+# needs to go wrong.
+mkdir -p "$A/docs"
+printf 'notes\n' > "$A/docs/README"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir >/dev/null 2>&1
+pd_paths="$(cd "$A" && git ls-files)"
+# THREE REASONS THIS CANNOT APPLY, each read from the account rather than from
+# a list of platform names -- the ATTR_VIA table above has the same shape for
+# the same reason, and a list would drift the moment a port is added.
+pd_why=""
+#   1. the arm cannot stage ordinary files at all.  `GIT ADD -A' in a session
+#      has no disk pass (mv_git#148), so nothing plain ever reaches the index
+#      and an assertion about it would pass by being absent.
+case "$pd_paths" in *docs/README*) : ;; *)
+  pd_why="GIT ADD -A stages no ordinary files on this arm (mv_git#148)" ;; esac
+#   2. the platform opens ANY directory as a file, so docs/ IS one here and
+#      cannot be the bug.  Staging a %FILE% control for it says so.
+case "$pd_paths" in *docs.DICT/*)
+  pd_why="this platform opens any directory as a file, so docs/ IS one here" ;; esac
+#   3. STATUS is answered by the BASIC handler rather than the shared C engine,
+#      which is where this rule lives -- so an assertion would be reporting a
+#      different bug under this one's name.  MVX and jBASE call the engine from
+#      the verb (PLATFORM.H carries $DEFINE ENGINE); a CLI-driven arm IS it.
+pd_engine=no
+#      Read it from PLATFORM.H where there is one, and a CLI-driven arm IS the
+#      engine by definition.  MVX is named outright because it is the one case
+#      the account cannot answer: its verb links the engine directly -- that is
+#      what ENGINE means, and MVX is its reference -- but the mvx package ships
+#      no PLATFORM.H to say so, MVX being the platform the others are defined
+#      against.  Without this the assertion skipped EVERYWHERE, which is not a
+#      test.
+[ "$PLATFORM" = mvx ] && pd_engine=yes
+grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
+[ "$ATTR_VIA" = cli ] && pd_engine=yes
+[ "$pd_engine" = no ] &&
+  pd_why="status is answered by the BASIC handler here, not the shared engine"
+if [ -n "$pd_why" ]; then
+  skip "a plain directory is not a deleted file" "$pd_why"
+else
+  # The positive control first: an absence asserted against a directory that
+  # never got committed would pass for the wrong reason.
+  t  "the plain directory did travel" "docs/README" "$pd_paths"
+  tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)"
+fi
+# Put the account back as it was: later assertions expect a clean status, and a
+# fixture that leaves litter behind fails the test after it instead of itself.
+rm -rf "$A/docs"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir-gone >/dev/null 2>&1
 GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m nofile >/dev/null
 # The file and its dictionary are gone from the commit.  NOT asserting a fully
@@ -837,18 +917,6 @@ esac
 # the registry, the validation and the staging, in C, which is exactly what
 # "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
 # where this is tested on UniVerse, and it runs there in full.
-# GIT ATTR is an in-session VERB -- registry, validation, staging and a
-# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
-# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
-# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
-# the CLI, therefore ran all 32 of these against a command that cannot exist
-# and reported them as port failures.  Ask how the arm is DRIVEN, not which
-# platform it is.
-case "$PLATFORM" in
-  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
-  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
-  *)     ATTR_VIA=verb ;;
-esac
 if [ "$ATTR_VIA" = cli ]; then
   skip "GIT ATTR" "in-session verb; not reachable through a CLI-driven arm"
 else
