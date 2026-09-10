@@ -830,19 +830,36 @@ t  "file delete shows D" "TMPF"   "$(GITV "$A" GIT STATUS)"
 # Asserted here because the failure is invisible to every other test -- they
 # all use MV files, which are exactly the case that worked.
 #
-# ONE LEVEL DEEP, DELIBERATELY.  Where a directory IS a file -- jBASE and QM
-# open any directory as one -- only its top level holds records, so a nested
-# file is not staged at all and an assertion about one would pass by being
-# absent rather than by being right.  A file directly inside the directory is
-# tracked on every platform, and is all the rule needs to go wrong.
+# ONE LEVEL DEEP, DELIBERATELY.  Where a directory IS a file, only its top
+# level holds records, so a nested file is not staged at all and an assertion
+# about one would pass by being absent rather than by being right.  A file
+# directly inside the directory is tracked everywhere, and is all the rule
+# needs to go wrong.
 mkdir -p "$A/docs"
 printf 'notes\n' > "$A/docs/README"
 GITV "$A" GIT ADD -A >/dev/null 2>&1
 GITV "$A" GIT COMMIT -m plaindir >/dev/null 2>&1
+pd_paths="$(cd "$A" && git ls-files)"
 # The positive control comes first: an absence asserted against a directory
 # that never got committed would pass for the wrong reason.
-t  "the plain directory did travel" "docs/README" "$(cd "$A" && git ls-files)"
-tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)"
+t  "the plain directory did travel" "docs/README" "$pd_paths"
+# ASK THE PLATFORM, DO NOT NAME IT.  jBASE, UniData and UniVerse open ANY
+# directory as a file, so `docs' is a real MV file there and cannot be the bug
+# -- while MVX (records live in a backend, not on disk) and QM (the VOC decides
+# what is a file) both can.  Staging a %FILE% control for it is the platform
+# saying which it is, so read that rather than keeping a list of platform names
+# here to drift out of date.
+case "$pd_paths" in
+  *docs.DICT/*)
+     skip "a plain directory is not a deleted file" \
+          "this platform opens any directory as a file, so docs/ IS one here" ;;
+  *) tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)" ;;
+esac
+# Put the account back as it was: later assertions expect a clean status, and a
+# fixture that leaves litter behind fails the test after it instead of itself.
+rm -rf "$A/docs"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir-gone >/dev/null 2>&1
 GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m nofile >/dev/null
 # The file and its dictionary are gone from the commit.  NOT asserting a fully
