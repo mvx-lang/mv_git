@@ -820,6 +820,29 @@ GITV "$A" GIT COMMIT -m withfile >/dev/null
 t  "file committed"   "one"       "$(GITV "$A" GIT SHOW TMPF T1)"
 DF "$A" TMPF
 t  "file delete shows D" "TMPF"   "$(GITV "$A" GIT STATUS)"
+
+# AN ORDINARY TRACKED DIRECTORY IS NOT A DELETED FILE (mv_git#247).
+# Every repository has one -- .github/, tests/, docs/ -- and the rule that
+# decides "this name was an MV file and it is gone" used to accept "the index
+# holds something under <base>/" as evidence.  A plain directory matched, so a
+# clone of any account carrying one reported every file beneath it ` D' for
+# ever: not restorable, being present, and not committable, being unchanged.
+# Asserted here because the failure is invisible to every other test -- they
+# all use MV files, which are exactly the case that worked.
+#
+# ONE LEVEL DEEP, DELIBERATELY.  Where a directory IS a file -- jBASE and QM
+# open any directory as one -- only its top level holds records, so a nested
+# file is not staged at all and an assertion about one would pass by being
+# absent rather than by being right.  A file directly inside the directory is
+# tracked on every platform, and is all the rule needs to go wrong.
+mkdir -p "$A/docs"
+printf 'notes\n' > "$A/docs/README"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir >/dev/null 2>&1
+# The positive control comes first: an absence asserted against a directory
+# that never got committed would pass for the wrong reason.
+t  "the plain directory did travel" "docs/README" "$(cd "$A" && git ls-files)"
+tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)"
 GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m nofile >/dev/null
 # The file and its dictionary are gone from the commit.  NOT asserting a fully

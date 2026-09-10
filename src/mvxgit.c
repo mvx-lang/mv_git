@@ -4241,15 +4241,42 @@ static int tracked_file_gone(mv_ctx *ctx, git_index *index, const char *top) {
         int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, base);
         int rn = snprintf(rpfx, sizeof rpfx, "%s%s/", g_prefix, base);
         snprintf(ctl, sizeof ctl, "%s%s.DICT/%%FILE%%", g_prefix, base);
+        /* TWO QUESTIONS, NOT ONE (mv_git#247).
+           Asking only "does the index hold anything under <base>/ or
+           <base>.DICT/" made every ordinary tracked directory qualify --
+           .github/, tests/, docs/ -- because nothing about `<base>/` says MV
+           FILE.  A clone of an account carrying any of those then reported
+           every file beneath them ` D` for ever: they cannot be restored, being
+           present, and cannot be committed away, being unchanged.  Which is
+           exactly what the comment above says must not happen; the record
+           prefix had been added beside the dictionary one and quietly took the
+           rule with it.
+
+             known   -- the index knows <base> AS AN MV FILE: anything under
+                        its dictionary, the %FILE% control included, since a
+                        plain directory has no dictionary at all;
+             content -- and holds CONTENT for it beyond that declaration: a
+                        record, or a dictionary item that is not the control.
+
+           Both, or it is not a deleted file.  A genuinely deleted file still
+           reports its records (it has both); a control-only declaration still
+           does not (known, but no content); and a directory of ordinary files
+           never can (content, but never known). */
+        int known = 0, content = 0;
         if (dn > 0 && rn > 0) {
             for (size_t i = 0; i < git_index_entrycount(index); i++) {
                 const git_index_entry *e = git_index_get_byindex(index, i);
                 if (!e) continue;
-                if (strcmp(e->path, ctl) == 0) continue;   /* the declaration */
-                if (strncmp(e->path, dpfx, (size_t)dn) == 0 ||
-                    strncmp(e->path, rpfx, (size_t)rn) == 0) { ans = 1; break; }
+                if (strncmp(e->path, dpfx, (size_t)dn) == 0) {
+                    known = 1;
+                    if (strcmp(e->path, ctl) != 0) content = 1;
+                } else if (strncmp(e->path, rpfx, (size_t)rn) == 0) {
+                    content = 1;
+                }
+                if (known && content) break;
             }
         }
+        ans = (known && content);
     }
     snprintf(g_gone_memo, sizeof g_gone_memo, "%s", base);
     g_gone_ans = ans;
