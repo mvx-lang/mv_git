@@ -14,6 +14,14 @@
 # Requires: a C compiler; libgit2 under $LIBGIT2_PREFIX (or LIBGIT2_CFLAGS /
 # LIBGIT2_LIBS); and jBASE ($JBCRELEASEDIR, with include/ and lib/).
 #
+# -lantlr4-runtime IS NOT OPTIONAL, even though nothing here uses antlr4.
+# jBASE's own libjQL.so is C++ and depends on it, so the link fails with ~200
+# undefined `antlr4::...' references on any machine that does not already have
+# an antlr4 runtime on the default library path.  jBASE ships one in its own
+# lib/ (libantlr4-runtime.so), which -L$JBCRELEASEDIR/lib already covers --
+# naming it is all that was missing (mv_git#244).  libstdc++ needs no flag: it
+# resolves through libantlr4-runtime.so's DT_NEEDED.
+#
 #   sh build-jbase.sh [stagedir]        # default: ./stage
 set -e
 STAGE="${1:-./stage}"
@@ -34,7 +42,7 @@ mkdir -p "$HERE/bin"
       -DJBGIT_VERSION="\"$UGVER\"" \
       -I"$SRC" -I"$JBCRELEASEDIR/include" $LG2_CFLAGS \
       "$SRC/jb-git.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" \
-      -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil \
+      -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil -lantlr4-runtime \
       $LG2_LIBS -lm -lncurses -ldl -lpthread -lrt \
       -o "$HERE/bin/jb-git"
 echo "  built bin/jb-git (record-git engine + jBASE Jedi record layer)"
@@ -45,7 +53,7 @@ echo "  built bin/jb-git (record-git engine + jBASE Jedi record layer)"
 "$CC" -std=c11 -O2 -fPIC -shared -DMVXGIT_JBASE -DMVXGIT_VERSION="\"$UGVER\"" \
       -I"$SRC" -I"$JBCRELEASEDIR/include" $LG2_CFLAGS \
       "$SRC/jbasecallc.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" \
-      -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil \
+      -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil -lantlr4-runtime \
       $LG2_LIBS -lm -ldl -lpthread \
       -o "$HERE/bin/libjbgit.so"
 echo "  built bin/libjbgit.so (the GIT* entry points for the in-session verb)"
