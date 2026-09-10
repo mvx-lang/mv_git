@@ -875,6 +875,14 @@ case "$pd_paths" in *docs.DICT/*)
 #      different bug under this one's name.  MVX and jBASE call the engine from
 #      the verb (PLATFORM.H carries $DEFINE ENGINE); a CLI-driven arm IS it.
 pd_engine=no
+#      Read it from PLATFORM.H where there is one, and a CLI-driven arm IS the
+#      engine by definition.  MVX is named outright because it is the one case
+#      the account cannot answer: its verb links the engine directly -- that is
+#      what ENGINE means, and MVX is its reference -- but the mvx package ships
+#      no PLATFORM.H to say so, MVX being the platform the others are defined
+#      against.  Without this the assertion skipped EVERYWHERE, which is not a
+#      test.
+[ "$PLATFORM" = mvx ] && pd_engine=yes
 grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
 [ "$ATTR_VIA" = cli ] && pd_engine=yes
 [ "$pd_engine" = no ] &&
