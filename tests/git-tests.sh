@@ -857,33 +857,32 @@ printf 'notes\n' > "$A/docs/README"
 GITV "$A" GIT ADD -A >/dev/null 2>&1
 GITV "$A" GIT COMMIT -m plaindir >/dev/null 2>&1
 pd_paths="$(cd "$A" && git ls-files)"
-# The positive control comes first: an absence asserted against a directory
-# that never got committed would pass for the wrong reason.
-t  "the plain directory did travel" "docs/README" "$pd_paths"
-# ASK THE PLATFORM, DO NOT NAME IT.  jBASE, UniData and UniVerse open ANY
-# directory as a file, so `docs' is a real MV file there and cannot be the bug
-# -- while MVX (records live in a backend, not on disk) and QM (the VOC decides
-# what is a file) both can.  Staging a %FILE% control for it is the platform
-# saying which it is, so read that rather than keeping a list of platform names
-# here to drift out of date.
-# AND ASK WHO ANSWERS `STATUS' HERE.  The rule this asserts lives in the shared
-# C engine, and only some arms reach it: MVX and jBASE call it from the verb
-# (PLATFORM.H says $DEFINE ENGINE), and a CLI-driven arm is the engine by
-# definition.  UniData and UniVerse answer from the BASIC handler instead, which
-# has its own copy of the question and is not what this change touched -- so an
-# assertion here would be reporting a different bug under this one's name.
-pd_engine=no
-grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
-[ "$ATTR_VIA" = cli ] && pd_engine=yes
-case "$pd_paths:$pd_engine" in
-  *docs.DICT/*)
-     skip "a plain directory is not a deleted file" \
-          "this platform opens any directory as a file, so docs/ IS one here" ;;
-  *:no)
-     skip "a plain directory is not a deleted file" \
-          "status is answered by the BASIC handler here, not the shared engine" ;;
-  *) tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)" ;;
-esac
+# THREE REASONS THIS CANNOT APPLY, each read from the account rather than from
+# a list of platform names -- the ATTR_VIA table above has the same shape for
+# the same reason, and a list would drift the moment a port is added.
+pd_why=""
+#   1. the arm cannot stage ordinary files at all.  `GIT ADD -A' in a session
+#      has no disk pass (mv_git#148), so nothing plain ever reaches the index
+#      and an assertion about it would pass by being absent.
+case "$pd_paths" in *docs/README*) : ;; *)
+  pd_why="GIT ADD -A stages no ordinary files on this arm (mv_git#148)" ;; esac
+#   2. the platform opens ANY directory as a file, so docs/ IS one here and
+#      cannot be the bug.  Staging a %FILE% control for it says so.
+case "$pd_paths" in *docs.DICT/*)
+  pd_why="this platform opens any directory as a file, so docs/ IS one here" ;; esac
+#   3. STATUS is answered by the BASIC handler rather than the shared C engine,
+#      which is where this rule lives -- so an assertion would be reporting a
+#      different bug under this one's name.
+[ "$pd_engine" = no ] &&
+  pd_why="status is answered by the BASIC handler here, not the shared engine"
+if [ -n "$pd_why" ]; then
+  skip "a plain directory is not a deleted file" "$pd_why"
+else
+  # The positive control first: an absence asserted against a directory that
+  # never got committed would pass for the wrong reason.
+  t  "the plain directory did travel" "docs/README" "$pd_paths"
+  tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)"
+fi
 # Put the account back as it was: later assertions expect a clean status, and a
 # fixture that leaves litter behind fails the test after it instead of itself.
 rm -rf "$A/docs"
