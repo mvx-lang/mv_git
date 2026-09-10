@@ -872,7 +872,11 @@ case "$pd_paths" in *docs.DICT/*)
   pd_why="this platform opens any directory as a file, so docs/ IS one here" ;; esac
 #   3. STATUS is answered by the BASIC handler rather than the shared C engine,
 #      which is where this rule lives -- so an assertion would be reporting a
-#      different bug under this one's name.
+#      different bug under this one's name.  MVX and jBASE call the engine from
+#      the verb (PLATFORM.H carries $DEFINE ENGINE); a CLI-driven arm IS it.
+pd_engine=no
+grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
+[ "$ATTR_VIA" = cli ] && pd_engine=yes
 [ "$pd_engine" = no ] &&
   pd_why="status is answered by the BASIC handler here, not the shared engine"
 if [ -n "$pd_why" ]; then
