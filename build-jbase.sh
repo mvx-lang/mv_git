@@ -153,11 +153,28 @@ NC
 # assertion happens to reach that op, which is how GITUDIFF's spare repo
 # parameter survived (mv_git#183).  Compare the two here, where both are in hand.
 #
-# A missing shim is reported but not fatal: several engine ops belong to the
-# session-platform path and are compiled out of their callers on jBASE.
+# EVERY HANDLER, NOT JUST GIT.OBJ.  GIT.OBJ holds fifteen of the thirty-five
+# engine calls; the other twenty are made straight from the handler that needs
+# them -- GIT.ADD calls GITADD itself -- and were never compared at all.
+# Checking one file is checking less than half of them (mv_git#251).
+#
+# AND A MISSING SHIM IS FATAL NOW.  It used to be a note, on the grounds that
+# several engine ops belong to the session-platform path and are compiled out of
+# their callers here.  That is still true of four of them -- but GIT.OBJ's
+# engine arm IS compiled on jBASE and names them, jBASE resolves CALL at run
+# time, and a note nobody has to answer is not a check.  With the set complete,
+# a missing shim is a defect.
 mismatch=0
-sed -n '/\$IFDEF ENGINE/,/\$ENDIF/p' "$HERE/BP/GIT.OBJ" \
-  | grep -oE 'CALL GIT[A-Z]+\([^)]*\)' > "$STAGE/.engineops" || true
+#
+# awk, NOT `sort -u`.  jBASE PUTS ITS OWN `sort' ON THE PATH -- jbase_env.sh
+# prepends $JBCRELEASEDIR/bin, which holds a `sort' that is the jBASE verb, and
+# it answers a pipeline with "No file name could be found for your query".  The
+# error then arrives as the name of a missing shim, because it is what the loop
+# below read.  Of sort/awk/grep/sed/nm/wc/tr/basename it is the only one jBASE
+# shadows, measured on 6.2.1.1.
+for f in "$HERE"/BP/*; do
+    [ -f "$f" ] && sed -n '/\$IFDEF ENGINE/,/\$ENDIF/p' "$f"
+done | grep -oE 'CALL GIT[A-Z]+\([^)]*\)' | awk '!seen[$0]++' > "$STAGE/.engineops" || true
 while read -r call; do
     [ -n "$call" ] || continue
     name=$(printf '%s\n' "$call" | sed 's/CALL \([A-Z.]*\)(.*/\1/')
@@ -166,19 +183,44 @@ while read -r call; do
     want=$(printf '%s\n' "$call" | sed 's/.*(\(.*\))/\1/' | tr ',' '\n' | wc -l | tr -d ' ')
     shim="$HERE/jbase/BP/$name"
     if [ ! -f "$shim" ]; then
-        echo "  note: $name has no jBASE shim (session-platform op)"
+        echo "  ERROR: $name is called under \$IFDEF ENGINE and has no jBASE shim" >&2
+        mismatch=1
         continue
     fi
     got=$(grep -oE "SUBROUTINE $name\([^)]*\)" "$shim" \
           | sed 's/.*(\(.*\))/\1/' | tr ',' '\n' | wc -l | tr -d ' ')
     if [ "$want" != "$got" ]; then
-        echo "  ERROR: $name — GIT.OBJ calls it with $want args, shim declares $got" >&2
+        echo "  ERROR: $name — the handlers call it with $want args, shim declares $got" >&2
         mismatch=1
     fi
 done < "$STAGE/.engineops"
+nops=$(wc -l < "$STAGE/.engineops" | tr -d ' ')
 rm -f "$STAGE/.engineops"
 [ "$mismatch" = 0 ] || { echo "build-jbase.sh: engine shim signatures disagree" >&2; exit 1; }
-echo "  engine shims agree with GIT.OBJ"
+echo "  engine shims agree with the handlers ($nops calls)"
+
+# ...AND EVERY DEFC MUST NAME A SYMBOL THE LIBRARY ACTUALLY EXPORTS.
+#
+# The comparison above checks the BASIC half against the BASIC half.  It cannot
+# see the other end of the bridge: a shim whose DEFC names a function that is not
+# in libjbgit.so compiles, catalogs, and fails at run time -- LD_PRELOAD is the
+# only resolution jBASE has for DEFC (mv_git#114), so the symbol either is there
+# or the call dies in the session.  That was the whole shape of mv_git#251: four
+# shims missing along with the four entry points behind them, and nothing said so
+# until somebody read a note.  nm is cheap and it closes the chain.
+missing=""
+for shim in "$HERE"/jbase/BP/*; do
+    [ -f "$shim" ] || continue
+    for sym in $(grep -oE '^ *DEFC +VAR +[A-Z0-9_]+' "$shim" | awk '{print $3}'); do
+        nm -D --defined-only "$HERE/bin/libjbgit.so" 2>/dev/null \
+          | grep -q " $sym\$" || missing="$missing $(basename "$shim"):$sym"
+    done
+done
+[ -z "$missing" ] || {
+    echo "  ERROR: DEFC names symbols libjbgit.so does not export:$missing" >&2
+    echo "build-jbase.sh: a shim would fail at run time, not at build time" >&2
+    exit 1; }
+echo "  every DEFC resolves against bin/libjbgit.so"
 
 cp "$HERE/jbase/install.sh" "$STAGE/mv_git/"; chmod +x "$STAGE/mv_git/install.sh"
 [ -f "$HERE/LICENSE" ] && cp "$HERE/LICENSE" "$STAGE/mv_git/"
