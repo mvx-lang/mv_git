@@ -3874,6 +3874,16 @@ void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            Every MV file has a dictionary and no plain directory does, so the
            index holding `<top>.DICT/' is the mark -- the same one
            tracked_file_gone's own comment names. */
+#ifndef MVXGIT_NORECORDS
+        /* ...AND ONLY WHERE THE ENGINE CAN ASK WHAT FILES EXIST.  mvgitd is
+           built NORECORDS: it has no record backend, so backend_has_file()
+           always answers 0 and EVERY name looks absent to it.  There this
+           sweep is load-bearing for more than deleted records -- it is what
+           keeps the account's own BP, the mv_git programs LINK installed, out
+           of a commit -- and sparing anything at all put them back in, so the
+           next checkout materialised them over the live ones and the session
+           lost its GIT verb.  An engine that cannot ask what files exist has
+           no business deciding that a directory is not one. */
         {
             char dpfx[600];
             int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, top);
@@ -3887,6 +3897,7 @@ void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
             }
             if (!isfile) continue;           /* a directory of blobs, not records */
         }
+#endif
         if (ng == gcap) {
             size_t nc = gcap ? gcap * 2 : 8;
             char (*t)[256] = realloc(gonetop, nc * sizeof *gonetop);
