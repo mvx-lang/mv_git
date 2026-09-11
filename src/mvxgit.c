@@ -3856,6 +3856,37 @@ void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         for (; k < ng; k++) if (!strcmp(gonetop[k], top)) break;
         if (k < ng) continue;                     /* already decided */
         if (!tracked_file_gone(ctx, gidx, top)) continue;
+        /* ...AND ONLY A FILE'S RECORDS ARE OURS TO PRUNE (mv_git#249).
+           This sweep exists to drop the records of a file that has been
+           deleted.  An ordinary directory's contents are not records -- they
+           are blobs, and git tracks their deletion perfectly well itself -- so
+           pruning them means a repository's docs/, .github/ or tests/ can
+           never be committed from an account at all: the disk pass stages
+           them and this takes them straight back out.
+
+           tracked_file_gone() cannot tell the two apart, and must not be
+           taught to: it also answers `status', and changing its answer changed
+           what got committed -- on UniVerse the account's own BP records then
+           travelled and the next checkout materialised them over the mv_git
+           programs LINK had just installed (mv_git#247).  So narrow it HERE,
+           where only the pruning is affected.
+
+           Every MV file has a dictionary and no plain directory does, so the
+           index holding `<top>.DICT/' is the mark -- the same one
+           tracked_file_gone's own comment names. */
+        {
+            char dpfx[600];
+            int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, top);
+            int isfile = 0;
+            for (size_t j = 0; dn > 0 && j < git_index_entrycount(gidx); j++) {
+                const git_index_entry *de = git_index_get_byindex(gidx, j);
+                if (de && strncmp(de->path, dpfx, (size_t)dn) == 0) {
+                    isfile = 1;
+                    break;
+                }
+            }
+            if (!isfile) continue;           /* a directory of blobs, not records */
+        }
         if (ng == gcap) {
             size_t nc = gcap ? gcap * 2 : 8;
             char (*t)[256] = realloc(gonetop, nc * sizeof *gonetop);
