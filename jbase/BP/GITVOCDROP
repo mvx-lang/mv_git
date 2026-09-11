@@ -1,0 +1,11 @@
+* GITVOCDROP - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+*
+* ONE ARGUMENT, AND IT IS THE LIST.  GIT.OBJ calls this as GITVOCDROP(list, out)
+* -- the repository is not passed, so the C half supplies ".git" exactly as the
+* MVX one does.  The type table is per MV system and lives in mv_voc_class();
+* the verb must not carry its own copy (mv_git#133).
+      SUBROUTINE GITVOCDROP(LIST, ANS)
+      DEFC VAR JBGITVOCDROP(VAR, VAR)
+      ANS = ""
+      X = JBGITVOCDROP(LIST, ANS)
+      RETURN

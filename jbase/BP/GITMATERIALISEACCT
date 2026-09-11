@@ -1,0 +1,12 @@
+* GITMATERIALISEACCT - the engine op, as a SUBROUTINE.  See BP/GITSTATUS.
+*
+* ACCTDIR, NOT DIR.  `DIR' is a jBASE RESERVED WORD -- the compiler stops with
+* `near RESERVED WORD "DIR"' on the SUBROUTINE line, which is one line further
+* on than the eye expects.  jBASE reserves `COUNT' the same way, and the same
+* rule applies to every portable source: a name that reads as a verb somewhere
+* is not a safe parameter name.
+      SUBROUTINE GITMATERIALISEACCT(ACCTDIR, ANS)
+      DEFC VAR JBGITMATERIALISEACCT(VAR, VAR)
+      ANS = ""
+      X = JBGITMATERIALISEACCT(ACCTDIR, ANS)
+      RETURN
