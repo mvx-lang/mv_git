@@ -367,8 +367,11 @@ elif [ "$PLATFORM" = jbase ]; then
   #          account edit was reported twice and the account never came clean
   #          again (mv_git#183).
            : ; }
-  # JBGIT_VIA=verb drives the in-session verb, as the mvx and udt arms do; the
-  # default for a run by hand is the CLI.  CI runs BOTH (.github/jbase-ci.sh).
+  # JBGIT_VIA=cli drives jb-git from the shell; the DEFAULT is the in-session
+  # verb, as it is on mvx, udt and uv -- that is what a user of this port
+  # actually runs, so it is what an unqualified run should measure.  It defaulted
+  # to the CLI only while the verb path was broken (mv_git#253, #255).  CI runs
+  # BOTH regardless (.github/jbase-ci.sh).
   #
   # THIS COMMENT USED TO SAY THE VERB PATH DID NOT WORK, and why: "the shared
   # library is not being produced, so the session cannot find GIT".  Both halves
@@ -399,7 +402,7 @@ elif [ "$PLATFORM" = jbase ]; then
   # The filter only knows the one-line form (mvpkg's, and jBASE's documented
   # one); the preflight in LINK is what proves it worked, for any spelling.
   JBCFG=""
-  if [ "${JBGIT_VIA:-cli}" = verb ]; then
+  if [ "${JBGIT_VIA:-verb}" = verb ]; then
       _src="${JBASE_CONFIG_FILE:-${JBCGLOBALDIR:-/opt/jbase/global}/config/jbase_config.json}"
       if [ -f "$_src" ]; then
           JBCFG="$WORK/jbase_config.json"
@@ -472,7 +475,7 @@ elif [ "$PLATFORM" = jbase ]; then
           echo "  full log: $JBLIB/catalog.log" >&2
           # The CLI arm never calls these; the verb arm does, and a verb run
           # with subroutines missing from the library measures nothing.
-          if [ "${JBGIT_VIA:-cli}" = "verb" ]; then
+          if [ "${JBGIT_VIA:-verb}" = "verb" ]; then
               echo "LINK: fatal -- JBGIT_VIA=verb needs every subroutine" >&2
               exit 1
           fi
@@ -482,7 +485,7 @@ elif [ "$PLATFORM" = jbase ]; then
       # healthy fixture, then fails one verb at a time (mv_git#253).  Ask jBASE
       # from inside a session, with the environment every verb call gets, and
       # insist on the exact answer.
-      if [ "${JBGIT_VIA:-cli}" = verb ]; then
+      if [ "${JBGIT_VIA:-verb}" = verb ]; then
           _pd="$WORK/jbprobe"; mkdir -p "$_pd/bin"
           printf '%s\n' '      PROGRAM JBOLPROBE' \
             '      IF GETENV("JBCOBJECTLIST", V) ELSE V = "<unset>"' \
@@ -513,13 +516,34 @@ elif [ "$PLATFORM" = jbase ]; then
   # the process, and that is jBASE's behaviour for DEFC generally -- reproduced
   # with five lines of C and no mv_git at all (mv_git#114).
   JBPRE="${JBGIT_LIB:-$GITPKG/libjbgit.so}"
-  if [ "${JBGIT_VIA:-cli}" = cli ]; then
+  if [ "${JBGIT_VIA:-verb}" = cli ]; then
     GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
              printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
   else
+    # `GIT -M' FENCES THE VERB'S OWN OUTPUT with <<<GIT-BEGIN>>>/<<<GIT-END>>>,
+    # which is what makes a session assertable -- the udt, uv and qm arms all
+    # read the fence rather than scraping.  This one returned everything the
+    # session printed, so anything jsh said of its own landed in the assertion:
+    # with no TERM set, `** Warning [ NOTERM ] ** Unknown terminal type' was
+    # glued to the front of the answer and three perfectly good assertions
+    # failed (`config get' saw "...'unknown'Test" instead of "Test").  Exporting
+    # TERM would hide that one banner; the fence handles every one (mv_git#255).
+    jb_fence() { case "$1" in
+                   *'<<<GIT-BEGIN>>>'*)
+                     printf '%s\n' "$1" \
+                       | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f' ;;
+                   # NO FENCE MEANS THE VERB NEVER SPOKE.  awk hands back "" for
+                   # that, and "" is also what a verb that legitimately printed
+                   # nothing gives -- so an assertion would report a bare
+                   # mismatch and a session that failed to start would read
+                   # exactly like a wrong answer (mv_git#187).  Say what the
+                   # session actually said instead.
+                   *) printf 'NO-FENCE %s\n' "$(printf '%s' "$1" | tr '\n' ' ')" ;;
+                 esac; }
     GITV() { local a="$1"; shift; local s="$*"
-             ( cd "$a" && printf '%s\n' "$s" | jb_verbrun "$MVX" ) 2>&1; }
+             jb_fence "$( cd "$a" && printf 'GIT -M %s\n' "${s#GIT }" \
+                          | jb_verbrun "$MVX" 2>&1 )"; }
     # KEYSTROKES CANNOT GO THROUGH jsh's COMMAND LOOP.  jsh reads its own input
     # line-buffered, so a sentence followed by keystrokes on the same stdin
     # leaves the program's KEYIN() with nothing --
@@ -533,7 +557,8 @@ elif [ "$PLATFORM" = jbase ]; then
     # hands it anyway; KEYIN() reads a pipe perfectly well when it owns one
     # (mv_git#183).
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
-             ( cd "$a" && printf '%s' "$k" | jb_verbrun $s ) 2>&1; }
+             jb_fence "$( cd "$a" && printf '%s' "$k" \
+                          | jb_verbrun GIT -M ${s#GIT } 2>&1 )"; }
   fi
   CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
@@ -613,7 +638,7 @@ fi
 # platform it is.
 case "$PLATFORM" in
   uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
-  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
+  jbase) ATTR_VIA="${JBGIT_VIA:-verb}" ;;
   *)     ATTR_VIA=verb ;;
 esac
 
@@ -1248,7 +1273,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   case "$PLATFORM" in
     udt)   clone_verb=1 ;;
     uv)    [ "${UV_VIA:-verb}" = verb ] && clone_verb=1 ;;
-    jbase) [ "${JBGIT_VIA:-cli}" = verb ] && clone_verb=1 ;;
+    jbase) [ "${JBGIT_VIA:-verb}" = verb ] && clone_verb=1 ;;
   esac
   if [ "$clone_verb" = 1 ]; then
     t "a clone that fails says so" "did not complete" \
