@@ -368,16 +368,49 @@ elif [ "$PLATFORM" = jbase ]; then
   #          again (mv_git#183).
            : ; }
   # JBGIT_VIA=verb drives the in-session verb, as the mvx and udt arms do; the
-  # DEFAULT is the CLI, because the verb path's catalog step does not work yet
-  # (the shared library is not being produced, so the session cannot find GIT)
-  # and a default that fails tells you nothing about mv_git.  UV_VIA has the
-  # same shape for the same kind of reason.
+  # default for a run by hand is the CLI.  CI runs BOTH (.github/jbase-ci.sh).
+  #
+  # THIS COMMENT USED TO SAY THE VERB PATH DID NOT WORK, and why: "the shared
+  # library is not being produced, so the session cannot find GIT".  Both halves
+  # were wrong.  CATALOG builds $JBLIB/lib0.so.N perfectly well, and GIT is
+  # found -- programs resolve through PATH.  What failed, on some hosts and not
+  # others, was every CALL the verb then made to a subroutine; see jb_verbrun
+  # below for the reason and the fix (mv_git#253).
   #
   # The handlers and the jBASE shims are CATALOGed ONCE into a shared library
   # every test account reaches through $JBCOBJECTLIST -- udt catalogs globally
   # for the same reason, and doing it per account would recompile forty programs
   # for every test.
   JBLIB="$WORK/jblib"
+  # JBCOBJECTLIST IN THE ENVIRONMENT IS NOT ENOUGH, AND IT FAILS SILENTLY.
+  #
+  # jBASE reads jbase_config.json at session start, and an entry in its
+  # `environment' array written as a "value" OVERRIDES the process environment
+  # ("default" only fills a variable that is unset).  mvpkg-jblib writes
+  # JBCOBJECTLIST exactly that way, so on any host with an mvpkg install the
+  # suite's `JBCOBJECTLIST="$JBLIB"' was thrown away: GIT started, and its first
+  # `CALL GIT.SENT' died with SUBROUTINE_CALL_FAIL -- 68 of 97 assertions, while
+  # CI's fresh container, which has no such line, passed every one.  Measured by
+  # printing GETENV("JBCOBJECTLIST") from inside a session (mv_git#253).
+  #
+  # jBASE honours JBASE_CONFIG_FILE, so a verb run gets its own copy of the
+  # site's config with any JBCOBJECTLIST entry taken out -- everything else the
+  # site configures still applies -- and the suite's own setting then stands.
+  # The filter only knows the one-line form (mvpkg's, and jBASE's documented
+  # one); the preflight in LINK is what proves it worked, for any spelling.
+  JBCFG=""
+  if [ "${JBGIT_VIA:-cli}" = verb ]; then
+      _src="${JBASE_CONFIG_FILE:-${JBCGLOBALDIR:-/opt/jbase/global}/config/jbase_config.json}"
+      if [ -f "$_src" ]; then
+          JBCFG="$WORK/jbase_config.json"
+          grep -v '"JBCOBJECTLIST"' "$_src" > "$JBCFG"
+      fi
+  fi
+  # jb_verbrun CMD... -- run CMD with the environment a verb session needs.  ONE
+  # place, so the preflight, the verb and the keystroke path cannot drift apart.
+  jb_verbrun() {
+      env PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
+          JBCOBJECTLIST="$JBLIB" ${JBCFG:+"JBASE_CONFIG_FILE=$JBCFG"} "$@"; }
   # jb_objname NAME — the object file jBASE writes for a program of that name.
   # It percent-encodes every character outside [A-Za-z0-9] as _HH, so GIT.ADD
   # is cataloged as GIT_2EADD.o.  Looking for GIT.ADD.o instead finds nothing,
@@ -444,6 +477,32 @@ elif [ "$PLATFORM" = jbase ]; then
               exit 1
           fi
       fi
+      # AND PROVE A SESSION WILL SEARCH THE LIBRARY IT JUST BUILT.  A catalogue
+      # that is complete but not on the loader's list looks exactly like a
+      # healthy fixture, then fails one verb at a time (mv_git#253).  Ask jBASE
+      # from inside a session, with the environment every verb call gets, and
+      # insist on the exact answer.
+      if [ "${JBGIT_VIA:-cli}" = verb ]; then
+          _pd="$WORK/jbprobe"; mkdir -p "$_pd/bin"
+          printf '%s\n' '      PROGRAM JBOLPROBE' \
+            '      IF GETENV("JBCOBJECTLIST", V) ELSE V = "<unset>"' \
+            '      CRT "OBJECTLIST=[" : V : "]"' > "$1/BP/JBOLPROBE"
+          ( cd "$1" && printf 'BASIC BP JBOLPROBE\nCATALOG BP JBOLPROBE\n' \
+              | JBCDEV_LIB="$_pd" JBCDEV_BIN="$_pd/bin" "$MVX" ) >/dev/null 2>&1
+          _seen=$( cd "$1" && jb_verbrun "$_pd/bin/JBOLPROBE" 2>&1 \
+                   | sed -n 's/^OBJECTLIST=\[\(.*\)\]$/\1/p' | tail -1 )
+          # The probe is not the account's; leave nothing for a test to commit.
+          rm -f "$1/BP/JBOLPROBE" "$1/BP/\$JBOLPROBE"
+          if [ "$_seen" != "$JBLIB" ]; then
+              echo "LINK: fatal -- a jBASE session does not search the suite's library" >&2
+              echo "  set in the environment: JBCOBJECTLIST=$JBLIB" >&2
+              echo "  seen inside jBASE:      ${_seen:-<no answer: the probe did not run>}" >&2
+              echo "  config handed to jBASE: ${JBCFG:-<none found>}" >&2
+              echo "  A \"value\" entry for JBCOBJECTLIST in jbase_config.json overrides" >&2
+              echo "  the environment; every CALL the verb makes would fail (mv_git#253)." >&2
+              exit 1
+          fi
+      fi
       touch "$JBLIB/.done"; }
   # JP is a hash file; UD is a unix DIRECTORY, which is what the open form's DIR
   # means.  JD is NOT a directory -- it is another regular file.
@@ -460,9 +519,7 @@ elif [ "$PLATFORM" = jbase ]; then
              printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
   else
     GITV() { local a="$1"; shift; local s="$*"
-             ( cd "$a" && printf '%s\n' "$s" \
-               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
-                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+             ( cd "$a" && printf '%s\n' "$s" | jb_verbrun "$MVX" ) 2>&1; }
     # KEYSTROKES CANNOT GO THROUGH jsh's COMMAND LOOP.  jsh reads its own input
     # line-buffered, so a sentence followed by keystrokes on the same stdin
     # leaves the program's KEYIN() with nothing --
@@ -476,9 +533,7 @@ elif [ "$PLATFORM" = jbase ]; then
     # hands it anyway; KEYIN() reads a pipe perfectly well when it owns one
     # (mv_git#183).
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
-             ( cd "$a" && printf '%s' "$k" \
-               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
-                 JBCOBJECTLIST="$JBLIB" $s ) 2>&1; }
+             ( cd "$a" && printf '%s' "$k" | jb_verbrun $s ) 2>&1; }
   fi
   CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
