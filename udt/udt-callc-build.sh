@@ -24,6 +24,11 @@
 #   libs           optional: one line of extra linker flags for this package
 #                     (e.g. the git bridge's  -Wl,-rpath,/usr/local/lib64 -L... -lgit2)
 #
+# INVARIANT: a fragment that lists functions in `funcs` MUST ship the *.c or *.o
+# that define them.  Because the library is the union of every fragment, one that
+# declares without implementing takes those symbols away from the whole system
+# rather than merely failing itself — so both `add` and the rebuild refuse it.
+#
 # The system base functions are injected by gencdef, so a fragment lists
 # only its own functions.  Needs gcc and the UniData generators
 # (gencdef/genefs/genfunc, on PATH) with efsdef + libuvic.a in the work dir.
@@ -56,6 +61,36 @@ add)
 	if [ ! -d "$src" ]; then
 		echo "udt-callc: $2 ships no udt-callc/ contribution — nothing to build"
 		exit 0                       # not a native package; a normal install
+	fi
+	# A fragment that DECLARES functions must also SHIP them.  UniData loads
+	# exactly one libu2callc.so, so staging declarations with no code does not
+	# merely fail to add this package: the rebuild below relinks the library from
+	# the union of fragments, and this one contributes symbols to NOBODY — every
+	# account that had those functions loses them, with the failure surfacing far
+	# away as `undefined symbol: <NAME>` (mv_package#143).
+	#
+	# A source tarball is exactly this shape.  Compiled CallC objects are build
+	# output and gitignored, so `udt-callc/` arrives as funcs + libs and nothing
+	# else — which is how installing a source release of mvx-lang/git stripped
+	# the GIT verb's 39 functions out of a working library.
+	#
+	# Checked BEFORE the rm below, so a refusal leaves the previous good staging
+	# in place: this must never be the step that breaks a working box.
+	ndecl=$(grep -c ':' "$src/funcs" 2>/dev/null || true)
+	[ -n "$ndecl" ] || ndecl=0
+	# Test the globs one file at a time.  `ls "$src"/*.c "$src"/*.o` exits
+	# non-zero when EITHER pattern misses, so it rejects the ordinary
+	# objects-but-no-sources fragment — which is what a binary release ships.
+	code=no
+	for f in "$src"/*.c "$src"/*.o ; do [ -f "$f" ] && { code=yes; break; }; done
+	if [ "$ndecl" -gt 0 ] && [ "$code" = no ]; then
+		echo "udt-callc: refusing to stage $3 — it declares $ndecl CallC function(s) in" >&2
+		echo "           udt-callc/funcs but ships no *.c or *.o to implement them." >&2
+		echo "           Relinking $LIB from this would REMOVE those functions from" >&2
+		echo "           every account that has them." >&2
+		echo "           A source tarball does not carry the compiled CallC objects —" >&2
+		echo "           install this package's binary artifact for your system instead." >&2
+		exit 4
 	fi
 	$SUDO mkdir -p "$CALLCD/$pkg"
 	$SUDO rm -f "$CALLCD/$pkg"/* 2>/dev/null || true
@@ -108,6 +143,23 @@ for d in "$CALLCD"/*/ ; do
 	pkg=$(basename "$d")
 	NPKG=$((NPKG + 1))
 	echo "udt-callc:   + $pkg"
+	# The same assertion for a fragment that is already staged — a bare rebuild
+	# reaches this without going through `add` (a box staged before that guard
+	# existed, or a hand-edited callc.d).  Failing here is the SAFE outcome: the
+	# existing library is replaced only at the very end, so stopping now leaves
+	# the working one — with those symbols — untouched.
+	nd=$(grep -c ':' "$d/funcs" 2>/dev/null || true)
+	[ -n "$nd" ] || nd=0
+	dcode=no
+	for f in "$d"*.c "$d"*.o ; do [ -f "$f" ] && { dcode=yes; break; }; done
+	if [ "$nd" -gt 0 ] && [ "$dcode" = no ]; then
+		echo "udt-callc: staged fragment $pkg declares $nd function(s) but ships no code." >&2
+		echo "           Refusing to relink $LIB: it would drop those functions" >&2
+		echo "           from every account.  Keeping the current library." >&2
+		echo "           Fix it by reinstalling the package's binary artifact, or drop the" >&2
+		echo "           fragment:  udt-callc-build.sh remove $pkg" >&2
+		exit 4
+	fi
 	[ -f "$d/funcs" ] && cat "$d/funcs" >> FUN
 	[ -f "$d/libs"  ] && cat "$d/libs"  >> LIBS
 	# compile any sources, namespaced so two packages can share a basename

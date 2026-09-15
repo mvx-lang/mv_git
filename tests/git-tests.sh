@@ -367,17 +367,53 @@ elif [ "$PLATFORM" = jbase ]; then
   #          account edit was reported twice and the account never came clean
   #          again (mv_git#183).
            : ; }
-  # JBGIT_VIA=verb drives the in-session verb, as the mvx and udt arms do; the
-  # DEFAULT is the CLI, because the verb path's catalog step does not work yet
-  # (the shared library is not being produced, so the session cannot find GIT)
-  # and a default that fails tells you nothing about mv_git.  UV_VIA has the
-  # same shape for the same kind of reason.
+  # JBGIT_VIA=cli drives jb-git from the shell; the DEFAULT is the in-session
+  # verb, as it is on mvx, udt and uv -- that is what a user of this port
+  # actually runs, so it is what an unqualified run should measure.  It defaulted
+  # to the CLI only while the verb path was broken (mv_git#253, #255).  CI runs
+  # BOTH regardless (.github/jbase-ci.sh).
+  #
+  # THIS COMMENT USED TO SAY THE VERB PATH DID NOT WORK, and why: "the shared
+  # library is not being produced, so the session cannot find GIT".  Both halves
+  # were wrong.  CATALOG builds $JBLIB/lib0.so.N perfectly well, and GIT is
+  # found -- programs resolve through PATH.  What failed, on some hosts and not
+  # others, was every CALL the verb then made to a subroutine; see jb_verbrun
+  # below for the reason and the fix (mv_git#253).
   #
   # The handlers and the jBASE shims are CATALOGed ONCE into a shared library
   # every test account reaches through $JBCOBJECTLIST -- udt catalogs globally
   # for the same reason, and doing it per account would recompile forty programs
   # for every test.
   JBLIB="$WORK/jblib"
+  # JBCOBJECTLIST IN THE ENVIRONMENT IS NOT ENOUGH, AND IT FAILS SILENTLY.
+  #
+  # jBASE reads jbase_config.json at session start, and an entry in its
+  # `environment' array written as a "value" OVERRIDES the process environment
+  # ("default" only fills a variable that is unset).  mvpkg-jblib writes
+  # JBCOBJECTLIST exactly that way, so on any host with an mvpkg install the
+  # suite's `JBCOBJECTLIST="$JBLIB"' was thrown away: GIT started, and its first
+  # `CALL GIT.SENT' died with SUBROUTINE_CALL_FAIL -- 68 of 97 assertions, while
+  # CI's fresh container, which has no such line, passed every one.  Measured by
+  # printing GETENV("JBCOBJECTLIST") from inside a session (mv_git#253).
+  #
+  # jBASE honours JBASE_CONFIG_FILE, so a verb run gets its own copy of the
+  # site's config with any JBCOBJECTLIST entry taken out -- everything else the
+  # site configures still applies -- and the suite's own setting then stands.
+  # The filter only knows the one-line form (mvpkg's, and jBASE's documented
+  # one); the preflight in LINK is what proves it worked, for any spelling.
+  JBCFG=""
+  if [ "${JBGIT_VIA:-verb}" = verb ]; then
+      _src="${JBASE_CONFIG_FILE:-${JBCGLOBALDIR:-/opt/jbase/global}/config/jbase_config.json}"
+      if [ -f "$_src" ]; then
+          JBCFG="$WORK/jbase_config.json"
+          grep -v '"JBCOBJECTLIST"' "$_src" > "$JBCFG"
+      fi
+  fi
+  # jb_verbrun CMD... -- run CMD with the environment a verb session needs.  ONE
+  # place, so the preflight, the verb and the keystroke path cannot drift apart.
+  jb_verbrun() {
+      env PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
+          JBCOBJECTLIST="$JBLIB" ${JBCFG:+"JBASE_CONFIG_FILE=$JBCFG"} "$@"; }
   # jb_objname NAME — the object file jBASE writes for a program of that name.
   # It percent-encodes every character outside [A-Za-z0-9] as _HH, so GIT.ADD
   # is cataloged as GIT_2EADD.o.  Looking for GIT.ADD.o instead finds nothing,
@@ -439,8 +475,34 @@ elif [ "$PLATFORM" = jbase ]; then
           echo "  full log: $JBLIB/catalog.log" >&2
           # The CLI arm never calls these; the verb arm does, and a verb run
           # with subroutines missing from the library measures nothing.
-          if [ "${JBGIT_VIA:-cli}" = "verb" ]; then
+          if [ "${JBGIT_VIA:-verb}" = "verb" ]; then
               echo "LINK: fatal -- JBGIT_VIA=verb needs every subroutine" >&2
+              exit 1
+          fi
+      fi
+      # AND PROVE A SESSION WILL SEARCH THE LIBRARY IT JUST BUILT.  A catalogue
+      # that is complete but not on the loader's list looks exactly like a
+      # healthy fixture, then fails one verb at a time (mv_git#253).  Ask jBASE
+      # from inside a session, with the environment every verb call gets, and
+      # insist on the exact answer.
+      if [ "${JBGIT_VIA:-verb}" = verb ]; then
+          _pd="$WORK/jbprobe"; mkdir -p "$_pd/bin"
+          printf '%s\n' '      PROGRAM JBOLPROBE' \
+            '      IF GETENV("JBCOBJECTLIST", V) ELSE V = "<unset>"' \
+            '      CRT "OBJECTLIST=[" : V : "]"' > "$1/BP/JBOLPROBE"
+          ( cd "$1" && printf 'BASIC BP JBOLPROBE\nCATALOG BP JBOLPROBE\n' \
+              | JBCDEV_LIB="$_pd" JBCDEV_BIN="$_pd/bin" "$MVX" ) >/dev/null 2>&1
+          _seen=$( cd "$1" && jb_verbrun "$_pd/bin/JBOLPROBE" 2>&1 \
+                   | sed -n 's/^OBJECTLIST=\[\(.*\)\]$/\1/p' | tail -1 )
+          # The probe is not the account's; leave nothing for a test to commit.
+          rm -f "$1/BP/JBOLPROBE" "$1/BP/\$JBOLPROBE"
+          if [ "$_seen" != "$JBLIB" ]; then
+              echo "LINK: fatal -- a jBASE session does not search the suite's library" >&2
+              echo "  set in the environment: JBCOBJECTLIST=$JBLIB" >&2
+              echo "  seen inside jBASE:      ${_seen:-<no answer: the probe did not run>}" >&2
+              echo "  config handed to jBASE: ${JBCFG:-<none found>}" >&2
+              echo "  A \"value\" entry for JBCOBJECTLIST in jbase_config.json overrides" >&2
+              echo "  the environment; every CALL the verb makes would fail (mv_git#253)." >&2
               exit 1
           fi
       fi
@@ -454,15 +516,34 @@ elif [ "$PLATFORM" = jbase ]; then
   # the process, and that is jBASE's behaviour for DEFC generally -- reproduced
   # with five lines of C and no mv_git at all (mv_git#114).
   JBPRE="${JBGIT_LIB:-$GITPKG/libjbgit.so}"
-  if [ "${JBGIT_VIA:-cli}" = cli ]; then
+  if [ "${JBGIT_VIA:-verb}" = cli ]; then
     GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
              printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
   else
+    # `GIT -M' FENCES THE VERB'S OWN OUTPUT with <<<GIT-BEGIN>>>/<<<GIT-END>>>,
+    # which is what makes a session assertable -- the udt, uv and qm arms all
+    # read the fence rather than scraping.  This one returned everything the
+    # session printed, so anything jsh said of its own landed in the assertion:
+    # with no TERM set, `** Warning [ NOTERM ] ** Unknown terminal type' was
+    # glued to the front of the answer and three perfectly good assertions
+    # failed (`config get' saw "...'unknown'Test" instead of "Test").  Exporting
+    # TERM would hide that one banner; the fence handles every one (mv_git#255).
+    jb_fence() { case "$1" in
+                   *'<<<GIT-BEGIN>>>'*)
+                     printf '%s\n' "$1" \
+                       | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f' ;;
+                   # NO FENCE MEANS THE VERB NEVER SPOKE.  awk hands back "" for
+                   # that, and "" is also what a verb that legitimately printed
+                   # nothing gives -- so an assertion would report a bare
+                   # mismatch and a session that failed to start would read
+                   # exactly like a wrong answer (mv_git#187).  Say what the
+                   # session actually said instead.
+                   *) printf 'NO-FENCE %s\n' "$(printf '%s' "$1" | tr '\n' ' ')" ;;
+                 esac; }
     GITV() { local a="$1"; shift; local s="$*"
-             ( cd "$a" && printf '%s\n' "$s" \
-               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
-                 JBCOBJECTLIST="$JBLIB" "$MVX" ) 2>&1; }
+             jb_fence "$( cd "$a" && printf 'GIT -M %s\n' "${s#GIT }" \
+                          | jb_verbrun "$MVX" 2>&1 )"; }
     # KEYSTROKES CANNOT GO THROUGH jsh's COMMAND LOOP.  jsh reads its own input
     # line-buffered, so a sentence followed by keystrokes on the same stdin
     # leaves the program's KEYIN() with nothing --
@@ -476,9 +557,8 @@ elif [ "$PLATFORM" = jbase ]; then
     # hands it anyway; KEYIN() reads a pipe perfectly well when it owns one
     # (mv_git#183).
     GITK() { local a="$1" k="$2"; shift 2; local s="$*"
-             ( cd "$a" && printf '%s' "$k" \
-               | PATH="$JBLIB/bin:$GITPKG:$PATH" LD_PRELOAD="$JBPRE" \
-                 JBCOBJECTLIST="$JBLIB" $s ) 2>&1; }
+             jb_fence "$( cd "$a" && printf '%s' "$k" \
+                          | jb_verbrun GIT -M ${s#GIT } 2>&1 )"; }
   fi
   CT()   { ( cd "$1" && printf 'CT %s %s\n' "$2" "$3" | "$MVX" ) 2>&1; }
   SEED() { local a="$1" body="$2"
@@ -545,6 +625,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# HOW IS THIS ARM DRIVEN?  Decided once, here, because more than one test needs
+# it and it must be settled before any of them run -- the plain-directory
+# assertion below reached for it while it was still being set 50 lines later,
+# and `set -u` stopped the whole suite.
+# GIT ATTR is an in-session VERB -- registry, validation, staging and a
+# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
+# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
+# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
+# the CLI, therefore ran all 32 of these against a command that cannot exist
+# and reported them as port failures.  Ask how the arm is DRIVEN, not which
+# platform it is.
+case "$PLATFORM" in
+  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
+  jbase) ATTR_VIA="${JBGIT_VIA:-verb}" ;;
+  *)     ATTR_VIA=verb ;;
+esac
+
 say "== mv_git comprehensive suite — platform=$PLATFORM  net=$([ "$SKIP_NET" = 1 ] && echo off || echo on)"
 
 # --- what a build calls itself -----------------------------------------------
@@ -820,6 +917,69 @@ GITV "$A" GIT COMMIT -m withfile >/dev/null
 t  "file committed"   "one"       "$(GITV "$A" GIT SHOW TMPF T1)"
 DF "$A" TMPF
 t  "file delete shows D" "TMPF"   "$(GITV "$A" GIT STATUS)"
+
+# AN ORDINARY TRACKED DIRECTORY IS NOT A DELETED FILE (mv_git#247).
+# Every repository has one -- .github/, tests/, docs/ -- and the rule that
+# decides "this name was an MV file and it is gone" used to accept "the index
+# holds something under <base>/" as evidence.  A plain directory matched, so a
+# clone of any account carrying one reported every file beneath it ` D' for
+# ever: not restorable, being present, and not committable, being unchanged.
+# Asserted here because the failure is invisible to every other test -- they
+# all use MV files, which are exactly the case that worked.
+#
+# ONE LEVEL DEEP, DELIBERATELY.  Where a directory IS a file, only its top
+# level holds records, so a nested file is not staged at all and an assertion
+# about one would pass by being absent rather than by being right.  A file
+# directly inside the directory is tracked everywhere, and is all the rule
+# needs to go wrong.
+mkdir -p "$A/docs"
+printf 'notes\n' > "$A/docs/README"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir >/dev/null 2>&1
+pd_paths="$(cd "$A" && git ls-files)"
+# THREE REASONS THIS CANNOT APPLY, each read from the account rather than from
+# a list of platform names -- the ATTR_VIA table above has the same shape for
+# the same reason, and a list would drift the moment a port is added.
+pd_why=""
+#   1. the arm cannot stage ordinary files at all.  `GIT ADD -A' in a session
+#      has no disk pass (mv_git#148), so nothing plain ever reaches the index
+#      and an assertion about it would pass by being absent.
+case "$pd_paths" in *docs/README*) : ;; *)
+  pd_why="GIT ADD -A stages no ordinary files on this arm (mv_git#148)" ;; esac
+#   2. the platform opens ANY directory as a file, so docs/ IS one here and
+#      cannot be the bug.  Staging a %FILE% control for it says so.
+case "$pd_paths" in *docs.DICT/*)
+  pd_why="this platform opens any directory as a file, so docs/ IS one here" ;; esac
+#   3. STATUS is answered by the BASIC handler rather than the shared C engine,
+#      which is where this rule lives -- so an assertion would be reporting a
+#      different bug under this one's name.  MVX and jBASE call the engine from
+#      the verb (PLATFORM.H carries $DEFINE ENGINE); a CLI-driven arm IS it.
+pd_engine=no
+#      Read it from PLATFORM.H where there is one, and a CLI-driven arm IS the
+#      engine by definition.  MVX is named outright because it is the one case
+#      the account cannot answer: its verb links the engine directly -- that is
+#      what ENGINE means, and MVX is its reference -- but the mvx package ships
+#      no PLATFORM.H to say so, MVX being the platform the others are defined
+#      against.  Without this the assertion skipped EVERYWHERE, which is not a
+#      test.
+[ "$PLATFORM" = mvx ] && pd_engine=yes
+grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null && pd_engine=yes
+[ "$ATTR_VIA" = cli ] && pd_engine=yes
+[ "$pd_engine" = no ] &&
+  pd_why="status is answered by the BASIC handler here, not the shared engine"
+if [ -n "$pd_why" ]; then
+  skip "a plain directory is not a deleted file" "$pd_why"
+else
+  # The positive control first: an absence asserted against a directory that
+  # never got committed would pass for the wrong reason.
+  t  "the plain directory did travel" "docs/README" "$pd_paths"
+  tn "a plain directory is not a deleted file" " D docs/" "$(GITV "$A" GIT STATUS)"
+fi
+# Put the account back as it was: later assertions expect a clean status, and a
+# fixture that leaves litter behind fails the test after it instead of itself.
+rm -rf "$A/docs"
+GITV "$A" GIT ADD -A >/dev/null 2>&1
+GITV "$A" GIT COMMIT -m plaindir-gone >/dev/null 2>&1
 GITV "$A" GIT ADD -A >/dev/null
 GITV "$A" GIT COMMIT -m nofile >/dev/null
 # The file and its dictionary are gone from the commit.  NOT asserting a fully
@@ -837,18 +997,6 @@ esac
 # the registry, the validation and the staging, in C, which is exactly what
 # "verbs are BASIC, not C" exists to prevent.  The verb path (the default) is
 # where this is tested on UniVerse, and it runs there in full.
-# GIT ATTR is an in-session VERB -- registry, validation, staging and a
-# full-screen editor, all BASIC -- and deliberately has no shell twin (uv-git
-# says so and exits 2).  So it is untestable through ANY CLI-driven arm, not
-# just UniVerse's: the guard used to name uv, and jBASE, whose arm defaults to
-# the CLI, therefore ran all 32 of these against a command that cannot exist
-# and reported them as port failures.  Ask how the arm is DRIVEN, not which
-# platform it is.
-case "$PLATFORM" in
-  uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
-  jbase) ATTR_VIA="${JBGIT_VIA:-cli}" ;;
-  *)     ATTR_VIA=verb ;;
-esac
 if [ "$ATTR_VIA" = cli ]; then
   skip "GIT ATTR" "in-session verb; not reachable through a CLI-driven arm"
 else
@@ -1125,7 +1273,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
   case "$PLATFORM" in
     udt)   clone_verb=1 ;;
     uv)    [ "${UV_VIA:-verb}" = verb ] && clone_verb=1 ;;
-    jbase) [ "${JBGIT_VIA:-cli}" = verb ] && clone_verb=1 ;;
+    jbase) [ "${JBGIT_VIA:-verb}" = verb ] && clone_verb=1 ;;
   esac
   if [ "$clone_verb" = 1 ]; then
     t "a clone that fails says so" "did not complete" \

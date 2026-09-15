@@ -414,9 +414,10 @@ VAR *JBGITUDIFF(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
     return Result;
 }
 
-/* The three that do not fit the pattern.
-   filter_furniture takes a list and no session; versions answers about the
-   build; stagedesc synthesises the account descriptor and stages it. */
+/* The ones that do not fit the pattern.
+   filter_furniture and filter_vocdrop take a list and no session; is_open
+   answers about the account; versions answers about the build; stagedesc
+   synthesises the account descriptor and stages it. */
 
 VAR *JBGITFURNITURE(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
     mv_jbase_use_session(dp);
@@ -444,6 +445,55 @@ VAR *JBGITSTAGEDESC(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *A2, VAR *Out) {
     if (mv_git_desc_for(dpath, sizeof dpath, ddesc, sizeof ddesc,
                         sfb(dp, A1), op[0] == '1'))
         r = mv_git_stageblob(ctx, sfb(dp, A0), dpath, ddesc);
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+/* THE FOUR THAT HAD NO SHIM AT ALL (mv_git#251).  Every caller of these is
+   compiled out on jBASE today -- ISOPEN and ADDDISK are reached only from
+   GIT.ADD's BASIC walk, which is the arm jBASE does not take, and MATACCT and
+   VOCDROP sit under $IFDEF MVX -- so nothing has ever called them here.  But
+   GIT.OBJ's engine arm IS compiled on jBASE and names all four, and jBASE
+   resolves CALL at run time through $JBCOBJECTLIST: the day one of those
+   guards widens, the session gets a missing-program fault instead of a build
+   error.  That is how GITUDIFF's spare parameter survived to become a run-time
+   SUBROUTINE_PARM_ERROR (mv_git#183). */
+
+VAR *JBGITISOPEN(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    char *r = mv_git_is_open(sfb(dp, A0));
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+/* THE REPOSITORY IS SUPPLIED HERE, NOT PASSED IN.  GIT.OBJ calls this op with
+   the candidate list alone, so the C half names the repository -- ".git", which
+   is what the MVX half hardcodes for the same reason. */
+VAR *JBGITVOCDROP(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    char *r = mv_git_filter_vocdrop(".git", sfb(dp, A0));
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITADDDISKFOR(VAR *Result, JBASEDP VAR *A0, VAR *A1, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_adddisk_for(ctx, sfb(dp, A0), sfb(dp, A1));
+    mv_ctx_destroy(ctx);
+    give(dp, Out, r);
+    STORE_VBI(Result, 0);
+    return Result;
+}
+
+VAR *JBGITMATERIALISEACCT(VAR *Result, JBASEDP VAR *A0, VAR *Out) {
+    mv_jbase_use_session(dp);
+    mv_ctx *ctx = mv_ctx_create();
+    char *r = mv_git_materialize_account(ctx, sfb(dp, A0));
     mv_ctx_destroy(ctx);
     give(dp, Out, r);
     STORE_VBI(Result, 0);

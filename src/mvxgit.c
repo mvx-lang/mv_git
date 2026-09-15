@@ -2791,9 +2791,10 @@ static int is_mv_file(const char *n);
 static void backend_files_reset(void);
 static void split_top(const char *path, char *out, size_t cap);
 
-/* The record-git model tracks records as git blobs, never the binary LMDB
-   store — so the account's mvxdata.lmdb must never be staged, even when no
-   .gitignore lists it.
+/* The record-git model tracks records as git blobs, never the binary backend
+   store — so the account's mvxdata.* must never be staged, even when no
+   .gitignore lists it.  That is mvxdata.lmdb (a directory) and mvxdata.sqlite
+   with its -shm and -wal (files), and whatever a later backend adds.
 
    Nor may this pass stage anything that belongs to an MV FILE.  Those are
    records, and the record pass stages them with record semantics; letting the
@@ -2834,7 +2835,15 @@ static int caller_has_file(mv_ctx *ctx, const char *name) {
 
 static int addall_skip(const char *path, const char *matched, void *payload) {
     (void)matched;
-    if (strncmp(path, "mvxdata.lmdb", 12) == 0) return 1;
+    /* ANY backend's local store, not just lmdb's (mv_git#240).
+       The record-git model tracks records as blobs and never the store that
+       holds them.  lmdb's is a DIRECTORY (mvxdata.lmdb) and was named here
+       literally; sqlite's is a FILE (mvxdata.sqlite, plus -shm and -wal), so
+       the literal test missed it and a sqlite-backed account committed its
+       whole database as one binary blob.  Match the naming convention -- every
+       backend's store is mvxdata.<something> in the account root -- so the next
+       one is covered without another edit here. */
+    if (strncmp(path, "mvxdata.", 8) == 0) return 1;
     /* git hands us a REPOSITORY-relative path; file names are account-relative.
        Below a repository root those differ by the account's prefix, and comparing
        the wrong one means every test here silently fails to match — which is how
@@ -2842,6 +2851,12 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        plain files. */
     const char *rel = unprefix(path);
     if (!rel) return 1;                     /* another account's territory */
+    /* ...AND AGAIN ACCOUNT-RELATIVE.  The test above sees the path git handed
+       us, which is repository-relative: in a repository holding several
+       accounts the store is `mA/mvxdata.lmdb/...', and "mvxdata." is not at
+       the front of that.  So the store was staged whenever the account sat
+       below the repository root (mv_git#247). */
+    if (strncmp(rel, "mvxdata.", 8) == 0) return 1;
     char top[256];
     split_top(rel, top, sizeof top);
     /* A SUBMODULE is a gitlink, not a directory of blobs.
@@ -2961,7 +2976,7 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
        of opaque binary while `CUST.DICT/@ID` and `CUST.DICT/%FILE%` carried the
        same dictionary as RECORDS.  The dictionary went into the commit twice:
        once portably, once in a form no other MV system can read (mv_git#151).
-       Same shape as the mvxdata.lmdb rule at the top of this function -- a
+       Same shape as the mvxdata.* rule at the top of this function -- a
        platform's own binary, beside content it already carries properly.
        Its OBJECT file's dictionary too: `BP.O` is excluded as a file (#145), so
        caller_has_file() says no to it and `D_BP.O` would slip through the test
@@ -3841,6 +3856,48 @@ void mvx_sub_GITPRUNE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         for (; k < ng; k++) if (!strcmp(gonetop[k], top)) break;
         if (k < ng) continue;                     /* already decided */
         if (!tracked_file_gone(ctx, gidx, top)) continue;
+        /* ...AND ONLY A FILE'S RECORDS ARE OURS TO PRUNE (mv_git#249).
+           This sweep exists to drop the records of a file that has been
+           deleted.  An ordinary directory's contents are not records -- they
+           are blobs, and git tracks their deletion perfectly well itself -- so
+           pruning them means a repository's docs/, .github/ or tests/ can
+           never be committed from an account at all: the disk pass stages
+           them and this takes them straight back out.
+
+           tracked_file_gone() cannot tell the two apart, and must not be
+           taught to: it also answers `status', and changing its answer changed
+           what got committed -- on UniVerse the account's own BP records then
+           travelled and the next checkout materialised them over the mv_git
+           programs LINK had just installed (mv_git#247).  So narrow it HERE,
+           where only the pruning is affected.
+
+           Every MV file has a dictionary and no plain directory does, so the
+           index holding `<top>.DICT/' is the mark -- the same one
+           tracked_file_gone's own comment names. */
+#ifndef MVXGIT_NORECORDS
+        /* ...AND ONLY WHERE THE ENGINE CAN ASK WHAT FILES EXIST.  mvgitd is
+           built NORECORDS: it has no record backend, so backend_has_file()
+           always answers 0 and EVERY name looks absent to it.  There this
+           sweep is load-bearing for more than deleted records -- it is what
+           keeps the account's own BP, the mv_git programs LINK installed, out
+           of a commit -- and sparing anything at all put them back in, so the
+           next checkout materialised them over the live ones and the session
+           lost its GIT verb.  An engine that cannot ask what files exist has
+           no business deciding that a directory is not one. */
+        {
+            char dpfx[600];
+            int dn = snprintf(dpfx, sizeof dpfx, "%s%s.DICT/", g_prefix, top);
+            int isfile = 0;
+            for (size_t j = 0; dn > 0 && j < git_index_entrycount(gidx); j++) {
+                const git_index_entry *de = git_index_get_byindex(gidx, j);
+                if (de && strncmp(de->path, dpfx, (size_t)dn) == 0) {
+                    isfile = 1;
+                    break;
+                }
+            }
+            if (!isfile) continue;           /* a directory of blobs, not records */
+        }
+#endif
         if (ng == gcap) {
             size_t nc = gcap ? gcap * 2 : 8;
             char (*t)[256] = realloc(gonetop, nc * sizeof *gonetop);
@@ -4549,6 +4606,23 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
            moment its files were described. */
         if (!gone_file && strcmp(recid, "%FILE%") == 0) continue;
         if (gone_file) {                  /* the file itself went: all of it */
+            /* ...UNLESS IT IS STILL ON DISK (mv_git#247).
+               tracked_file_gone() answers "did git track this name as a file
+               that is now absent", and its scan accepts `<base>/' -- which
+               matches any ordinary directory holding tracked files, .github/
+               and docs/ among them.  Every entry beneath one was then reported
+               ` D' for ever: not restorable, being present, and not
+               committable, being unchanged.
+
+               Corrected HERE rather than in tracked_file_gone(), because that
+               function also drives the add-side sweep that decides what to
+               prune from the index.  Changing its answer there changed what got
+               committed, and a later checkout materialised records over the
+               account's own BP -- the mv_git programs LINK had just installed
+               -- leaving `GIT: unknown command TAG'.  The symptom is a status
+               one; fix it in status, where nothing else reads it. */
+            struct stat dsb;
+            if (stat(top, &dsb) == 0 && S_ISDIR(dsb.st_mode)) continue;
             char line[700];
             snprintf(line, sizeof line, " D %s", e->path);
             sb_line(&s, line);
