@@ -50,18 +50,28 @@ jobs:
       # mkpkg.sh builds and catalogs the package; mkaccount.sh is what the suite
       # uses to make each test account.  Without mkpkg there is no CATALOG/GIT
       # and every test fails "cannot execute .../CATALOG/GIT".
+      - name: Set up the mvx toolchain
+        id: mvx
+        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
+        with:
+          version: latest
+
+      # THE TOOLING AND THE TOOLCHAIN MUST BE THE SAME mvx (mv_git#263).
+      # setup-mvx installs a published RELEASE; this checkout used to take the
+      # mvx repo's default branch, which is develop -- so the scripts came from
+      # development and the compiler from the last release.  It worked until the
+      # two disagreed: mvx#248 added `mvx-basic --catalog`, mkpkg.sh started
+      # passing it, and the released compiler answered an unknown flag with its
+      # usage screen and exit 2.  Pinning the checkout to the version setup-mvx
+      # resolved keeps them in step whatever moves next.
       - name: Check out the mvx package tooling
         uses: actions/checkout@v5
         with:
           repository: mvx-lang/mvx
+          ref: v${{ steps.mvx.outputs.version }}
           path: .mvx-src
           sparse-checkout: scripts
           sparse-checkout-cone-mode: false
-
-      - name: Set up the mvx toolchain
-        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
-        with:
-          version: latest
 
       - name: Install libgit2
         run: |
