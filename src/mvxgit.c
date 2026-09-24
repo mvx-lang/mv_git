@@ -35,6 +35,7 @@
 #include <dirent.h>
 #include <fnmatch.h>
 #include <git2.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6998,8 +6999,70 @@ void mv_git_batch_end(void) {
    carry binary: a committed record may contain NULs, so a caller that measures
    the result with strlen would truncate it and lose data silently.  Text-output
    callers pass NULL and use the NUL terminator as before. */
+#ifdef MVXGIT_MVXRT
+/* --- surviving an allocation failure (mv_git#261) -------------------------
+ * Every mv_fatal in this engine is out of memory -- there is no MV condition
+ * that aborts, because those already come back as the output string.  Out of
+ * memory used to abort anyway, which was fine when mvx-git was a command and
+ * is not now that a library drives it: a binding holding a session open across
+ * requests should get an error, not lose the process.
+ *
+ * INTERCEPTED AT THE ENTRY POINT, NOT AT THE CALL SITES.  The eight sites are
+ * inside small helpers (sb_put, ns_add, xlate) with many callers, and
+ * threading a failure back through all of them would touch far more code than
+ * the condition is worth.  run_sub_len is the funnel every engine entry point
+ * already goes through, so one guard covers all of them.
+ *
+ * WHAT IT COSTS, honestly: the unwind skips the intermediate frames, so
+ * whatever they held -- a git_repository, a buffer -- leaks.  For an
+ * allocation failure that is the better trade: the process keeps running and
+ * the caller is told.  It would not be, for a routine error.
+ *
+ * Only the OUTERMOST call guards, so a nested entry point unwinds to the one
+ * the caller is actually in.  Off MVX this is absent entirely -- udt-git and
+ * jbase-git keep their own mv_fatal. */
+#include <setjmp.h>
+static jmp_buf mvxg_unwind;
+static int     mvxg_guarded;
+static char    mvxg_fatal_msg[512];
+
+void mvxgit_fatal(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(mvxg_fatal_msg, sizeof mvxg_fatal_msg, fmt, ap);
+    va_end(ap);
+    if (mvxg_guarded) {
+        mvxg_guarded = 0;
+        longjmp(mvxg_unwind, 1);
+    }
+    /* No guard -- called straight from BASIC, where the runtime's own
+       behaviour is what a program expects. */
+    mvx_fatal("%s", mvxg_fatal_msg);
+}
+#endif
+
 static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
                          int64_t *outlen) {
+#ifdef MVXGIT_MVXRT
+    volatile int guard_is_mine = 0;
+    if (!mvxg_guarded) {
+        guard_is_mine = 1;
+        mvxg_guarded = 1;
+        if (setjmp(mvxg_unwind)) {
+            /* TEST HOOK, and the reason there is one: a path that cannot be
+               reached on purpose is a path that rots (mvx: "add a switch for
+               testability").  MVXGIT_TEST_FATAL makes the next engine call
+               take this branch. */
+            char *m = malloc(sizeof mvxg_fatal_msg + 16);
+            if (!m) mvx_fatal("%s", mvxg_fatal_msg);
+            snprintf(m, sizeof mvxg_fatal_msg + 16, "mvx-git: %s",
+                     mvxg_fatal_msg);
+            if (outlen) *outlen = (int64_t)strlen(m);
+            return m;
+        }
+    }
+    if (getenv("MVXGIT_TEST_FATAL")) mv_fatal("forced allocation failure");
+#endif
     mv_value vals[8];
     mv_value *argv[8];
     for (int i = 0; i < n; i++) {
@@ -7019,6 +7082,9 @@ static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
     r[len] = '\0';
     if (outlen) *outlen = len;
     for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
+#ifdef MVXGIT_MVXRT
+    if (guard_is_mine) mvxg_guarded = 0;
+#endif
     return r;
 }
 
