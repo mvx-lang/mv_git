@@ -70,7 +70,14 @@
 #  define mv_deletefile   mvx_deletefile
 #  define mv_filelist     mvx_filelist
 #  define mv_openaccount  mvx_openaccount
-#  define mv_fatal        mvx_fatal
+/* NOT mvx_fatal.  mvx-git is driven by other programs now -- the mvx client
+   library, and through it a binding that holds a session open across many
+   requests -- and a library that kills its host because one allocation failed
+   is unusable.  mvxgit_fatal records the message and unwinds to the engine
+   entry point, which already returns the user-visible string.  See mvxgit.c. */
+void mvxgit_fatal(const char *fmt, ...)
+    __attribute__((noreturn, format(printf, 1, 2)));
+#  define mv_fatal        mvxgit_fatal
 #  define mv_voc_class    mvx_voc_class
 #endif
 
