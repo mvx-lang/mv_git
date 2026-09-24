@@ -155,18 +155,27 @@ jobs:
         with:
           path: mv_git
 
+      - name: Set up the mvx toolchain (latest published build)
+        id: mvx
+        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
+        with:
+          version: latest
+
+      # THE TOOLING AND THE TOOLCHAIN MUST BE THE SAME mvx.  setup-mvx installs
+      # a published RELEASE; this checkout used to take the mvx repo's default
+      # branch, which is develop -- scripts from development, compiler from the
+      # last release.  It worked until the two disagreed: mvx#248 added
+      # `mvx-basic --catalog`, mkpkg.sh started passing it, and the released
+      # compiler answered an unknown flag with its usage screen and exit 2.
+      # Pinning to the version setup-mvx resolved keeps them in step.
       - name: Check out the mvx package tooling (scripts/mkpkg.sh)
         uses: actions/checkout@v5
         with:
           repository: mvx-lang/mvx
+          ref: v${{ steps.mvx.outputs.version }}
           path: .mvx-src
           sparse-checkout: scripts
           sparse-checkout-cone-mode: false
-
-      - name: Set up the mvx toolchain (latest published build)
-        uses: mvx-lang/mvx/.github/actions/setup-mvx@main
-        with:
-          version: latest
 
       - name: Install libgit2
         run: |
