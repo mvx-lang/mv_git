@@ -114,6 +114,18 @@ static char *xlate(const char *p, int64_t n, char from, char to,
     return b;
 }
 
+/* A RECORD'S BLOB FORM, AND THE RULE LIVES HERE ONCE (#267).  An attribute mark
+   becomes a newline; that is the whole translation, and it decides what a record
+   hashes to.  uv-git's stock-account learner used to carry its own copy of it,
+   under a comment saying it had to "match that exactly or nothing ever compares
+   equal" -- a rule that must agree with the engine, written twice, free to
+   drift.  Exported so there is one of it.
+   The result is `*outlen` bytes and is NOT NUL-terminated, the same as every
+   internal caller expects; free it. */
+char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen) {
+    return xlate(rec, len, (char)0xFE, '\n', outlen);
+}
+
 typedef struct { char *d; size_t len, cap; } sbuf;
 
 static void sb_put(sbuf *s, const char *p, size_t n) {

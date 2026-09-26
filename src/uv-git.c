@@ -1181,13 +1181,15 @@ static int build_stock(const char *flavour, const char *code, const char *out) {
                         if (mvs_calls(s, "READ", 2, r, &rec, &rl) == 0) {
                             git_oid oid;
                             char hex[41];
-                            /* the engine hashes a record's TRANSLATED content;
-                               match that exactly or nothing ever compares equal */
-                            char *t = malloc((size_t)rl + 1);
+                            /* THE ENGINE'S OWN TRANSLATION (#267).  These
+                               hashes are compared against ones the engine
+                               produced, so the rule that makes them has to be
+                               the engine's -- not a copy here that has to be
+                               kept equal to it by hand. */
+                            int64_t tl = 0;
+                            char *t = mv_git_blobform(rec, (int64_t)rl, &tl);
                             if (t) {
-                                for (long k = 0; k < rl; k++)
-                                    t[k] = ((unsigned char)rec[k] == 0xFE) ? '\n' : rec[k];
-                                if (git_odb_hash(&oid, t, (size_t)rl,
+                                if (git_odb_hash(&oid, t, (size_t)tl,
                                                  GIT_OBJECT_BLOB) == 0) {
                                     git_oid_fmt(hex, &oid);
                                     hex[40] = '\0';

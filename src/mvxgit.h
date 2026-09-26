@@ -191,6 +191,13 @@ const char *mv_git_id_item(void);
 /* The account prefix in force ("" or "acctA/") — see mv_git_set_prefix. */
 const char *mv_git_prefix(void);
 int   mv_git_platform_dict_record(const char *file, const char *id);
+
+/* A record's blob form -- the attribute mark translated to a newline, which is
+   what decides the hash a record gets.  One rule, one place (#267): anything
+   that needs to know what a record WOULD hash to asks here rather than
+   reimplementing it and hoping the two stay equal.  `*outlen` bytes, not
+   NUL-terminated; free it. */
+char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen);
 char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
                      const char *id, const char *rec);
 char *mv_git_filter_furniture(const char *list);
