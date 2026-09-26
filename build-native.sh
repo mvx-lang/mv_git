@@ -24,8 +24,15 @@ ROOT="${MVX_ROOT:-$(cd "$PKG/../.." && pwd)}"
 # build (runtime/include + build/lib) or an installed toolchain prefix (setup-mvx
 # ships them at $MVXHOME/include + $MVXHOME/lib).  Prefer the build tree; fall
 # back to the install so a package builds in CI with no mvx checkout.
+# THE CLIENT LIBRARY IS SOMEWHERE ELSE IN A SOURCE TREE (#267 stage 2).  An
+# install puts mvxc.h beside mvx_runtime.h and libmvxc beside libmvxrt, so one
+# include and one lib path serve both; a build tree does not -- the header is in
+# client/include and libmvxc lands in build/ rather than build/lib.  Hence the
+# second pair, empty when there is nothing extra to add.
+MVXINC2="" ; MVXLIB2=""
 if [ -d "$ROOT/runtime/include" ]; then
   MVXINC="$ROOT/runtime/include" ; MVXLIB="$ROOT/build/lib"
+  MVXINC2="$ROOT/client/include" ; MVXLIB2="$ROOT/build"
 elif [ -n "${MVXHOME:-}" ] && [ -f "$MVXHOME/include/mvx_runtime.h" ]; then
   MVXINC="$MVXHOME/include" ; MVXLIB="$MVXHOME/lib"
 else
@@ -58,9 +65,37 @@ echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
 # non-record-git command it just execs the real git, so no runtime is needed at
 # run time in that path — but the link is unconditional.
 mkdir -p "$PKG/bin"
-cc -O2 -I"$MVXINC" -I"$PKG/src" $CFLAGS -DMVXGIT_VERSION="\"$UGVER\"" \
-   "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" "$PKG/src/mvconn.c" \
-   -L"$MVXLIB" -lmvxrt $LDFLAGS \
+
+# THROUGH THE CLIENT LIBRARY (#267 stage 2).  mvx-git used to reach into
+# libmvxrt, the runtime it happened to be linked against; it goes through
+# libmvxc now -- the same contract mv-connect and every language binding uses --
+# so it is no longer a special case with privileged access to MVX's internals.
+# MVXGIT_MVXC selects the transport; MVXGIT_MVXRT stays set by mvxgit.h because
+# the PLATFORM is still MVX and the engine's behavioural guards read it.
+#
+# MVXGIT_BACKEND=mvxrt still builds the old way.  Not a fallback anybody is meant
+# to need, but the two arms differ only in this file's link line, which makes it
+# the cheapest possible way to answer "is it the backend?" when something breaks.
+: "${MVXGIT_BACKEND:=mvxc}"
+case "$MVXGIT_BACKEND" in
+  mvxc)
+    GITARM='-DMVXGIT_MVXC'
+    GITARM_SRC="$PKG/src/mvxcgit_rt.c"
+    GITARM_LIB='-lmvxc'
+    GITARM_WHAT='via libmvxc' ;;
+  mvxrt)
+    GITARM=''
+    GITARM_SRC=''
+    GITARM_LIB='-lmvxrt'
+    GITARM_WHAT='via libmvxrt' ;;
+  *) echo "build-native.sh: MVXGIT_BACKEND must be mvxc or mvxrt" >&2; exit 1 ;;
+esac
+
+cc -O2 -I"$MVXINC" ${MVXINC2:+-I"$MVXINC2"} -I"$PKG/src" \
+   $CFLAGS $GITARM -DMVXGIT_VERSION="\"$UGVER\"" \
+   "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" "$PKG/src/mvconn.c" $GITARM_SRC \
+   -L"$MVXLIB" ${MVXLIB2:+-L"$MVXLIB2"} $GITARM_LIB $LDFLAGS \
    -Wl,-rpath,"$RPATH" -Wl,-rpath,"$MVXLIB" \
+   ${MVXLIB2:+-Wl,-rpath,"$MVXLIB2"} \
    -o "$PKG/bin/mvx-git"
-echo "  built bin/mvx-git (record-git engine + git wrapper)"
+echo "  built bin/mvx-git (record-git engine + git wrapper, $GITARM_WHAT)"

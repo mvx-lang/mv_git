@@ -5413,7 +5413,7 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
            a file silently made somewhere nobody chose. */
         char drv[64];
         control_driver(bc, bl, drv, sizeof drv);
-        if (drv[0]) mvx_bind_driver(base, drv);
+        if (drv[0]) mv_bind_driver(base, drv);
 #endif
         git_blob_free(b);
     }
@@ -7038,7 +7038,7 @@ void mvxgit_fatal(const char *fmt, ...) {
     }
     /* No guard -- called straight from BASIC, where the runtime's own
        behaviour is what a program expects. */
-    mvx_fatal("%s", mvxg_fatal_msg);
+    mv_hard_fatal("%s", mvxg_fatal_msg);
 }
 #endif
 
@@ -7105,7 +7105,7 @@ static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
                testability").  MVXGIT_TEST_FATAL makes the next engine call
                take this branch. */
             char *m = malloc(sizeof mvxg_fatal_msg + 16);
-            if (!m) mvx_fatal("%s", mvxg_fatal_msg);
+            if (!m) mv_hard_fatal("%s", mvxg_fatal_msg);
             snprintf(m, sizeof mvxg_fatal_msg + 16, "mvx-git: %s",
                      mvxg_fatal_msg);
             if (outlen) *outlen = (int64_t)strlen(m);
