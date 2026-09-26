@@ -126,21 +126,6 @@ char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen) {
     return xlate(rec, len, (char)0xFE, '\n', outlen);
 }
 
-/* AND THE WAY BACK, WHICH HAS TO TOLERATE A TERMINATOR (#258).  A record has
-   attributes SEPARATED by the attribute mark, never terminated by one -- Pick
-   and UniVerse both object to a record that ends in a mark -- so the blob form
-   above ends on content, not on a newline.
-   A text file does the opposite: editors terminate the last line, and so do
-   build steps that have to (build-uv.sh appends one because UniVerse needs it
-   to compile a source file, which is a FILE concern and not a record one).
-   Converting such a file back with a plain swap gives the record a trailing
-   mark and an empty final attribute, so the account never reads clean again.
-   One trailing newline is therefore a terminator and is dropped; a second one
-   is a genuine empty last attribute and is kept. */
-char *mv_git_recordform(const char *blob, int64_t len, int64_t *outlen) {
-    if (len > 0 && blob[len - 1] == '\n') len--;
-    return xlate(blob, len, '\n', (char)0xFE, outlen);
-}
 
 typedef struct { char *d; size_t len, cap; } sbuf;
 
@@ -5172,7 +5157,7 @@ void mvx_sub_GITSHOW(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         git_blob_lookup(&blob, repo, git_tree_entry_id(te)) == 0) {
         const char *cp = git_blob_rawcontent(blob);
         int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
-        char *r = mv_git_recordform(cp, clen, &rl);
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
         mv_set_str(argv[3], r, rl);
         free(r);
         git_blob_free(blob);
@@ -5232,7 +5217,7 @@ void mvx_sub_GITCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
         git_blob_lookup(&blob, repo, git_tree_entry_id(te)) == 0) {
         const char *cp = git_blob_rawcontent(blob);
         int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
-        char *r = mv_git_recordform(cp, clen, &rl);
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
         mv_set_str(argv[2], r, rl);
         free(r);
         git_blob_free(blob);
@@ -5324,7 +5309,7 @@ void mvx_sub_GITIXCAT(mv_ctx *ctx, int32_t argc, mv_value **argv) {
     if (e && git_blob_lookup(&blob, repo, &e->id) == 0) {
         const char *cp = git_blob_rawcontent(blob);
         int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
-        char *r = mv_git_recordform(cp, clen, &rl);
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
         mv_set_str(argv[2], r, rl);
         free(r);
         git_blob_free(blob);
@@ -5549,7 +5534,7 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             continue;
         const char *cp = git_blob_rawcontent(blob);
         int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
-        char *r = mv_git_recordform(cp, clen, &rl);
+        char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
         if (is_dir && rl > 0 && (unsigned char)r[rl - 1] == 0xFE) rl--;
         mv_set_str(&rec, r, rl);
         free(r);
@@ -6849,7 +6834,7 @@ void mvx_sub_GITRESTORE(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 continue;
             const char *cp = git_blob_rawcontent(blob);
             int64_t clen = (int64_t)git_blob_rawsize(blob), rl;
-            char *r = mv_git_recordform(cp, clen, &rl);
+            char *r = xlate(cp, clen, '\n', (char)0xFE, &rl);
             mv_set_str(&rec, r, rl);
             free(r);
             mv_set_str(&id, name, (int64_t)strlen(name));
