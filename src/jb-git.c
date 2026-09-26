@@ -17,6 +17,7 @@
    truncates the pointer on 64-bit. */
 #define _POSIX_C_SOURCE 200809L
 
+#include "mvconn.h"
 #include "mvxgit.h"
 
 #include <ctype.h>
@@ -72,46 +73,22 @@ static void jb_make_account(const char *dir) {
                 dir);
 }
 
+/* jb-git works in the account it was run in, so one connection serves the run.
+   The reader, the prompt and the flag-write all used to be spelled out here as
+   well as in the other three drivers (mv_git#267). */
+static mv_conn *conn(void) {
+    static mv_conn *c;
+    if (!c) c = mvconn_open(".");
+    if (g_open_flag) mvconn_set_open_account(c, g_open_flag > 0);
+    return c;
+}
+
 static int ask_open_account(void) {
-    if (g_open_flag) return g_open_flag > 0;
-    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-    if (env && env[0])
-        return !(env[0] == '0' || !strcasecmp(env, "no") ||
-                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr, "jb-git: keeping the open account format "
-                        "(--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, "
-                        "declines)\n");
-        return 1;
-    }
-    char line[16];
-    fprintf(stderr, "Make it an open account? [Y/n] ");
-    fflush(stderr);
-    if (!fgets(line, sizeof line, stdin)) return 1;
-    return !(line[0] == 'n' || line[0] == 'N');
-}          /* 1 = --open-account, -1 = --no-open-account */
+    return mvconn_ask_open_account(conn(), "jb-git", ".");
+}
 
 static int open_account_on(void) {
-    FILE *f = fopen(".git/config", "r");
-    if (!f) return 0;
-    char line[512];
-    int in_mvx = 0, on = 0;
-    while (fgets(line, sizeof line, f)) {
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
-        if (in_mvx && strncasecmp(s, "openaccount", 11) == 0) {
-            char *eq = strchr(s, '=');
-            if (eq) {
-                eq++;
-                while (*eq == ' ' || *eq == '\t') eq++;
-                on = strncasecmp(eq, "true", 4) == 0 || *eq == '1' ||
-                     strncasecmp(eq, "yes", 3) == 0;
-            }
-        }
-    }
-    fclose(f);
-    return on;
+    return mvconn_open_account(conn());
 }
 
 /* Subcommands the record-git engine implements. */
@@ -243,7 +220,7 @@ int main(int argc, char **argv) {
     if (p1 && p1[0] == '-') p1 = NULL;
     if (p2 && p2[0] == '-') p2 = NULL;
 
-    if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+    mvconn_export_open_account(conn());
 
     mv_ctx *ctx = mv_ctx_create();
     char *out = NULL;
@@ -326,13 +303,13 @@ int main(int argc, char **argv) {
                 "this repository\n        does not have the flag set -- without "
                 "it the next commit writes the native form.\n", dir);
             if (ask_open_account())
-                (void)system("git config mvx.openaccount true");
+                mvconn_persist_open_account(conn());
             break;
         case MV_ADOPT_ASK_CONVERT:
             fprintf(stderr, "jb-git adopt: %s is a native %s account and will "
                             "be converted to a jBASE one.\n", dir, found);
             if (ask_open_account())
-                (void)system("git config mvx.openaccount true");
+                mvconn_persist_open_account(conn());
             break;
         default:
             break;              /* native to jBASE: nothing to convert or ask */
@@ -365,7 +342,7 @@ int main(int argc, char **argv) {
         char acctpath2[4096];
         if (getcwd(acctpath2, sizeof acctpath2))
             setenv("MVXACCOUNT", acctpath2, 1);
-        if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+        mvconn_export_open_account(conn());
 
         /* Not the literal ".git": an account can be a SUBDIRECTORY of a
            repository (#44, #49), and there is no .git in it -- the repository's
@@ -453,7 +430,7 @@ int main(int argc, char **argv) {
            commit, having just reported itself clean. */
         if (system("git cat-file -e HEAD:.mv-account >/dev/null 2>&1") == 0) {
             if (ask_open_account()) {
-                if (system("git config mvx.openaccount true") != 0)
+                if (mvconn_persist_open_account(conn()) != 0)
                     fprintf(stderr, "jb-git clone: could not set "
                                     "mvx.openaccount\n");
                 else
@@ -465,7 +442,7 @@ int main(int argc, char **argv) {
                                     "checkout instead)\n", p1);
             }
         }
-        if (open_account_on()) setenv("MVX_OPENACCOUNT", "1", 1);
+        mvconn_export_open_account(conn());
         mv_ctx_destroy(ctx);
         ctx = mv_ctx_create();
         out = mv_git_materialize(ctx, ".git");

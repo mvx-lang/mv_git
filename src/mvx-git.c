@@ -29,6 +29,7 @@
  * made by plain git — turning a cloned legible directory into a live account.
  */
 
+#include "mvconn.h"
 #include "mvxgit.h"
 
 #include <dirent.h>
@@ -371,57 +372,28 @@ static void materialize_clone(const char *acct) {
    resolves a submodule's gitlink `.git` FILE to the true git dir (e.g.
    .git/modules/<path>/), so config reads/writes work for submodules too — a
    hardcoded "<acct>/.git/config" does not exist when .git is a file. */
+/* All four of these used to be spelled out here, and again in jb-git, udt-git
+   and uv-git: the same config reader byte for byte, three different ways of
+   writing the flag back, and four prompts.  They live on the connection now
+   (mv_git#267); what is left is the shape this file calls them in. */
 static void real_config_path(const char *acct, char *buf, size_t n) {
-    mv_git_libgit2_boot();
-    git_repository *gr = NULL;
-    if (git_repository_open(&gr, acct) == 0) {
-        snprintf(buf, n, "%sconfig", git_repository_path(gr));
-        git_repository_free(gr);
-    } else {
-        snprintf(buf, n, "%s/.git/config", acct);
-    }
+    mv_conn *c = mvconn_open(acct);
+    mvconn_config_path(c, buf, n);
+    mvconn_close(c);
 }
 
 static int open_config_on(const char *acct) {
-    /* Plain text scan (not libgit2 get_bool) so the result is identical across
-       libgit2 versions — get_bool behaved differently on the CI toolchain. */
-    char cfgpath[PATH_MAX + 64];
-    real_config_path(acct, cfgpath, sizeof cfgpath);
-    FILE *f = fopen(cfgpath, "r");
-    if (!f) return 0;
-    char line[512];
-    int in_mvx = 0, on = 0;
-    while (fgets(line, sizeof line, f)) {
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
-        if (!in_mvx || strncasecmp(s, "openaccount", 11) != 0) continue;
-        char *v = strchr(s, '=');
-        if (!v) continue;
-        v++;
-        while (*v == ' ' || *v == '\t') v++;
-        on = strncasecmp(v, "true", 4) == 0 || *v == '1' ||
-             strncasecmp(v, "yes", 3) == 0 || strncasecmp(v, "on", 2) == 0;
-        break;
-    }
-    fclose(f);
+    mv_conn *c = mvconn_open(acct);
+    int on = mvconn_config_open_account(c);
+    mvconn_close(c);
     return on;
-}
-
-static void open_config_set(const char *acct) {
-    char cfgpath[PATH_MAX + 64];
-    real_config_path(acct, cfgpath, sizeof cfgpath);
-    mv_git_libgit2_boot();
-    git_config *cfg = NULL;
-    if (git_config_open_ondisk(&cfg, cfgpath) == 0) {
-        git_config_set_bool(cfg, "mvx.openaccount", 1);
-        git_config_free(cfg);
-    }
 }
 
 /* Surface the account's open-account flag to the runtime through the env. */
 static void apply_open_env(const char *acct) {
-    if (open_config_on(acct)) setenv("MVX_OPENACCOUNT", "1", 1);
+    mv_conn *c = mvconn_open(acct);
+    mvconn_export_open_account(c);
+    mvconn_close(c);
 }
 
 static int ask_create_account(const char *acct) {
@@ -448,28 +420,10 @@ static int ask_create_account(const char *acct) {
    open-form repo.  $MVXGIT_OPEN_ACCOUNT decides it for a script — same shape as
    $MVXGIT_CREATE above. */
 static int ask_open_account(const char *acct) {
-    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-    if (env && env[0])
-        return !(env[0] == '0' || !strcasecmp(env, "no") ||
-                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr,
-                "mvx-git: '%s' was committed in the open account format — "
-                "checking it out as an open account.\n"
-                "         (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
-                "native checkout instead)\n", acct);
-        return 1;
-    }
-    fprintf(stderr,
-            "\n'%s' was committed in the open account format: its dictionaries "
-            "and file\ncontrols are in the portable shape that moves between MV "
-            "platforms.  Keeping\nit open is what lets this account travel back "
-            "the same way.\n\n"
-            "Make it an open account? [Y/n] ", acct);
-    fflush(stderr);
-    char buf[16];
-    if (!fgets(buf, sizeof buf, stdin)) return 1;
-    return !(buf[0] == 'n' || buf[0] == 'N');
+    mv_conn *c = mvconn_open(acct);
+    int on = mvconn_ask_open_account(c, "mvx-git", acct);
+    mvconn_close(c);
+    return on;
 }
 
 /* --- record-git engine path ------------------------------------------- */
@@ -808,32 +762,30 @@ int main(int argc, char **argv) {
                 snprintf(probe, sizeof probe, "%s/%s", aacct, names[k]);
                 if (access(probe, F_OK) == 0) found = names[k];
             }
-            switch (mv_git_adopt_question(found, open_config_on(aacct))) {
+            /* ONE CONNECTION across the question and the answer, so the
+               flag that gets written is the one that was agreed to. */
+            mv_conn *ac = mvconn_open(aacct);
+            switch (mv_git_adopt_question(found, mvconn_config_open_account(ac))) {
             case MV_ADOPT_ASK_ENABLE:
                 fprintf(stderr,
                     "mvx-git adopt: %s is already in the open account format, "
                     "but this repository\n        does not have the flag set -- "
                     "without it the next commit writes the native form.\n",
                     aacct);
-                if (ask_open_account(aacct)) {
-                    char *cfg[] = {"git", "-C", (char *)aacct, "config",
-                                   "mvx.openaccount", "true", NULL};
-                    run(cfg);
-                }
+                if (mvconn_ask_open_account(ac, "mvx-git adopt", aacct))
+                    mvconn_persist_open_account(ac);
                 break;
             case MV_ADOPT_ASK_CONVERT:
                 fprintf(stderr,
                     "mvx-git adopt: %s is a native %s account and will be "
                     "converted to an MVX one.\n", aacct, found);
-                if (ask_open_account(aacct)) {
-                    char *cfg[] = {"git", "-C", (char *)aacct, "config",
-                                   "mvx.openaccount", "true", NULL};
-                    run(cfg);
-                }
+                if (mvconn_ask_open_account(ac, "mvx-git adopt", aacct))
+                    mvconn_persist_open_account(ac);
                 break;
             default:
                 break;          /* native to MVX: nothing to convert, nothing to ask */
             }
+            mvconn_close(ac);
         }
 
         /* The status matters: `mvx-git adopt` that printed "account rebuild
@@ -931,16 +883,20 @@ int main(int argc, char **argv) {
                open-form and the cloner agrees (declining is a native checkout
                of a portable account: the records restore, but the open file
                controls and dictionaries are read as if they were native). */
-            int open_on = want_open > 0;
-            if (want_open == 0 && head_is_open(acct))
-                open_on = ask_open_account(acct);
-            if (open_on) open_config_set(acct);
+            mv_conn *cc = mvconn_open(acct);
+            if (want_open) mvconn_set_open_account(cc, want_open > 0);
+            int open_on = mvconn_have_open_account(cc)
+                        ? mvconn_open_account(cc)
+                        : (head_is_open(acct)
+                           && mvconn_ask_open_account(cc, "mvx-git", acct));
+            if (open_on) mvconn_persist_open_account(cc);
             else if (head_is_open(acct))
                 fprintf(stderr,
                         "mvx-git: warning: '%s' is an open-format repository "
                         "checked out natively — its %%FILE%% controls and "
                         "dictionaries are not translated, and a commit from "
                         "here writes the native form\n", acct);
+            mvconn_close(cc);
             materialize_clone(acct);              /* direct: git objects -> backend */
         } else {
             /* not an MVX account: a plain --no-checkout clone needs its working

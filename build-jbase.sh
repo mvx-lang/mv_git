@@ -41,7 +41,7 @@ mkdir -p "$HERE/bin"
 "$CC" -std=c11 -O2 -DMVXGIT_JBASE -DMVXGIT_VERSION="\"$UGVER\"" \
       -DJBGIT_VERSION="\"$UGVER\"" \
       -I"$SRC" -I"$JBCRELEASEDIR/include" $LG2_CFLAGS \
-      "$SRC/jb-git.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" \
+      "$SRC/jb-git.c" "$SRC/mvxgit.c" "$SRC/jbasegit_rt.c" "$SRC/mvconn.c" \
       -L"$JBCRELEASEDIR/lib" -ljbase -ljbaseutil -lantlr4-runtime \
       $LG2_LIBS -lm -lncurses -ldl -lpthread -lrt \
       -o "$HERE/bin/jb-git"

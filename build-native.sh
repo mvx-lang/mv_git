@@ -59,7 +59,7 @@ echo "  built LIB/libmvxgit.$EXT (native, libgit2)"
 # run time in that path — but the link is unconditional.
 mkdir -p "$PKG/bin"
 cc -O2 -I"$MVXINC" -I"$PKG/src" $CFLAGS -DMVXGIT_VERSION="\"$UGVER\"" \
-   "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" \
+   "$PKG/src/mvx-git.c" "$PKG/src/mvxgit.c" "$PKG/src/mvconn.c" \
    -L"$MVXLIB" -lmvxrt $LDFLAGS \
    -Wl,-rpath,"$RPATH" -Wl,-rpath,"$MVXLIB" \
    -o "$PKG/bin/mvx-git"

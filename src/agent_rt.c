@@ -41,6 +41,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "gitd_rt.h"
+#include "mvconn.h"
 #include "mvxgit.h"      /* mv_account_furniture() */
 #include "mvsession.h"
 
@@ -301,8 +302,10 @@ int64_t mv_indices(mv_ctx *ctx, const char *name, char *out, size_t cap) {
 /* --- misc ---------------------------------------------------------------- */
 
 int mv_openaccount(void) {
-    const char *v = getenv("MVX_OPENACCOUNT");
-    return v && *v && strcmp(v, "0") != 0;
+    /* ONE reading of the boolean, shared with the CLI side (mv_git#267).
+       These four arms had two spellings between them, and neither agreed
+       with the CLI's: "false" was ON here and OFF there. */
+    return mvconn_env_true(getenv("MVX_OPENACCOUNT"));
 }
 
 /* Master-VOC classification is a pure table lookup with no record access, and it

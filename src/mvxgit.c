@@ -29,6 +29,7 @@
 #define _POSIX_C_SOURCE 200809L   /* expose gmtime_r in <time.h> under -std=c11 */
 #endif
 
+#include "mvconn.h"
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
 #include <ctype.h>
@@ -7050,13 +7051,16 @@ void mvxgit_fatal(const char *fmt, ...) {
  * borrowed, because the #define was available. */
 
 /* The account's `mvx.openaccount` git config, surfaced as $MVX_OPENACCOUNT by
- * whichever front end is driving -- mvx-git's apply_open_env, gitcallc's
- * open_account_on.  THE REPO IS WHERE THE ANSWER LIVES; the variable is only
- * how it reaches the engine's deep call sites, which have no repo handle.  The
- * same four lines jbasegit_rt.c has. */
+ * the driver's connection (mvconn_export_open_account).  THE REPO IS WHERE THE
+ * ANSWER LIVES; the variable is only how it reaches the engine's deep call
+ * sites, which have no connection to ask.  (The #265 version of this comment
+ * named gitcallc.c as one of the front ends doing it -- that file was dead,
+ * left behind by gitcallcb.c and in no build script since #7.) */
 int mv_openaccount(void) {
-    const char *e = getenv("MVX_OPENACCOUNT");
-    return e && *e && *e != '0';
+    /* ONE reading of the boolean, shared with the CLI side (mv_git#267).
+       These four arms had two spellings between them, and neither agreed
+       with the CLI's: "false" was ON here and OFF there. */
+    return mvconn_env_true(getenv("MVX_OPENACCOUNT"));
 }
 
 /* Classify a master-VOC record by its MVX type code: 0 keep, 1 always drop,
