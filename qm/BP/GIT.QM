@@ -1,0 +1,117 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.QM
+*  * @version 1.0
+*  */
+* GIT.QM — the CCALL bridge to the record-git engine (mv_git#243).
+*
+* ONE PLACE THAT KNOWS THE PCODE.  QM reaches C through CCALL, which is not a
+* declaration but a little program: bytes naming the library to dlopen, the
+* symbol to look up, each argument to push, and where to put the result.  The
+* library answers on ONE symbol whose operation is data (see src/qmcallc.c),
+* so this is the only routine that has to assemble any of it — every GIT*
+* wrapper is a CALL to here with an op name and its arguments.
+*
+*   CALL GIT.QM("STATUS", REPO, "", "", "", "", ANS)
+*
+* THE OPCODES, from op_ccall.c, since nothing documents them and the header
+* comment there describes a different set to the one the code implements:
+*   x01 name NUL          dlopen, result in the accumulator
+*   x02 name NUL <8:hnd>  dlsym in that handle
+*   x03 <8:value>         push a value
+*   x04 <8:offset>        push the address of data-buffer + offset
+*   x06 <8:addr>          call it
+*   x08 <8:offset>        store the 64-bit result at data-buffer + offset
+*   x00                   stop
+* Offsets and addresses are 8 bytes little-endian.  Opcode 0 ends the program,
+* so a zero byte may appear in an operand but never where an opcode is read.
+*
+* AND THE ARGUMENT ORDER IS NOT THE DOCUMENTED ONE.  op_ccall() calls
+* ccall_c(s2, s1): the SECOND argument to CCALL carries the pcode and the
+* FIRST is the data buffer, which is also what CCALL returns.  The comment
+* above that function says the opposite.
+      SUBROUTINE GIT.QM(OP, A1, A2, A3, A4, A5, ANS)
+      COMMON /GITQM/ QM.HANDLE, QM.FN
+      ANS = ""
+      NUL = CHAR(0)
+      LIB = "libqmgit.so"
+*     The work area is the data buffer: 0 handle, 8 fn, 16 result, 32 work.
+      O.DL = 0 ; O.FN = 8 ; O.RES = 16 ; O.WORK = 32
+      WORKCAP = 60000
+      BUF = STR(NUL, O.WORK)
+*     op <AM> arg... — trailing empties are dropped: the C side reads a
+*     missing argument as "", which is what every op already means by it.
+      MSG = OP
+      IF A1 # "" OR A2 # "" OR A3 # "" OR A4 # "" OR A5 # "" THEN MSG := @AM : A1
+      IF A2 # "" OR A3 # "" OR A4 # "" OR A5 # "" THEN MSG := @AM : A2
+      IF A3 # "" OR A4 # "" OR A5 # "" THEN MSG := @AM : A3
+      IF A4 # "" OR A5 # "" THEN MSG := @AM : A4
+      IF A5 # "" THEN MSG := @AM : A5
+      IF LEN(MSG) >= WORKCAP THEN
+         ANS = "GIT: argument too long for the CCALL buffer"
+         RETURN
+      END
+      BUF := MSG : STR(NUL, WORKCAP - LEN(MSG))
+
+*     dlopen and dlsym ONCE per session, not per call: dlopen would be cheap
+*     to repeat but dlsym is a string lookup and these run in loops.
+*
+*     TESTED BY LENGTH, NOT AGAINST "".  A QM COMMON variable starts as the
+*     NUMBER 0 -- not empty, not unassigned -- so `QM.FN = ""' is false on the
+*     very first call, the block below was skipped, and CCALL jumped through a
+*     null function pointer: `Fault type 11 ... in GIT.QM', which reads as a
+*     broken bridge rather than an uninitialised cache.  A resolved address is
+*     always eight bytes, and 0 is one, so the length is the honest test.
+      IF LEN(QM.HANDLE) # 8 OR LEN(QM.FN) # 8 THEN
+         N = O.DL ; GOSUB LE8
+         P = CHAR(1) : LIB : NUL : CHAR(8) : LEV
+         BUF = CCALL(BUF, P)
+         QM.HANDLE = BUF[1,8]
+         IF QM.HANDLE = STR(NUL,8) THEN
+            ANS = "GIT: cannot load " : LIB : " — is mv_git installed, and is"
+            ANS := " this a QM built with ScarletDME#109 (-rdynamic)?"
+            RETURN
+         END
+         N = O.FN ; GOSUB LE8
+         P = CHAR(2) : "QMGIT" : NUL : QM.HANDLE : CHAR(8) : LEV
+         BUF = CCALL(BUF, P)
+         QM.FN = BUF[O.FN+1, 8]
+         IF QM.FN = STR(NUL,8) THEN
+            ANS = "GIT: " : LIB : " has no QMGIT entry point"
+            QM.HANDLE = ""
+            RETURN
+         END
+      END
+
+*     QMGIT(work, cap): a pointer into the buffer, and the room it has.
+      N = O.WORK ; GOSUB LE8 ; ARGS = CHAR(4) : LEV
+      N = WORKCAP ; GOSUB LE8 ; ARGS := CHAR(3) : LEV
+      N = O.RES ; GOSUB LE8
+      P = ARGS : CHAR(6) : QM.FN : CHAR(8) : LEV
+      BUF = CCALL(BUF, P)
+      RV = 0
+      FOR I = 8 TO 1 STEP -1
+         RV = RV * 256 + SEQ(BUF[O.RES+I,1])
+      NEXT I
+      IF RV >= 4026531840 THEN
+         BEGIN CASE
+            CASE RV = 4026531841 ; ANS = "GIT: bad call into the engine"
+            CASE RV = 4026531842 ; ANS = "GIT: engine does not know op " : OP
+            CASE RV = 4026531843 ; ANS = "GIT: answer too big for the buffer"
+            CASE 1               ; ANS = "GIT: engine error " : RV
+         END CASE
+         RETURN
+      END
+      IF RV > 0 THEN ANS = BUF[O.WORK+1, RV]
+      RETURN
+
+LE8:
+*     8 bytes little-endian.  Values here are offsets and a capacity, all
+*     under 2^32, so four bytes of zero above them.
+      LEV = CHAR(MOD(N,256)) : CHAR(MOD(INT(N/256),256))
+      LEV := CHAR(MOD(INT(N/65536),256)) : CHAR(MOD(INT(N/16777216),256))
+      LEV := STR(NUL,4)
+      RETURN
+END

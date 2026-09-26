@@ -1,0 +1,57 @@
+* mv_git — record-git for MultiValue.
+* Copyright (C) 2026 Gordon Heydon.
+* This program is free software; you can redistribute it and/or modify
+* it under the terms of the GNU General Public License, version 2, as
+* published by the Free Software Foundation.  There is NO WARRANTY, to
+* the extent permitted by law; see the LICENSE file for details.
+* SPDX-License-Identifier: GPL-2.0-only
+* /**
+*  * @file GIT.CLI
+*  * @version 1.0
+*  */
+* GIT.CLI — the GIT verb for a STOCK OpenQM / ScarletDME (mv_git#243).
+*
+* THIS IS A SHIM, AND SAYS SO.  Everywhere else the GIT verb is the real
+* implementation -- BP/GIT, the shared one, which under $DEFINE ENGINE calls
+* the record-git engine in this very process.  That route needs CCALL to reach
+* QM's own dh_ layer, which needs three fixes that are not in stock ScarletDME
+* (geneb/ScarletDME#109, #111 and #113).  On a QM that carries them, install.sh
+* installs BP/GIT and this file is not used at all.
+*
+* What is available on a stock QM is qm-git, the CLI, which does the whole job
+* through QMClient — a supported API that ships with ScarletDME.  So this shim
+* hands the sentence to it and prints what comes back, which gives an account
+* `GIT STATUS' at the TCL prompt with no patched engine at all.
+*
+* IT IS NOT NAMED `GIT', DELIBERATELY.  It is installed AS BP/GIT, but a file
+* called GIT sitting in qm/BP/ beside the wrappers means any `cp qm/BP/* BP/'
+* silently replaces the real verb with the shim -- which then works, slowly and
+* out of session, and looks like the real thing.  The name is the guard.
+*
+* THE ACCOUNT COMES FROM THE CURRENT DIRECTORY.  A QM session runs in its
+* account's directory and qm-git reads the account name from it, so nothing
+* has to be passed — and $QMACCOUNT overrides it if a site's directory is
+* named differently from its account.
+      PROMPT ""
+      SENT = TRIM(@SENTENCE)
+*     Drop the verb itself, however the user spelled it, and keep the rest of
+*     the line EXACTLY as typed: quoting inside it is the caller's, and
+*     rebuilding the line from tokens is how `GIT COMMIT -m "two words"' turns
+*     into two arguments.
+      VERB = FIELD(SENT, " ", 1)
+      ARGS = TRIM(SENT[COL2() + 1, 999999])
+      IF ARGS = "" THEN ARGS = "--help"
+      CMD = "qm-git " : ARGS
+      OS.EXECUTE CMD CAPTURING OUT
+      RC = STATUS()
+      N = DCOUNT(OUT, @AM)
+      FOR I = 1 TO N
+         CRT OUT<I>
+      NEXT I
+*     The CLI's exit status is the answer to "did it work"; a verb that always
+*     looks successful is one a paragraph cannot test.  OS.EXECUTE takes only
+*     CAPTURING here -- no SETTING clause -- so the status comes from STATUS().
+      IF RC # 0 THEN
+         STOP
+      END
+      END

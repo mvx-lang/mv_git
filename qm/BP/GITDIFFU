@@ -1,0 +1,14 @@
+* GITDIFFU - the engine op, as a SUBROUTINE.  See qm/BP/GIT.QM.
+*
+* One line of glue, exactly as jBASE's DEFC wrappers are: the handlers in BP/
+* call these by name on their ENGINE arm, so the same handler source works
+* here unchanged.  All the CCALL machinery is in GIT.QM.
+*
+* THE WORD THE PREPROCESSOR READS IS NOT WRITTEN IN THIS COMMENT, deliberately.
+* A conditional directive inside a comment is a portability trap of its own,
+* and the suite greps for sources that TEST a symbol without including
+* PLATFORM.H -- which a comment naming one would fail, for no reason.
+      SUBROUTINE GITDIFFU(REPO, FILE, ANS)
+      CALL GIT.QM("DIFFU", REPO, FILE, "", "", "", ANS)
+      RETURN
+END

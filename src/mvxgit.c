@@ -255,7 +255,8 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
  * native records while `status` hashed projected ones, so a cloned account
  * never read clean and a commit from inside the session would have written
  * native spellings into a portable repository (mv_git#108). */
-#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
+#if defined(MVXGIT_GITD) || defined(MVXGIT_UDT) || defined(MVXGIT_JBASE) \
+ || defined(MVXGIT_QM)
 #define MVXGIT_OPENDICT 1
 #endif
 
@@ -267,7 +268,8 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
    account -- a descriptor in a spelling that platform's own reader never opens
    -- and on jBASE it made the compare read a file that should not have been
    there instead of synthesising the answer. */
-#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD) && !defined(MVXGIT_JBASE)
+#if !defined(MVXGIT_UDT) && !defined(MVXGIT_GITD) && !defined(MVXGIT_JBASE) \
+ && !defined(MVXGIT_QM)
 #define MVXGIT_DESC_ON_DISK 1
 #endif
 
@@ -280,7 +282,9 @@ static char *dict_item_swap(const char *rec, int64_t len, int64_t *outlen) {
 static const char *voc_local_name(void);   /* defined below */
 
 static const char *desc_native_name(void) {
-#if defined(MVXGIT_UDT)
+#if defined(MVXGIT_QM)
+    return ".qm";
+#elif defined(MVXGIT_UDT)
     return ".udt";
 #elif defined(MVXGIT_GITD)
     return ".uv";
@@ -298,7 +302,9 @@ static const char *desc_native_name(void) {
    not want it.  Named for the fact rather than the platform list, because a
    guard that enumerates platforms is how jBASE ended up with none of this in
    the first place (mv_git#108, #114). */
-#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
+/* QM agrees: verified on ScarletDME 2.6-6, a D-item reads
+   D <AM> 1 <AM> <AM> Name <AM> 20L <AM> S -- single/multi at 6. */
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE) || defined(MVXGIT_QM)
 #define MVXGIT_DICT_SM_AT_6 1
 #endif
 
@@ -1306,7 +1312,7 @@ static int is_stock_record(const char *id, const char *content, int64_t len) {
     return 0;
 }
 
-#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE)
+#if defined(MVXGIT_UDT) || defined(MVXGIT_JBASE) || defined(MVXGIT_QM)
 /* UniData supplies its baseline as a FILE, so nothing has to be stood up.
  *
  * `newacct` copies the master VOC into the new account verbatim — its own
@@ -1379,12 +1385,14 @@ done:
 
 #endif  /* MVXGIT_UDT: the pointer dance is UniData's alone */
 
-#if defined(MVXGIT_JBASE)
+#if defined(MVXGIT_JBASE) || defined(MVXGIT_QM)
 /* jBASE supplies its baseline as a file too -- $JBCRELEASEDIR/src/MD]D, 240
    records -- and unlike UniData it needs no pointer to reach it: JediOpen takes
    a PATH, so the template opens directly.  Verified on 6.2.1.1: OPEN of that
    path answers, and a SELECT over it counts 240.
    Same output format as the udt builder, because the engine consumes one. */
+/* Also QM's: both read a template master file record by record through the
+   ordinary record contract, so the only difference is how `tmpl` is named. */
 static int stock_build_jbase(mv_ctx *ctx, const char *tmpl, const char *out) {
     mv_value f, id, rec;
     mv_init(&f); mv_init(&id); mv_init(&rec);
@@ -1426,7 +1434,22 @@ static void stock_ensure(mv_ctx *ctx, const char *rp) {
     static int done;
     if (done || g_stock_path[0]) return;
     done = 1;
-#if defined(MVXGIT_JBASE)
+#if defined(MVXGIT_QM)
+    /* QM needs no path.  CREATE-ACCOUNT copies its template VOC out of QMSYS,
+       and every account it makes carries an F-pointer to it — so `NEWVOC` is
+       an ordinary file name here and open_named() reaches the template from
+       wherever we are standing.  (jBASE and UniData have to name a path
+       because their templates sit outside any account.)
+
+       WITHOUT THIS, a QM checkout DELETES THE ACCOUNT'S VOC.  materialize
+       drops every live record the target tree does not carry unless it is
+       stock, and with no baseline nothing is stock: 453 of the 478 records
+       CREATE-ACCOUNT had just laid down were removed, taking CT, LIST and the
+       rest of TCL with them (mv_git#243). */
+    char master[4096], mdict[4096];
+    snprintf(master, sizeof master, "NEWVOC");
+    mdict[0] = '\0';                       /* QM's NEWVOC needs no dictionary */
+#elif defined(MVXGIT_JBASE)
     const char *home = getenv("JBCRELEASEDIR");
     if (!home || !home[0]) return;
     char master[4096], mdict[4096];
@@ -1439,7 +1462,9 @@ static void stock_ensure(mv_ctx *ctx, const char *rp) {
     snprintf(master, sizeof master, "%s/sys/VOC", home);
     snprintf(mdict, sizeof mdict, "%s/sys/D_VOC", home);
 #endif
-    if (access(master, R_OK) != 0) return;
+#if !defined(MVXGIT_QM)
+    if (access(master, R_OK) != 0) return;   /* QM's master is a VOC name */
+#endif
 
     git_repository *r = NULL;
     if (git_repository_open(&r, rp) != 0) return;
@@ -1447,14 +1472,20 @@ static void stock_ensure(mv_ctx *ctx, const char *rp) {
     snprintf(dir, sizeof dir, "%smvgit", git_repository_path(r));
     git_repository_free(r);
     mkdir(dir, 0700);
-#if defined(MVXGIT_JBASE)
+#if defined(MVXGIT_QM)
+    snprintf(path, sizeof path, "%s/stock-qm", dir);
+#elif defined(MVXGIT_JBASE)
     snprintf(path, sizeof path, "%s/stock-jbase", dir);
 #else
     snprintf(path, sizeof path, "%s/stock-udt", dir);
 #endif
 
     if (access(path, R_OK) != 0) {
-#if defined(MVXGIT_JBASE)
+#if defined(MVXGIT_QM)
+        fprintf(stderr, "git: learning what a stock QM account holds "
+                        "(once per clone)\n");
+        if (stock_build_jbase(ctx, master, path) < 0) {
+#elif defined(MVXGIT_JBASE)
         fprintf(stderr, "git: learning what a stock jBASE account holds "
                         "(once per clone)\n");
         if (stock_build_jbase(ctx, master, path) < 0) {
@@ -2890,6 +2921,26 @@ static int addall_skip(const char *path, const char *matched, void *payload) {
         snprintf(gp, sizeof gp, "%s/.git", top);
         if (stat(gp, &gs) == 0) return 1;
     }
+#ifdef MVXGIT_QM
+    /* A QM DICTIONARY IS A FILE IN ITS OWN RIGHT, named `<name>.DIC', and every
+       QM file -- dictionary or data -- is a DIRECTORY on disk: a dynamic file
+       holds group files (~0, ~1, ...), a directory file holds records.  None of
+       that is content.  The dictionary travels as `<file>.DICT/' records and
+       the data as `<file>/' records; staging the directory as well puts the
+       binary hash structure in the repository beside the portable form it
+       already carries, and it is not even readable by the platform that would
+       receive it.
+
+       The data file is caught by caller_has_file() below, the VOC knowing it is
+       a file.  The DICTIONARY is not: QM gives dictionaries no VOC entry of
+       their own, so nothing else here recognises `BP.DIC' and its ~0 was staged
+       as an ordinary blob -- `M BP.DIC/~0' on every status, for ever.  Same
+       shape as the jBASE rule below, which pairs a file with its `]D'. */
+    {
+        size_t tl = strlen(top);
+        if (tl > 4 && strcmp(top + tl - 4, ".DIC") == 0) return 1;
+    }
+#endif
 #ifdef MVXGIT_JBASE
     /* A jBASE dictionary is a REGULAR FILE beside its data file, named
        `<file>]D` -- so unlike U2, where a dictionary is a directory the record
@@ -4343,12 +4394,28 @@ void mv_git_forget_account(void) {
 
 static int is_mv_file(const char *name) {
     struct stat sb;
+#ifdef MVXGIT_QM
+    /* ON QM THE FILESYSTEM CANNOT ANSWER THIS.  A dynamic file is a directory
+       of group files (~0, ~1, …), a directory file is a directory of records,
+       and BP.OUT — which QM's BASIC compiler creates for object code — is a
+       directory file with no dictionary at all.  So neither the open-account
+       `<name>.DICT/%FILE%` test below nor a `<name>.DIC` probe works: the
+       first classified every QM file as an ordinary directory (every record
+       read as deleted), the second then missed BP.OUT (`D BP.OUT.DICT/%FILE%`
+       on every account that had ever compiled a program).
+
+       The VOC is the authority, so the record layer asks it and caches.
+       mv_git#243. */
+    (void)sb;
+    return mv_qm_is_file(name);
+#else
     if (stat(name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
         char ctl[600];
         snprintf(ctl, sizeof ctl, "%s.DICT/%%FILE%%", name);
         return stat(ctl, &sb) == 0;
     }
     return 1;   /* no on-disk directory ⇒ LMDB-backed */
+#endif
 }
 
 /* The open-account CLASS of a %FILE% control's content: the native FILE<VM>type,
@@ -4733,6 +4800,21 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                 continue;
             }
             if (is_mv_file(top) || backend_has_file(ctx, top)) continue;
+            /* A %FILE% CONTROL FOR A FILE THAT IS NOT HERE IS A DECLARATION,
+               NOT A DELETION -- the same rule tracked_file_gone() states, read
+               from the other side.  The control is the file's existence in git
+               and mv_git keeps it deliberately: `GIT ATTR ORDERS --set
+               modulo=1009' describes a file BEFORE it exists so a clone builds
+               it right, and a file deleted while empty leaves its control
+               behind for `GIT RM' to remove.  Both are index entries with no
+               path on disk, so this workdir diff calls them deleted.
+               Everywhere the account's records live inside hash files that is
+               invisible; on QM, whose directory files ARE directories and whose
+               account directory IS the worktree, the diff can see the gap and
+               reported ` D <file>.DICT/%FILE%' for ever -- an account with a
+               declared file never came clean, through the verb or the CLI. */
+            if (d->status == GIT_DELTA_DELETED &&
+                is_file_control(d->new_file.path)) continue;
             /* an open account's on-disk %FILE% is native (FILE<VM>type) while
                the committed blob is the open form (DIR/hash); compare in
                open-space and skip when they match. */
@@ -5432,6 +5514,27 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
     git_tree_entry_free(te);
 }
 
+/* Is this master-file record a POINTER — a file, Q-, account- or remote
+   definition — rather than the account's own content?  mv_voc_class already
+   knows each platform's codes: 2 is a pointer, 1 belongs to the system, 0 is
+   the user's own.  Read it here rather than carrying a list, so a platform
+   that spells its codes differently is right by construction. */
+static int pointer_record(mv_ctx *ctx, const mv_value *fvar, const mv_value *id) {
+    mv_value rec;
+    mv_init(&rec);
+    int ptr = 0;
+    if (mv_read(ctx, &rec, fvar, id, 0)) {
+        const char *cp;
+        char nb[40];
+        int64_t cl = mv_val_chars(&rec, nb, sizeof nb, &cp);
+        int64_t n = 0;
+        while (n < cl && (unsigned char)cp[n] != 0xFE) n++;   /* attribute 1 */
+        ptr = (mv_voc_class(cp, n) == 2);
+    }
+    mv_clear(&rec);
+    return ptr;
+}
+
 static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
                              git_tree *subtree, const char *fn,
                              int keep_extra, int64_t *nw, int64_t *nd) {
@@ -5583,6 +5686,7 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
        "847 removed" and left a VOC with no verbs in it.  A record the baseline
        calls stock is not the commit's to remove. */
     if (!keep_extra) {
+        const int is_master = (strcmp(fn, voc_local_name()) == 0);
         mv_select(ctx, &fvar);
         mv_value dl;
         mv_init(&dl);
@@ -5592,6 +5696,25 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
             int found = 0;
             for (size_t i = 0; i < ns; i++)
                 if (strcmp(seen[i], idb) == 0) { found = 1; break; }
+            /* A FILE'S OWN MASTER-FILE POINTER IS DERIVED, NOT CONTENT, so it is
+               deliberately never committed — `add` drops it and the suite
+               asserts that ("but not its VOC pointer", mv_git#131).  Which
+               means it can never be in `seen`, and it is not stock either: it
+               was made by CREATE-FILE in THIS account.  Deleting it here
+               therefore deregistered every file the account owned.
+
+               On MVX that was survivable, because a file exists in the backend
+               whether or not the VOC names it.  On QM the pointer IS the
+               registration: with it gone the file cannot be opened at all, so
+               after one branch switch every record under it read as deleted
+               and no QM account could come clean again (mv_git#243).
+
+               The file itself is materialised from its %FILE% control by the
+               pass above, which recreates the pointer; a sweep that removes it
+               again immediately is undoing that pass's work. */
+            if (!found && !is_stock_id(idb) && is_master
+                && pointer_record(ctx, &fvar, &dl))
+                found = 1;                     /* derived: not ours to remove */
             if (!found && !is_stock_id(idb)) {
                 mv_delete_rec(ctx, &fvar, &dl);
                 (*nd)++;

@@ -9,7 +9,7 @@
 #   MVX      = the TCL / runtime            (mvx  |  udt-git's host — see below)
 #   MVXC     = the BASIC compiler           (mvx-basic)      [MVX builds only]
 #   GITPKG   = path to the built git package (has LIB/ + VOC/ + BP/ cataloged)
-#   PLATFORM = mvx | udt | uv               (default mvx)
+#   PLATFORM = mvx | udt | uv | jbase | qm   (default mvx)
 #   UVGIT    = the uv-git binary            [PLATFORM=uv only]
 #   UDT_NEWACCT = UniData's newacct          [PLATFORM=udt only, default
 #                                             $UDTHOME/bin/newacct]
@@ -33,7 +33,15 @@ SKIP_NET="${SKIP_NET:-0}"
 # from it).  The shell-only checks below read version.sh out of it; the suite
 # lives in <repo>/tests/.
 GITSRC="$(cd "$(dirname "$0")/.." && pwd)"
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"
+# $MVGIT_KEEP_WORK leaves the fixture accounts behind.  A failure that only
+# happens inside the suite cannot be diagnosed from its one-line report, and
+# rebuilding the fixture by hand is how you end up debugging a different bug.
+if [ -n "${MVGIT_KEEP_WORK:-}" ]; then
+  printf 'keeping fixtures in %s\n' "$WORK"   # say() is defined below
+else
+  trap 'rm -rf "$WORK"' EXIT
+fi
 PASS=0; FAIL=0; SKIP=0
 
 say()  { printf '%s\n' "$*"; }
@@ -564,6 +572,205 @@ elif [ "$PLATFORM" = jbase ]; then
   SEED() { local a="$1" body="$2"
            printf '%s\n' "$body" > "$a/BP/SEEDT"
            ( cd "$a" && printf 'BASIC BP SEEDT\nRUN BP SEEDT\n' | "$MVX" ) >/dev/null 2>&1; }
+elif [ "$PLATFORM" = qm ]; then
+  # qm: OpenQM / ScarletDME.  TWO ROUTES, and QMGIT_VIA picks between them.
+  #
+  #   QMGIT_VIA=cli (the DEFAULT) drives qm-git from the shell, over QMClient.
+  #   It runs against a STOCK ScarletDME, which is why it is the default: a
+  #   default that needs a patched engine would fail on every runner that has
+  #   not got one, and tell you nothing about mv_git.
+  #
+  #   QMGIT_VIA=verb drives the in-session GIT verb -- the shared handlers,
+  #   calling the record-git engine in the session that typed the sentence,
+  #   through CCALL into QM's own dh_ layer.  That is the route MVX and jBASE
+  #   take, and on QM it needs a qm built with geneb/ScarletDME#109, #111 and
+  #   #113, plus the libqmgit.so build-qm.sh only produces against such a qm.
+  #   It is checked for below and refused loudly rather than falling back --
+  #   silently measuring the CLI while the log says "verb" is the one outcome
+  #   worth ruling out.
+  #
+  # UV_VIA and JBGIT_VIA have the same shape for the same kind of reason.
+  #
+  # AN ACCOUNT IS REGISTERED BY NAME, NOT BY PATH -- the same trap the jbase arm
+  # documents, and worth stating again because the failure looks nothing like
+  # its cause.  QM's CREATE-ACCOUNT records the account NAME in a register and
+  # QMConnectLocal() looks accounts up there, so:
+  #   * a name left over from a previous run points at a $WORK directory that
+  #     mktemp has long since deleted, and every connection to it fails; and
+  #   * `rm -rf` on the directory does NOT remove the registration.
+  # So unregister first, every time, and answer N to the "Delete directory?"
+  # prompt -- the directory is ours to remove, and by then it may not exist.
+  QMBIN="${QMBIN:-qm}"
+  # The account name for a directory: its basename, upper-cased.  qm-git derives
+  # it exactly the same way from `-a <dir>`, so the two agree by construction
+  # rather than by a table that can drift.
+  qm_name() { basename "$1" | tr '[:lower:]' '[:upper:]'; }
+  qm_run()  { "$QMBIN" -a"$1" "$2" </dev/null 2>&1; }
+  # ADMIN SENTENCES RUN -aQMSYS, NOT BARE.  `qm` with no account uses the
+  # CURRENT DIRECTORY, and when that is not a registered account it stops to
+  # ask "Current directory X is not a valid account. Create account?" -- which
+  # eats the sentence.  The suite runs from the source tree, so every bare
+  # CREATE-ACCOUNT was answered by that prompt instead and the fixture built a
+  # bare directory (mv_git#243).
+  qm_unregister() { printf 'N\n' | "$QMBIN" -aQMSYS "DELETE-ACCOUNT $(qm_name "$1")" >/dev/null 2>&1 || true; }
+  ACCT() { qm_unregister "$1"
+           rm -rf "$1"; mkdir -p "$1"
+           local _abs; _abs="$(cd "$1" && pwd)"
+           local _out
+           _out="$("$QMBIN" -aQMSYS "CREATE-ACCOUNT $(qm_name "$1") $_abs" </dev/null 2>&1)"
+           # AND PROVE IT IS ONE.  CREATE-ACCOUNT leaves a VOC, $HOLD,
+           # $SVLISTS and a private catalogue; a fixture that cannot say what
+           # it built is the thing the jbase arm had to fix.
+           for part in VOC '$HOLD' cat; do
+             [ -e "$1/$part" ] || {
+               bad "FIXTURE: $1 has no $part" "a QM account" "a directory"
+               say "   CREATE-ACCOUNT $(qm_name "$1") $_abs said:"
+               printf '%s\n' "$_out" | sed 's/^/     | /'
+               exit 1; }
+           done
+           qm_run "$(qm_name "$1")" "CREATE-FILE BP DIRECTORY" >/dev/null 2>&1
+           : ; }
+  # The verb's own preconditions, settled ONCE and out loud.  Both of these are
+  # build output: PLATFORM.H says ENGINE only when build-qm.sh found a qm that
+  # exports dh_open, and libqmgit.so is only produced in that same case.  So one
+  # check answers "is this a patched QM, built against, with an engine to call".
+  QMLIB="${QMGIT_LIB:-$GITPKG/libqmgit.so}"
+  if [ "${QMGIT_VIA:-cli}" = verb ]; then
+      [ -f "$QMLIB" ] || {
+          echo "QMGIT_VIA=verb: no $QMLIB -- build-qm.sh skips the library" >&2
+          echo "  unless qm exports dh_open (geneb/ScarletDME#109).  Build" >&2
+          echo "  against a patched QM, or run the arm with QMGIT_VIA=cli." >&2
+          exit 1; }
+      grep -q '^\$DEFINE ENGINE' "$GITPKG/PLATFORM.H" 2>/dev/null || {
+          echo "QMGIT_VIA=verb: $GITPKG/PLATFORM.H does not define ENGINE, so" >&2
+          echo "  the handlers were built for the CLI arm.  Rebuild against a" >&2
+          echo "  patched QM." >&2
+          exit 1; }
+  fi
+  # CATALOGUED ONCE INTO QM'S GLOBAL CATALOGUE, AND THAT INCLUDES THE VERB.
+  #
+  # There are ninety-odd programs and every account needs all of them; per
+  # account that would be ninety compiles times however many fixtures the suite
+  # builds.  QM's global catalogue ($QMDIR/gcat) is the right shelf: the TCL
+  # processor resolves a word there when the account's VOC does not have it, so
+  # a globally catalogued GIT is a verb in every account with NO VOC RECORD AT
+  # ALL.  That is how udt-git does it too, and it is not just faster --
+  #
+  # A LOCALLY CATALOGUED VERB DOES NOT SURVIVE ITS OWN CHECKOUT.  `CATALOG BP
+  # GIT LOCAL' writes VOC/GIT as "V"/"CS"/<path>, and V is class 1 in
+  # mv_voc_class -- a system verb the destination supplies, so it is never
+  # committed.  `GIT CHECKOUT' then materialises VOC from the commit, does not
+  # find GIT in it, and deletes it: the verb removes itself, mid-suite, and
+  # every assertion after the first checkout reads as empty output.  That was
+  # fifty-two failures with one cause.
+  #
+  # This is the same shelf and the same route (compile from QMSYS, out of a
+  # directory file there) that qm/install.sh uses, deliberately: the suite and
+  # the installer must not have different ideas of how the verb is put in
+  # place, or the suite stops measuring what users run.
+  QMSYSDIR="${QMDIR:-/usr/qmsys}"
+  qm_catalog_once() {
+      [ -f "$WORK/.qmcat" ] && return 0
+      "$QMBIN" -aQMSYS "CREATE-FILE BP.INC DIRECTORY"   </dev/null >/dev/null 2>&1 || true
+      "$QMBIN" -aQMSYS "CREATE-FILE MVGIT.BP DIRECTORY" </dev/null >/dev/null 2>&1 || true
+      cp "$GITPKG/PLATFORM.H" "$QMSYSDIR/BP.INC/PLATFORM.H"
+      # A STALE CATALOGUE IS WORSE THAN AN EMPTY ONE: a program removed or
+      # renamed since the last run would still be in gcat, and the session
+      # would call it.  Clear this port's own entries first.
+      for f in "$QMSYSDIR"/MVGIT.BP/*; do
+          [ -f "$f" ] || continue
+          b=$(basename "$f"); rm -f "$QMSYSDIR/gcat/$b" "$f"
+      done
+      cp "$GITPKG"/BP/* "$QMSYSDIR/MVGIT.BP/" 2>/dev/null || true
+      # QUIT AT THE END, OR THIS NEVER RETURNS.  A QM session fed from a pipe
+      # does not take end-of-input as a reason to stop: it redraws the TCL
+      # prompt, for ever, and the run hangs with a catalogue that is complete.
+      # The log it writes while doing so reached nineteen megabytes on one
+      # line before the timeout noticed.
+      ( for f in "$QMSYSDIR"/MVGIT.BP/*; do
+            b=$(basename "$f")
+            printf 'BASIC MVGIT.BP %s\nCATALOG MVGIT.BP %s GLOBAL\n' "$b" "$b"
+        done
+        printf 'QUIT\n' ) | "$QMBIN" -aQMSYS >"$WORK/qmcatalog.log" 2>&1 || true
+      # ASSERT THE POSITIVE FACT -- one object per source.  QM reports a failed
+      # compile on stdout and carries on, and the exit status is the last
+      # CATALOG's, so trusting it reports a half-built catalogue as a healthy
+      # one and the failures arrive later as unrelated-looking verb errors.
+      local _miss="" _n=0 _tot=0 _b
+      for f in "$QMSYSDIR"/MVGIT.BP/*; do
+          _b=$(basename "$f"); _tot=$((_tot+1))
+          [ -f "$QMSYSDIR/gcat/$_b" ] || { _miss="$_miss $_b"; _n=$((_n+1)); }
+      done
+      if [ "$_n" -gt 0 ]; then
+          echo "LINK: $_n of $_tot programs did not catalogue:$_miss" >&2
+          for _b in $_miss; do
+              # Name the line the compiler choked on rather than making the
+              # reader open the log for the common case.  QM reports it as
+              # `<line>.<column>: <message>' after "Compiling MVGIT.BP <name>".
+              # sub(/\r$/...) first: QM writes a terminal session, so every
+              # line in that log ends with a carriage return and a plain
+              # equality test against the program name never matches.
+              echo "  $_b: $(awk -v n="$_b" '
+                  { sub(/\r$/, "") }
+                  $0 == "Compiling MVGIT.BP " n { f = 1; next }
+                  f && /^[0-9]+\.[0-9]+:/       { print; exit }
+              ' "$WORK/qmcatalog.log" 2>/dev/null)"
+          done
+          echo "  full log: $WORK/qmcatalog.log" >&2
+          exit 1
+      fi
+      touch "$WORK/.qmcat"; }
+  LINK() { mkdir -p "$1/BP.INC" "$1/BP"
+           cp "$GITPKG/PLATFORM.H" "$1/BP.INC/PLATFORM.H" 2>/dev/null
+           cp "$GITPKG"/BP/* "$1/BP/" 2>/dev/null
+           # The sources are staged in both modes because the tests COMMIT
+           # them -- BP is the account's own directory file and its records are
+           # content.  Nothing is compiled here in either mode: the CLI is a
+           # binary, and the verb is in the global catalogue, which is the
+           # whole point of putting it there.  So the two arms' accounts are
+           # the same account, and a difference between their results is a
+           # difference in mv_git rather than in the fixture.
+           [ "${QMGIT_VIA:-cli}" = verb ] && qm_catalog_once
+           : ; }
+  if [ "${QMGIT_VIA:-cli}" = cli ]; then
+    GITV() { local a="$1"; shift; local s="$*"; "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             printf '%s' "$k" | "$MVXGIT" -a "$a" ${s#GIT } 2>&1; }
+  else
+    # -M fences the verb's own output so the ScarletDME banner and the TCL
+    # prompt do not reach the assertions -- the same reason the udt and uv verb
+    # paths use it.
+    #
+    # `local s="$*"` FIRST, then strip: "${*#GIT }" applies the pattern to each
+    # positional parameter separately, so it strips nothing and the sentence
+    # goes out as "GIT -M GIT STATUS".
+    #
+    # LD_LIBRARY_PATH, because GIT.QM dlopen()s "libqmgit.so" BY NAME and the
+    # library under test is the one just built, not whatever install.sh may have
+    # left on the loader path.  JBGIT_LIB does the same job on the jbase arm.
+    GITV() { local a="$1"; shift; local s="$*"
+             LD_LIBRARY_PATH="$(dirname "$QMLIB"):${LD_LIBRARY_PATH:-}" \
+               "$QMBIN" -a"$(qm_name "$a")" "GIT -M ${s#GIT }" </dev/null 2>&1 \
+               | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+    # The keystrokes simply follow on stdin: a QM session hands the program's
+    # own KEYIN() whatever is there, and `qm -a<acct> "<sentence>"` runs the one
+    # sentence, so there is no command loop to eat them (which is the trap the
+    # jbase arm documents for jsh).
+    GITK() { local a="$1" k="$2"; shift 2; local s="$*"
+             printf '%s' "$k" \
+               | LD_LIBRARY_PATH="$(dirname "$QMLIB"):${LD_LIBRARY_PATH:-}" \
+                 "$QMBIN" -a"$(qm_name "$a")" "GIT -M ${s#GIT }" 2>&1 \
+               | awk '/<<<GIT-BEGIN>>>/{f=1;next} /<<<GIT-END>>>/{f=0} f'; }
+  fi
+  CF()   { qm_run "$(qm_name "$1")" "CREATE-FILE $2" >/dev/null 2>&1; }
+  # DELETE-FILE asks for confirmation, and an unanswered prompt leaves the file
+  # in place while the sentence appears to have run.
+  DF()   { printf 'Y\n' | "$QMBIN" -a"$(qm_name "$1")" "DELETE-FILE $2" >/dev/null 2>&1; }
+  CT()   { qm_run "$(qm_name "$1")" "CT $2 $3"; }
+  SEED() { local a="$1" body="$2"
+           printf '%s\n' "$body" > "$a/BP/SEEDT"
+           qm_run "$(qm_name "$a")" "BASIC BP SEEDT" >/dev/null 2>&1
+           qm_run "$(qm_name "$a")" "RUN BP SEEDT"   >/dev/null 2>&1; }
 else
   # udt: the runtime IS udt; GIT is a cataloged verb; accounts are UniData accounts.
   #
@@ -639,6 +846,7 @@ fi
 case "$PLATFORM" in
   uv)    ATTR_VIA="${UV_VIA:-verb}" ;;
   jbase) ATTR_VIA="${JBGIT_VIA:-verb}" ;;
+  qm)    ATTR_VIA="${QMGIT_VIA:-cli}" ;;   # verb needs ScarletDME#109/#111/#113
   *)     ATTR_VIA=verb ;;
 esac
 
@@ -1274,6 +1482,7 @@ WRITE "Cy":@AM:"Oslo" ON F, "C3"'
     udt)   clone_verb=1 ;;
     uv)    [ "${UV_VIA:-verb}" = verb ] && clone_verb=1 ;;
     jbase) [ "${JBGIT_VIA:-verb}" = verb ] && clone_verb=1 ;;
+    qm)    [ "${QMGIT_VIA:-cli}" = verb ] && clone_verb=1 ;;
   esac
   if [ "$clone_verb" = 1 ]; then
     t "a clone that fails says so" "did not complete" \

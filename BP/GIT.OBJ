@@ -65,8 +65,14 @@
       CASE OP = "FILES"    ; CALL GITFILES(A1, GOUT)
       CASE OP = "FURNITURE" ; CALL GITFURNITURE(A2, GOUT)
       CASE OP = "VOCDROP"  ; CALL GITVOCDROP(A2, GOUT)
-      CASE OP = "ISOPEN"   ; CALL GITISOPEN(REPO, GOUT)
-      CASE OP = "ADDDISK"  ; CALL GITADDDISKFOR(REPO, A2, GOUT)
+*     A1, NOT REPO.  REPO is this routine's name for the repository in the
+*     UniData arm below, where it is assigned from A1; up here it had never
+*     been assigned at all.  MVX reads an unassigned variable as "" and the
+*     engine turns "" into ".git", so it worked by accident there -- QM stops
+*     the program with `Unassigned variable REPO', which is the honest
+*     reaction.  A1 is the repository the caller passed, on every platform.
+      CASE OP = "ISOPEN"   ; CALL GITISOPEN(A1, GOUT)
+      CASE OP = "ADDDISK"  ; CALL GITADDDISKFOR(A1, A2, GOUT)
       CASE OP = "MATACCT"  ; CALL GITMATERIALISEACCT(A2, GOUT)
       CASE OP = "VERSION"  ; CALL GITVERSION(A1, GOUT)
       CASE OP = "STAGEDESC" ; CALL GITSTAGEDESC(A1, A2, A3, GOUT)

@@ -32,6 +32,9 @@
      - default (mvx-git): the MVX runtime, libmvxrt (mvx_runtime.h).
      - MVXGIT_UDT (udt-git): the same names over Rocket UniData's InterCall API
        (udtgit_rt.h / udtgit_rt.c).
+     - MVXGIT_QM (qm-git): the same names over OpenQM/ScarletDME's QMClient
+       API (qmgit_rt.h / qmgit_rt.c).  Like jBASE and MVX, a standalone
+       process makes its own connection and calls the record API directly.
      - MVXGIT_JBASE (jb-git): the same names over jBASE's Jedi* record API
        (jbasegit_rt.h / jbasegit_rt.c).  jBASE hands C both halves — a DEFC
        entry point receives the session, and a standalone process makes one with
@@ -50,6 +53,8 @@
 #  include "udtgit_rt.h"
 #elif defined(MVXGIT_JBASE)
 #  include "jbasegit_rt.h"
+#elif defined(MVXGIT_QM)
+#  include "qmgit_rt.h"
 #elif defined(MVXGIT_MVXC)
 /* THE SAME PLATFORM, REACHED THROUGH THE CLIENT LIBRARY (#267 stage 2).  Both
    macros, and they mean different things -- the pattern build-udt.sh already

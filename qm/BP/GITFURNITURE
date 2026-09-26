@@ -1,0 +1,20 @@
+* GITFURNITURE - the engine op, as a SUBROUTINE.  See qm/BP/GIT.QM.
+*
+* One line of glue, exactly as jBASE's DEFC wrappers are: the handlers in BP/
+* call these by name on their ENGINE arm, so the same handler source works
+* here unchanged.  All the CCALL machinery is in GIT.QM.
+*
+* THE WORD THE PREPROCESSOR READS IS NOT WRITTEN IN THIS COMMENT, deliberately.
+* A conditional directive inside a comment is a portability trap of its own,
+* and the suite greps for sources that TEST a symbol without including
+* PLATFORM.H -- which a comment naming one would fail, for no reason.
+*
+* THE REPOSITORY IS SUPPLIED HERE, NOT PASSED IN.  GIT.OBJ calls this op with
+* the candidate list alone, because the engine half takes only a list -- the
+* furniture rules are the engine's, not a repository's.  The bridge still wants
+* argument one to be the repository, as it is for every other op, so the
+* wrapper names it; MVX's C half hardcodes the same ".git" for the same reason.
+      SUBROUTINE GITFURNITURE(LIST, ANS)
+      CALL GIT.QM("FURNITURE", ".git", LIST, "", "", "", ANS)
+      RETURN
+END
