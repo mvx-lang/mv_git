@@ -1843,6 +1843,40 @@ NEXT I"
 te "all thirty of the account's own master-file records travel" "30" \
    "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
+say "-- a committed blob that ends in a newline is the same record (mv_git#258) --"
+# A record's attributes are SEPARATED by the mark, never terminated by one, so
+# the blob form ends on content.  A great many committed blobs end with a
+# newline anyway: plain git commits them from a working tree, and editors and
+# build steps terminate text files -- build-uv.sh appends one deliberately,
+# because UniVerse needs it to compile a source file, which is a file concern
+# and not a record one.
+#
+# Compared byte for byte, every such record reads modified for ever and the
+# account never comes up clean.  That is what mv_package was sitting in: twelve
+# phantom modifications with a real edit somewhere among them.
+NLA="$WORK/nlterm"; ACCT "$NLA"; LINK "$NLA"
+CF "$NLA" NLF
+SEED "$NLA" 'OPEN "NLF" TO F ELSE STOP
+WRITE "ONE":@AM:"TWO" ON F, "R1"'
+( cd "$NLA" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add NLF >/dev/null 2>&1
+  "$MVXGIT" commit -m base >/dev/null 2>&1
+  # Now put a TERMINATED blob in its place, exactly as a plain-git commit from
+  # a checked-out working tree does.  The file stays on disk, because that is
+  # the state the account is actually found in.
+  mkdir -p NLF
+  printf 'ONE\nTWO\n' > NLF/R1
+  git add NLF/R1 >/dev/null 2>&1
+  git -c user.email=t@t -c user.name=t commit -qm terminated >/dev/null 2>&1 )
+# ASSERTED ON STATUS ONLY, and deliberately.  `diff` compares the working-tree
+# file, which here matches the blob byte for byte, so it reports nothing either
+# way -- an assertion on it would pass without the fix and measure nothing.
+# Status is what compares the RECORD to the blob, and it is what reported " M"
+# for every record in mv_package.
+tn "a terminated blob does not read as modified" "NLF/R1" \
+   "$( cd "$NLA" && "$MVXGIT" status --short 2>&1 )"
+
 say "-- a file's own pointer is derived, not content (mv_git#131) --"
 # CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
 # <file>.DICT/%FILE% carries the geometry to write it again -- so committing the
