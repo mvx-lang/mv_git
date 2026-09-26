@@ -126,6 +126,7 @@ char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen) {
     return xlate(rec, len, (char)0xFE, '\n', outlen);
 }
 
+
 typedef struct { char *d; size_t len, cap; } sbuf;
 
 static void sb_put(sbuf *s, const char *p, size_t n) {
@@ -1150,6 +1151,38 @@ static int head_control(git_repository *repo, git_tree *head, const char *base,
     }
     git_tree_entry_free(te);
     return n;
+}
+
+/* IS THIS COMMITTED BLOB THIS RECORD, ALLOWING FOR A TERMINATOR (#258)?
+ *
+ * We write a record's blob form without a trailing newline, because a record's
+ * attributes are separated by the mark and not terminated by one.  Plenty of
+ * blobs already in repositories DO end with one: they were committed by plain
+ * git from a working tree, and editors and build steps terminate text files.
+ * Comparing the two byte for byte then reports every such record as modified,
+ * for ever, and the account never reads clean -- which is where mv_package
+ * ended up (#258).
+ *
+ * So the comparison forgives exactly one trailing newline on the committed
+ * side.  Tolerant on read, strict on write: nothing here changes what we
+ * produce, only what we accept as already equal to it.
+ *
+ * Only consulted when the oids differ, so the usual path costs nothing. */
+static int blob_is_record(git_repository *repo, const git_oid *have,
+                          const git_oid *want) {
+    if (git_oid_equal(have, want)) return 1;
+    git_blob *b = NULL;
+    if (git_blob_lookup(&b, repo, have) != 0) return 0;
+    const char *c = git_blob_rawcontent(b);
+    int64_t n = (int64_t)git_blob_rawsize(b);
+    int same = 0;
+    if (n > 0 && c[n - 1] == '\n') {
+        git_oid trimmed;
+        if (git_odb_hash(&trimmed, c, (size_t)(n - 1), GIT_OBJECT_BLOB) == 0)
+            same = git_oid_equal(&trimmed, want);
+    }
+    git_blob_free(b);
+    return same;
 }
 
 /* Blob oid of a record's current content (translated, not stored). */
@@ -4583,7 +4616,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     char line[700];
                     snprintf(line, sizeof line, "?? %s", path);
                     sb_line(&s, line);
-                } else if (!git_oid_equal(&entry->id, &woid)) {
+                } else if (!blob_is_record(repo, &entry->id, &woid)) {
                     char line[700];
                     snprintf(line, sizeof line, " M %s", path);
                     sb_line(&s, line);
@@ -5084,7 +5117,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
             int changed = 1;
             if (git_odb_hash(&woid, buf ? buf : "", (size_t)bl,
                              GIT_OBJECT_BLOB) == 0)
-                changed = !git_oid_equal(&woid, &e->id);
+                changed = !blob_is_record(repo, &e->id, &woid);
             if (changed) {
                 char hdr[700];
                 snprintf(hdr, sizeof hdr, "diff %s", e->path);
