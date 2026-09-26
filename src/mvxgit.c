@@ -1153,6 +1153,63 @@ static int head_control(git_repository *repo, git_tree *head, const char *base,
     return n;
 }
 
+/* --- which backend a checkout puts a file on (#273) ------------------------
+ *
+ * The committed %FILE% control names the backend the file WAS on.  That is the
+ * default worth offering, not an instruction: a clone of an lmdb account may
+ * well want to be a Postgres one, and until now it had no way to say so.
+ *
+ * Resolved ABOVE THE SEAM, in the engine, deliberately.  mv_bind_driver is one
+ * of the names each arm supplies, and the CLI and the in-session verb are built
+ * against different arms -- the CLI through libmvxc, the verb through libmvxrt --
+ * so a choice implemented in one arm would not reach the other.  The two must
+ * agree about what a checkout does, so the deciding happens here and the arms
+ * keep doing only what they already do: bind this file to this backend.
+ *
+ * Order, most specific first:
+ *   --backend on the command line   mv_git_set_backend(), this run only
+ *   mvx.backend in the git config   repository, then the user's global
+ *   the committed %FILE% control    what the account was on
+ *
+ * $MVXDRIVER is untouched and keeps its own job: the substitute to use when a
+ * wanted backend is absent, which is a different question from which one to
+ * want. */
+static char g_backend[64];
+
+void mv_git_set_backend(const char *drv) {
+    if (drv && *drv) snprintf(g_backend, sizeof g_backend, "%s", drv);
+    else g_backend[0] = '\0';
+}
+
+const char *mv_git_backend(void) { return g_backend; }
+
+/* `mvx.backend` from the account's git config.  git's own level order gives us
+   the repository's answer and then the user's --global one, which is exactly the
+   precedence wanted, for free.
+   get_string, not get_bool: it is get_bool whose answer varied across libgit2
+   builds (see mvx-git's own reader), and a name is a string anyway. */
+static void config_backend(git_repository *repo, char *out, size_t cap) {
+    out[0] = '\0';
+    if (!repo) return;
+    git_config *cfg = NULL;
+    if (git_repository_config(&cfg, repo) != 0) return;
+    git_buf v = GIT_BUF_INIT;
+    if (git_config_get_string_buf(&v, cfg, "mvx.backend") == 0 && v.ptr && v.ptr[0])
+        snprintf(out, cap, "%s", v.ptr);
+    git_buf_dispose(&v);
+    git_config_free(cfg);
+}
+
+/* What this checkout should put `file` on, given what it was committed on. */
+static void backend_for(git_repository *repo, const char *committed,
+                        char *out, size_t cap) {
+    if (g_backend[0]) { snprintf(out, cap, "%s", g_backend); return; }
+    char cfg[64];
+    config_backend(repo, cfg, sizeof cfg);
+    if (cfg[0]) { snprintf(out, cap, "%s", cfg); return; }
+    snprintf(out, cap, "%s", committed ? committed : "");
+}
+
 /* IS THIS COMMITTED BLOB THIS RECORD, ALLOWING FOR A TERMINATOR (#258)?
  *
  * We write a record's blob form without a trailing newline, because a record's
@@ -5458,7 +5515,11 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
            a file silently made somewhere nobody chose. */
         char drv[64];
         control_driver(bc, bl, drv, sizeof drv);
-        if (drv[0]) mv_bind_driver(base, drv);
+        /* What it was committed on is the default; --backend or mvx.backend
+           override it (#273). */
+        char want[64];
+        backend_for(repo, drv[0] ? drv : NULL, want, sizeof want);
+        if (want[0]) mv_bind_driver(base, want);
 #endif
         git_blob_free(b);
     }
