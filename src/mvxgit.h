@@ -50,6 +50,16 @@
 #  include "udtgit_rt.h"
 #elif defined(MVXGIT_JBASE)
 #  include "jbasegit_rt.h"
+#elif defined(MVXGIT_MVXC)
+/* THE SAME PLATFORM, REACHED THROUGH THE CLIENT LIBRARY (#267 stage 2).  Both
+   macros, and they mean different things -- the pattern build-udt.sh already
+   uses.  MVXGIT_MVXRT stays defined because it selects MVX *behaviour*: the
+   descriptor on disk, what the VOC classifier drops, the paths guarded with
+   #ifdef MVXGIT_MVXRT throughout the engine.  MVXGIT_MVXC only changes how the
+   records are reached -- libmvxc rather than libmvxrt -- so mvx-git talks to MVX
+   through the same contract every other consumer does. */
+#  define MVXGIT_MVXRT 1
+#  include "mvxcgit_rt.h"
 #else
 #  define MVXGIT_MVXRT 1        /* the native MVX runtime is the backend */
 #  include "mvx_runtime.h"
@@ -69,20 +79,32 @@
 #  define mv_createfile   mvx_createfile
 #  define mv_deletefile   mvx_deletefile
 #  define mv_filelist     mvx_filelist
-/* NOT mvx_openaccount / mvx_voc_class (#265).  Both are OURS: the open account
+/* Binding a file to a backend, and the abort of last resort.  Named through the
+   seam (#267) because the client arm answers both differently: it has no runtime
+   to call, and it must ask about a backend rather than prompt from inside the
+   library. */
+#  define mv_bind_driver  mvx_bind_driver
+#  define mv_hard_fatal   mvx_fatal
+#endif
+
+/* MVX BEHAVIOUR, SHARED BY BOTH MVX ARMS -- the runtime one and the client one
+   (#267 stage 2).  These are not transport, so they do not belong in either
+   branch above; mvxgit.c defines all three under the same MVXGIT_MVXRT guard
+   that both arms set.
+   NOT mvx_openaccount / mvx_voc_class (#265).  Both are OURS: the open account
    format is a git-boundary translation, and the VOC classifier is the
    record-git filter -- nothing in mvx calls either, and mvx's own headers say
    so ("for the record-git filter", "see mv_voc_class in the record-git
    engine").  The udt, jbase and agent arms already carry their own; the mvx arm
-   borrowed mvx's only because the #define was there.  Implemented in mvxgit.c
-   beside mvxgit_fatal, under the same guard. */
+   borrowed mvx's only because the #define was there.
+   NOT mvx_fatal either.  mvx-git is driven by other programs now -- the mvx
+   client library, and through it a binding that holds a session open across many
+   requests -- and a library that kills its host because one allocation failed is
+   unusable.  mvxgit_fatal records the message and unwinds to the engine entry
+   point, which already returns the user-visible string.  See mvxgit.c. */
+#ifdef MVXGIT_MVXRT
 int mv_openaccount(void);
 int mv_voc_class(const char *type, int64_t len);
-/* NOT mvx_fatal.  mvx-git is driven by other programs now -- the mvx client
-   library, and through it a binding that holds a session open across many
-   requests -- and a library that kills its host because one allocation failed
-   is unusable.  mvxgit_fatal records the message and unwinds to the engine
-   entry point, which already returns the user-visible string.  See mvxgit.c. */
 void mvxgit_fatal(const char *fmt, ...)
     __attribute__((noreturn, format(printf, 1, 2)));
 #  define mv_fatal        mvxgit_fatal
