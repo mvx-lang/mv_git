@@ -7041,6 +7041,53 @@ void mvxgit_fatal(const char *fmt, ...) {
 }
 #endif
 
+#ifdef MVXGIT_MVXRT
+/* --- what the mvx arm answers for itself (#265) ---------------------------
+ * These used to be #defines onto mvx_openaccount / mvx_voc_class.  They are
+ * ours: nothing in mvx calls either, and mvx's own comments say what they are
+ * for -- "for the record-git filter", "see mv_voc_class in the record-git
+ * engine".  udt, jbase and the agent already carry their own; only this arm
+ * borrowed, because the #define was available. */
+
+/* The account's `mvx.openaccount` git config, surfaced as $MVX_OPENACCOUNT by
+ * whichever front end is driving -- mvx-git's apply_open_env, gitcallc's
+ * open_account_on.  THE REPO IS WHERE THE ANSWER LIVES; the variable is only
+ * how it reaches the engine's deep call sites, which have no repo handle.  The
+ * same four lines jbasegit_rt.c has. */
+int mv_openaccount(void) {
+    const char *e = getenv("MVX_OPENACCOUNT");
+    return e && *e && *e != '0';
+}
+
+/* Classify a master-VOC record by its MVX type code: 0 keep, 1 always drop,
+ * 2 drop in the open interchange only.
+ *
+ * A CATALOGUED VERB IS REBUILT, NOT CARRIED.  `CATALOG BP MYPROG` writes `V` +
+ * CATALOG/MYPROG, and CATALOG/ is furniture that never travels (#130) -- so a
+ * committed record would name a directory the clone does not have.  BP travels
+ * and BUILD re-catalogues from it, so the record is DERIVED, and a wholesale
+ * add leaves it out; naming it explicitly still stages it.
+ *
+ * Pointers are dropped in the open interchange only, because the portable form
+ * carries the file type as <file>.DICT/%FILE% instead.  (Contrast UniData,
+ * whose account VOC is populated with the system verbs, so its classifier has
+ * more to drop -- which is exactly why each platform defines its own set.) */
+int mv_voc_class(const char *type, int64_t len) {
+    static const struct { const char *t; int c; } tbl[] = {
+        {"V", 1},                           /* catalogued verb: derived */
+        {"F", 2}, {"DIR", 2}, {"Q", 2},     /* file / directory / q-pointer */
+        {NULL, 0}
+    };
+    if (!type || len <= 0) return 0;
+    for (int i = 0; tbl[i].t; i++) {
+        size_t sl = strlen(tbl[i].t);
+        if ((size_t)len == sl && strncasecmp(type, tbl[i].t, sl) == 0)
+            return tbl[i].c;
+    }
+    return 0;
+}
+#endif
+
 static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
                          int64_t *outlen) {
 #ifdef MVXGIT_MVXRT

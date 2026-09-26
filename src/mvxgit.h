@@ -69,7 +69,15 @@
 #  define mv_createfile   mvx_createfile
 #  define mv_deletefile   mvx_deletefile
 #  define mv_filelist     mvx_filelist
-#  define mv_openaccount  mvx_openaccount
+/* NOT mvx_openaccount / mvx_voc_class (#265).  Both are OURS: the open account
+   format is a git-boundary translation, and the VOC classifier is the
+   record-git filter -- nothing in mvx calls either, and mvx's own headers say
+   so ("for the record-git filter", "see mv_voc_class in the record-git
+   engine").  The udt, jbase and agent arms already carry their own; the mvx arm
+   borrowed mvx's only because the #define was there.  Implemented in mvxgit.c
+   beside mvxgit_fatal, under the same guard. */
+int mv_openaccount(void);
+int mv_voc_class(const char *type, int64_t len);
 /* NOT mvx_fatal.  mvx-git is driven by other programs now -- the mvx client
    library, and through it a binding that holds a session open across many
    requests -- and a library that kills its host because one allocation failed
@@ -78,7 +86,6 @@
 void mvxgit_fatal(const char *fmt, ...)
     __attribute__((noreturn, format(printf, 1, 2)));
 #  define mv_fatal        mvxgit_fatal
-#  define mv_voc_class    mvx_voc_class
 #endif
 
 /* Bring libgit2 up the way this product needs it (see mvxgit.c).  Every
