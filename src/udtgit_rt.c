@@ -26,6 +26,7 @@
  * engine's mark<->newline blob translation needs no change. */
 
 #include "udtgit_rt.h"
+#include "mvconn.h"
 #include "mvxgit.h"      /* mv_account_furniture() */
 
 #include <stdio.h>
@@ -613,8 +614,10 @@ void mv_filelist(mv_ctx *ctx, mv_value *dst) {
 /* --- misc -------------------------------------------------------------- */
 
 int mv_openaccount(void) {
-    const char *v = getenv("MVX_OPENACCOUNT");
-    return v && *v && strcmp(v, "0") != 0;
+    /* ONE reading of the boolean, shared with the CLI side (mv_git#267).
+       These four arms had two spellings between them, and neither agreed
+       with the CLI's: "false" was ON here and OFF there. */
+    return mvconn_env_true(getenv("MVX_OPENACCOUNT"));
 }
 
 int mv_voc_class(const char *type, int64_t len) {

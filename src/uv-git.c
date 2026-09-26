@@ -47,6 +47,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE          /* realpath */
 
+#include "mvconn.h"
 #include "mvxgit.h"
 #include "mvsession.h"
 #include "agent_src.h"   /* generated from BP/GIT.AGENT by build-gitd.sh */
@@ -184,28 +185,19 @@ static int ask(const char *prompt, char *buf, size_t cap) {
    later commit is written. */
 static int g_open_flag;                 /* 1 = --open-account, -1 = --no-, 0 = ask */
 
+/* uv-git works in the account it was run in, so one connection serves the run
+   (mv_git#267).  The flag is applied on every call rather than once at
+   creation: it is set while the arguments are parsed, which can happen after
+   the connection is first used. */
+static mv_conn *conn(void) {
+    static mv_conn *c;
+    if (!c) c = mvconn_open(".");
+    if (g_open_flag) mvconn_set_open_account(c, g_open_flag > 0);
+    return c;
+}
+
 static int clone_open_account(const char *dir) {
-    if (g_open_flag) return g_open_flag > 0;
-    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-    if (env && env[0])
-        return !(env[0] == '0' || !strcasecmp(env, "no") ||
-                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr,
-                "uv-git: '%s' was committed in the open account format — "
-                "checking it out as an open account.\n"
-                "        (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
-                "native checkout instead)\n", dir);
-        return 1;
-    }
-    char line[16];
-    fprintf(stderr,
-            "\n'%s' was committed in the open account format: its dictionaries "
-            "and file\ncontrols are in the portable shape that moves between MV "
-            "platforms.  Keeping\nit open is what lets this account travel back "
-            "the same way.\n\n", dir);
-    if (!ask("Make it an open account? [Y/n] ", line, sizeof line)) return 1;
-    return !(line[0] == 'n' || line[0] == 'N');
+    return mvconn_ask_open_account(conn(), "uv-git", dir);
 }
 
 
@@ -440,21 +432,7 @@ static int repo_place(char *gitdir, size_t gcap, char *prefix, size_t pcap) {
    udt-git and mvx-git use (mv_git#88).  With no terminal the answer is yes,
    said out loud, because erroring would break every scripted adopt. */
 static int ask_open_account(void) {
-    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-    if (env && env[0])
-        return !(env[0] == '0' || !strcasecmp(env, "no") ||
-                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr, "uv-git adopt: keeping it in the open account format "
-                        "(--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, "
-                        "declines)\n");
-        return 1;
-    }
-    char line[16];
-    fprintf(stderr, "Make it an open account? [Y/n] ");
-    fflush(stderr);
-    if (!fgets(line, sizeof line, stdin)) return 1;
-    return !(line[0] == 'n' || line[0] == 'N');
+    return mvconn_ask_open_account(conn(), "uv-git adopt", ".");
 }
 
 static int adopt(int argc, char **argv, int i) {
@@ -673,18 +651,7 @@ static int adopt(int argc, char **argv, int i) {
        later add/commit here emits open-form blobs to match the descriptor we
        just wrote.  Without this the descriptor would claim one thing and the
        commits do another. */
-    if (open_form) {
-        mv_git_libgit2_boot();
-        git_repository *repo = NULL;
-        if (git_repository_open_ext(&repo, ".", 0, NULL) == 0) {
-            git_config *cfg = NULL;
-            if (git_repository_config(&cfg, repo) == 0) {
-                git_config_set_bool(cfg, "mvx.openaccount", 1);
-                git_config_free(cfg);
-            }
-            git_repository_free(repo);
-        }
-    }
+    if (open_form) mvconn_persist_open_account(conn());
 
     /* --- build the records from what was stashed --------------------------- */
     /* An agent first.  Records are reached through the account I/O agent, and a
@@ -901,20 +868,10 @@ static int run_account(int argc, char **argv, int i) {
     /* The open account format is an opt-in the engine reads from the environment;
        seed it from the repository's config so add and status agree with what the
        descriptor claims. */
-    {
-        mv_git_libgit2_boot();
-        git_repository *gr = NULL;
-        if (git_repository_open_ext(&gr, ".", 0, NULL) == 0) {
-            git_config *cfg = NULL;
-            int on = 0;
-            if (git_repository_config(&cfg, gr) == 0) {
-                if (git_config_get_bool(&on, cfg, "mvx.openaccount") == 0 && on)
-                    setenv("MVX_OPENACCOUNT", "1", 1);
-                git_config_free(cfg);
-            }
-            git_repository_free(gr);
-        }
-    }
+    /* Was git_config_get_bool, which answers differently on different libgit2
+       builds -- so this driver could read an account as native that mvx-git
+       read as open.  The connection reads the file (mv_git#267). */
+    mvconn_export_open_account(conn());
 
     /* Subtract this flavour's stock VOC, so a commit carries what the account
        added rather than what UniVerse supplied (mv_git#46).  Resolved per
@@ -1713,17 +1670,8 @@ static int clone_cmd(int argc, char **argv, int i) {
                       v[0] && v[0] != '0';
         }
         if (is_open && clone_open_account(dir)) {
-            git_repository *gr = NULL;
-            if (git_repository_open_ext(&gr, ".", 0, NULL) == 0) {
-                git_config *cfg = NULL;
-                if (git_repository_config(&cfg, gr) == 0) {
-                    git_config_set_bool(cfg, "mvx.openaccount", 1);
-                    /* the engine reads the env, not the config */
-                    setenv("MVX_OPENACCOUNT", "1", 1);
-                    git_config_free(cfg);
-                }
-                git_repository_free(gr);
-            }
+            mvconn_persist_open_account(conn());
+            mvconn_export_open_account(conn());   /* the engine reads the env */
         }
     }
 

@@ -14,6 +14,7 @@
  *                   touched -- so loop on the key pointer, never the return
  *                   code, or you read a stale key for ever.
  */
+#include "mvconn.h"
 #include "jbasegit_rt.h"
 
 #include <jsystem.h>
@@ -391,8 +392,10 @@ int64_t mv_indices(mv_ctx *ctx, const char *name, char *out, size_t cap) {
 /* --- misc -------------------------------------------------------------- */
 
 int mv_openaccount(void) {
-    const char *e = getenv("MVX_OPENACCOUNT");
-    return e && *e && *e != '0';
+    /* ONE reading of the boolean, shared with the CLI side (mv_git#267).
+       These four arms had two spellings between them, and neither agreed
+       with the CLI's: "false" was ON here and OFF there. */
+    return mvconn_env_true(getenv("MVX_OPENACCOUNT"));
 }
 
 /* jBASE's MD is not a VOC, and most of what mv_voc_class classifies elsewhere
