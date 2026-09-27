@@ -1181,8 +1181,6 @@ void mv_git_set_backend(const char *drv) {
     else g_backend[0] = '\0';
 }
 
-const char *mv_git_backend(void) { return g_backend; }
-
 /* `mvx.backend` from the account's git config.  git's own level order gives us
    the repository's answer and then the user's --global one, which is exactly the
    precedence wanted, for free.

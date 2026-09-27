@@ -196,8 +196,7 @@ int   mv_git_platform_dict_record(const char *file, const char *id);
    committed on (#273).  Set from --backend before the engine runs; empty means
    "whatever the git config or the committed control says".  Resolved in the
    engine so the CLI and the in-session verb cannot disagree about it. */
-void        mv_git_set_backend(const char *drv);
-const char *mv_git_backend(void);
+void mv_git_set_backend(const char *drv);
 
 /* A record's blob form -- the attribute mark translated to a newline, which is
    what decides the hash a record gets.  One rule, one place (#267): anything

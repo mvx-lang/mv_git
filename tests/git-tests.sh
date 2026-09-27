@@ -1843,6 +1843,78 @@ NEXT I"
 te "all thirty of the account's own master-file records travel" "30" \
    "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
+# --- a checkout chooses its own backend (mv_git#273) -------------------------
+# Pluggable per-file backends are an MVX concept: UniData, UniVerse and jBASE
+# have no equivalent, so this is mvx-only and a no-op elsewhere.
+#
+# The committed %FILE% control names the backend a file WAS on.  That is a
+# default worth offering, not an instruction -- a clone of an lmdb account may
+# want to be a sqlite one -- so --backend overrides it.
+if [ "$PLATFORM" = mvx ]; then
+  say "-- a checkout puts files on the backend it is told to (mv_git#273) --"
+  BKA="$WORK/bkacct"; ACCT "$BKA"; LINK "$BKA"
+  CF "$BKA" BKPARTS
+  SEED "$BKA" 'OPEN "BKPARTS" TO F ELSE STOP
+WRITE "Widget":@AM:"9.99" ON F, "W1"'
+  ( cd "$BKA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add -A >/dev/null 2>&1
+    "$MVXGIT" commit -m base >/dev/null 2>&1 )
+
+  bk_listf() { "$MVX" -a "$1" -c LISTF 2>&1 | awk '$1=="BKPARTS"{print $2}'; }
+
+  # no switch: follow what was committed
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-plain >/dev/null 2>&1 )
+  te "no switch follows the committed backend" "sqlite" "$(bk_listf "$WORK/bk-plain")"
+
+  # --backend: override it
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend=lmdb "$BKA" bk-lmdb >/dev/null 2>&1 )
+  te "--backend puts it somewhere else"        "lmdb"   "$(bk_listf "$WORK/bk-lmdb")"
+
+  # ONE MENTION, not two, and not its dictionary either.  A bound file is named
+  # by the driver that holds it AND by BINDINGS, and used to be listed once for
+  # each; the bound spec also carried a leading newline that defeated the "DICT."
+  # filter, so the dictionary showed up beside it (mvx#307).  Counting every line
+  # that mentions the file catches both, where a ^-anchored count would miss
+  # DICT.BKPARTS entirely -- and an unanchored search for "DICT" would trip over
+  # the dictionaries this account legitimately has from LINK.
+  te "and lists it once, dictionary not exposed" "1" \
+     "$("$MVX" -a "$WORK/bk-lmdb" -c LISTF 2>&1 | grep -c 'BKPARTS')"
+
+  # and the records are actually there, on the backend that was asked for
+  RDB="$WORK/bkread.b"
+  printf 'OPEN "BKPARTS" TO F ELSE STOP\nREAD R FROM F,"W1" THEN\n   PRINT "got:":R<1>\nEND ELSE\n   PRINT "MISSING"\nEND\n' > "$RDB"
+  ( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$MVXC" "$RDB" -o "$WORK/bkread" >/dev/null 2>&1 )
+  t  "the records moved with it"               "got:Widget" \
+     "$( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$WORK/bkread" 2>&1 )"
+
+  # mvx.backend in the git config -- the rung the VERB shares.  --backend is
+  # command-line surface, but the config is read in the engine, so an in-session
+  # checkout honours it too: this is the assertion that keeps the two agreeing.
+  #
+  # HOME is redirected, and only inside these subshells, because `git config
+  # --global` means "wherever HOME points" and the developer's own ~/.gitconfig
+  # is not ours to write.  HOME rather than GIT_CONFIG_GLOBAL on purpose:
+  # mvx-git reads the config through libgit2, which finds the global file by
+  # searching HOME and never looks at that variable.
+  #
+  # Note there is no repository-level case here, and there cannot be for a
+  # clone: the files are materialised as part of the clone, before anything
+  # could set a config value in the repository being created.  Per-repository
+  # mvx.backend governs a later checkout in an account that already exists.
+  BKHOME="$WORK/bkhome"; mkdir -p "$BKHOME"
+  ( export HOME="$BKHOME"
+    git config --global user.email t@t; git config --global user.name t
+    git config --global mvx.backend lmdb
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-cfg >/dev/null 2>&1 )
+  te "the git config chooses it too"           "lmdb"   "$(bk_listf "$WORK/bk-cfg")"
+
+  # and the switch beats the config, or the order is not an order
+  ( export HOME="$BKHOME"
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend=sqlite "$BKA" bk-both >/dev/null 2>&1 )
+  te "the switch outranks the config"          "sqlite" "$(bk_listf "$WORK/bk-both")"
+fi
+
 say "-- a committed blob that ends in a newline is the same record (mv_git#258) --"
 # A record's attributes are SEPARATED by the mark, never terminated by one, so
 # the blob form ends on content.  A great many committed blobs end with a
