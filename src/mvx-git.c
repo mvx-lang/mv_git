@@ -702,17 +702,29 @@ static int run_accounts(const char *sub, int argc, char **argv, int subidx) {
 }
 
 int main(int argc, char **argv) {
-    /* --open-account / --no-open-account are mvx-git-only clone flags (git
+    /* --open-account / --no-open-account / --backend are mvx-git-only flags (git
        never sees them): check the clone out with the open account format turned
-       on, or decline it without being asked.  Strip them from the args before
-       anything parses or forwards them.  0 = undecided, and an open-form HEAD
-       asks (mv_git#88). */
+       on or decline it without being asked, and choose the backend its files
+       land on rather than inheriting the committed one (#273).  Strip them from
+       the args before anything parses or forwards them.  want_open 0 =
+       undecided, and an open-form HEAD asks (mv_git#88). */
     int want_open = 0;
     {
         int w = 1;
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--open-account") == 0) { want_open = 1; continue; }
             if (strcmp(argv[i], "--no-open-account") == 0) { want_open = -1; continue; }
+            /* --backend=<driver>: put this checkout's files on that backend
+               instead of the one they were committed on (#273).  Stripped here
+               with the others, because git must never see it. */
+            if (strncmp(argv[i], "--backend=", 10) == 0) {
+                mv_git_set_backend(argv[i] + 10);
+                continue;
+            }
+            if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+                mv_git_set_backend(argv[++i]);
+                continue;
+            }
             argv[w++] = argv[i];
         }
         argc = w;

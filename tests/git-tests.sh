@@ -1843,6 +1843,110 @@ NEXT I"
 te "all thirty of the account's own master-file records travel" "30" \
    "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
+# --- a checkout chooses its own backend (mv_git#273) -------------------------
+# Pluggable per-file backends are an MVX concept: UniData, UniVerse and jBASE
+# have no equivalent, so this is mvx-only and a no-op elsewhere.
+#
+# The committed %FILE% control names the backend a file WAS on.  That is a
+# default worth offering, not an instruction -- a clone of an lmdb account may
+# want to be a sqlite one -- so --backend and mvx.backend override it.
+if [ "$PLATFORM" = mvx ]; then
+
+  # CAN THIS mvx BIND A FILE TO A BACKEND AT ALL?
+  #
+  # Asked through CREATE-FILE ... USING, which is mvx's own binding surface and
+  # sits upstream of everything a checkout does: if mvx cannot put a file on a
+  # named backend and then list it under its own name, a checkout cannot either,
+  # and that is mvx's bug and not this suite's to catch.  mvx-lang/mvx#309 fixed
+  # the lmdb driver dropping a bound spec's "params\n" prefix, which created the
+  # file under a mangled name -- two rows in LISTF, the dictionary exposed beside
+  # them.  The probe was checked against a build with that fix removed and
+  # reports NOT CAPABLE there, so it detects the real thing rather than passing
+  # on an empty answer (mv_git#134's rule, applied to a skip).
+  #
+  # setup-mvx installs a published RELEASE, so CI runs whatever mvx last shipped
+  # and this block starts asserting on its own the release after #309.
+  BKCAP="$WORK/bkcap"; ACCT "$BKCAP"
+  "$MVX" -a "$BKCAP" -c 'CREATE-FILE ZZPROBE USING lmdb' >/dev/null 2>&1
+  BKABLE="$("$MVX" -a "$BKCAP" -c LISTF 2>&1 | awk '
+      $1=="ZZPROBE" && $2=="lmdb" {n++} /DICT\.ZZPROBE/{d++}
+      END {print (n==1 && !d) ? "yes" : "no"}')"
+
+  if [ "$BKABLE" != yes ]; then
+    skip "a checkout chooses its own backend (mv_git#273)" \
+         "this mvx cannot bind a file to lmdb and list it cleanly — no lmdb driver, or older than mvx#309"
+  else
+  say "-- a checkout puts files on the backend it is told to (mv_git#273) --"
+  BKA="$WORK/bkacct"; ACCT "$BKA"; LINK "$BKA"
+  CF "$BKA" BKPARTS
+  SEED "$BKA" 'OPEN "BKPARTS" TO F ELSE STOP
+WRITE "Widget":@AM:"9.99" ON F, "W1"'
+  ( cd "$BKA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add -A >/dev/null 2>&1
+    "$MVXGIT" commit -m base >/dev/null 2>&1 )
+
+  # WAS the file listed on, in the account it was committed FROM?  Read rather
+  # than assumed: the default backend is mvx's choice, not this suite's, and
+  # hard-coding today's answer would make this fail the day mvx changes it.
+  SRCBK="$("$MVX" -a "$BKA" -c LISTF 2>&1 | awk '$1=="BKPARTS"{print $2; exit}')"
+
+  # IS the file listed on backend $2, in account $1?  Answered yes/no rather
+  # than by printing the backend, because a row can be listed twice on an mvx
+  # without mvx#309 and then "print $2" yields two lines, which compares equal
+  # to neither backend and reads as a failure about the wrong thing.
+  bk_on() { "$MVX" -a "$1" -c LISTF 2>&1 |
+            awk -v d="$2" '$1=="BKPARTS" && $2==d {f=1} END {print f?"yes":"no"}'; }
+
+  # no switch: follow what was committed
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-plain >/dev/null 2>&1 )
+  te "no switch follows the committed backend" "yes" "$(bk_on "$WORK/bk-plain" "$SRCBK")"
+
+  # --backend: override it.  Asserted BOTH ways round -- on lmdb, and no longer
+  # on what it was committed on -- because "is it on lmdb" alone would also pass
+  # if the file were somehow listed on both.
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend=lmdb "$BKA" bk-lmdb >/dev/null 2>&1 )
+  te "--backend puts it somewhere else"        "yes" "$(bk_on "$WORK/bk-lmdb" lmdb)"
+  te "and it did not stay where it was"        "no"  "$(bk_on "$WORK/bk-lmdb" "$SRCBK")"
+
+  # and the records are actually there, on the backend that was asked for
+  RDB="$WORK/bkread.b"
+  printf 'OPEN "BKPARTS" TO F ELSE STOP\nREAD R FROM F,"W1" THEN\n   PRINT "got:":R<1>\nEND ELSE\n   PRINT "MISSING"\nEND\n' > "$RDB"
+  ( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$MVXC" "$RDB" -o "$WORK/bkread" >/dev/null 2>&1 )
+  t  "the records moved with it"               "got:Widget" \
+     "$( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$WORK/bkread" 2>&1 )"
+
+  # mvx.backend in the git config -- the rung the VERB shares.  --backend is
+  # command-line surface, but the config is read in the engine, so an in-session
+  # checkout honours it too: this is the assertion that keeps the two agreeing.
+  #
+  # HOME is redirected, and only inside these subshells, because `git config
+  # --global` means "wherever HOME points" and the developer's own ~/.gitconfig
+  # is not ours to write.  HOME rather than GIT_CONFIG_GLOBAL on purpose:
+  # mvx-git reads the config through libgit2, which finds the global file by
+  # searching HOME and never looks at that variable.
+  #
+  # Note there is no repository-level case here, and there cannot be for a
+  # clone: the files are materialised as part of the clone, before anything
+  # could set a config value in the repository being created.  Per-repository
+  # mvx.backend governs a later checkout in an account that already exists.
+  BKHOME="$WORK/bkhome"; mkdir -p "$BKHOME"
+  ( export HOME="$BKHOME"
+    git config --global user.email t@t; git config --global user.name t
+    git config --global mvx.backend lmdb
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-cfg >/dev/null 2>&1 )
+  te "the git config chooses it too"           "yes" "$(bk_on "$WORK/bk-cfg" lmdb)"
+
+  # and the switch beats the config, or the order is not an order.  The switch
+  # names what the account was committed on, so a switch that did NOT win would
+  # land the file on lmdb and be visible -- the case discriminates.
+  ( export HOME="$BKHOME"
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend="$SRCBK" "$BKA" bk-both >/dev/null 2>&1 )
+  te "the switch outranks the config"          "yes" "$(bk_on "$WORK/bk-both" "$SRCBK")"
+  te "so the config did not win"               "no"  "$(bk_on "$WORK/bk-both" lmdb)"
+  fi
+fi
+
 say "-- a committed blob that ends in a newline is the same record (mv_git#258) --"
 # A record's attributes are SEPARATED by the mark, never terminated by one, so
 # the blob form ends on content.  A great many committed blobs end with a

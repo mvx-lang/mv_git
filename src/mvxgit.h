@@ -192,6 +192,12 @@ const char *mv_git_id_item(void);
 const char *mv_git_prefix(void);
 int   mv_git_platform_dict_record(const char *file, const char *id);
 
+/* Which backend a checkout should put its files on, overriding what they were
+   committed on (#273).  Set from --backend before the engine runs; empty means
+   "whatever the git config or the committed control says".  Resolved in the
+   engine so the CLI and the in-session verb cannot disagree about it. */
+void mv_git_set_backend(const char *drv);
+
 /* A record's blob form -- the attribute mark translated to a newline, which is
    what decides the hash a record gets.  One rule, one place (#267): anything
    that needs to know what a record WOULD hash to asks here rather than
