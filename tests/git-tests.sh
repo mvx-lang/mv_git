@@ -1857,7 +1857,24 @@ te "all thirty of the account's own master-file records travel" "30" \
 #
 # Asserted on the STORE, not the listing: the question is whether a half was
 # invented, and only the backend's own shape answers that.
+#
+# CAN THIS mvx MAKE HALF A FILE AT ALL?  setup-mvx installs a published RELEASE
+# and this repo pins its tooling to the same one (mv_git#263), so CI runs
+# whatever mvx last shipped -- and CREATE-FILE DICT / DATA arrived in mvx#318
+# stage 4, after the current release.  Asked of the account rather than assumed,
+# so this block starts asserting on its own once a release carries it.
+hfcap=no
 if [ "$PLATFORM" = mvx ] && command -v sqlite3 >/dev/null 2>&1; then
+  HFPROBE="$WORK/hfprobe"; ACCT "$HFPROBE"
+  "$MVX" -a "$HFPROBE" -c 'CREATE-FILE DATA HFP' >/dev/null 2>&1
+  hfcap="$(sqlite3 "$HFPROBE/mvxdata.sqlite" '.tables' 2>/dev/null \
+             | tr -s ' ' '\n' | grep -cx 'HFP' | sed 's/^1$/yes/;s/^0$/no/')"
+fi
+if [ "$PLATFORM" = mvx ] && [ "$hfcap" != yes ]; then
+  skip "half a file survives a round trip (mvx#318)" \
+       "this mvx has no CREATE-FILE DICT / DATA -- it predates mvx#318 stage 4"
+fi
+if [ "$PLATFORM" = mvx ] && [ "$hfcap" = yes ]; then
   say "-- half a file survives a round trip (mvx#318) --"
   HFA="$WORK/halfacct"; ACCT "$HFA"
   "$MVX" -a "$HFA" -c 'CREATE-FILE DICT HSHARED' >/dev/null 2>&1
