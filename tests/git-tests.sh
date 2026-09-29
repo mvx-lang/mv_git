@@ -1843,6 +1843,56 @@ NEXT I"
 te "all thirty of the account's own master-file records travel" "30" \
    "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
+# --- half a file survives a round trip (mvx#318 stage 5b) --------------------
+# Half-files are an MVX feature for now: CREATE-FILE DICT makes a shared
+# dictionary, CREATE-FILE DATA a file that borrows one.  U2 has the same shapes
+# but mv_git's other arms cannot create them yet.
+#
+# The commit has to SAY which halves a file has, or a round trip invents the
+# missing one.  It says so with a trailing `halves=data` / `halves=dict` on the
+# control; absent means both, so every commit written before this reads
+# unchanged.  A data-only file has no control of its own to carry it -- %FILE%
+# lives in the dictionary and it has none -- so one is synthesised, which is
+# what the other ports already do for every file.
+#
+# Asserted on the STORE, not the listing: the question is whether a half was
+# invented, and only the backend's own shape answers that.
+if [ "$PLATFORM" = mvx ] && command -v sqlite3 >/dev/null 2>&1; then
+  say "-- half a file survives a round trip (mvx#318) --"
+  HFA="$WORK/halfacct"; ACCT "$HFA"
+  "$MVX" -a "$HFA" -c 'CREATE-FILE DICT HSHARED' >/dev/null 2>&1
+  "$MVX" -a "$HFA" -c 'CREATE-FILE DATA HDATA'   >/dev/null 2>&1
+  "$MVX" -a "$HFA" -c 'CREATE-FILE HBOTH'        >/dev/null 2>&1
+  mkdir -p "$HFA/plaintree"; printf 'not an MV file\n' > "$HFA/plaintree/README"
+  SEED "$HFA" 'OPEN "HDATA" TO F ELSE STOP
+WRITE "d" ON F,"K1"
+OPEN "DICT","HSHARED" TO D ELSE STOP
+WRITE "D":@AM:"1":@AM:"":@AM:"Name":@AM:"10L" ON D,"NAME"'
+  ( cd "$HFA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add -A >/dev/null 2>&1
+    "$MVXGIT" commit -m half >/dev/null 2>&1 )
+
+  te "the data-only file gets a control, saying so"  "hash halves=data" \
+     "$( cd "$HFA" && git cat-file -p 'HEAD:HDATA.DICT/%FILE%' 2>/dev/null )"
+  tn "and a plain directory does NOT get one"  "plaintree.DICT" \
+     "$( cd "$HFA" && git ls-tree -r --name-only HEAD )"
+
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$HFA" halfclone >/dev/null 2>&1 )
+  # EXACT names, one per line.  A substring test cannot tell HSHARED from
+  # DICT.HSHARED -- the second contains the first -- and asserting "no data half"
+  # that way passes on the very table it is meant to catch.
+  hct() { sqlite3 "$WORK/halfclone/mvxdata.sqlite" '.tables' 2>/dev/null \
+            | tr -s ' ' '\n' | grep -cx "$1"; }
+  te "the dictionary-only file keeps its dictionary" "1" "$(hct 'DICT.HSHARED')"
+  te "and gains no data half"                        "0" "$(hct 'HSHARED')"
+  te "the data-only file keeps its data"             "1" "$(hct 'HDATA')"
+  te "and gains no dictionary"                       "0" "$(hct 'DICT.HDATA')"
+  te "a whole file still has both"                   "1" "$(hct 'DICT.HBOTH')"
+  t  "and the plain tree is still a tree"               "not an MV file" \
+     "$(cat "$WORK/halfclone/plaintree/README" 2>/dev/null)"
+fi
+
 # --- a checkout chooses its own backend (mv_git#273) -------------------------
 # Pluggable per-file backends are an MVX concept: UniData, UniVerse and jBASE
 # have no equivalent, so this is mvx-only and a no-op elsewhere.

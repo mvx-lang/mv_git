@@ -3724,8 +3724,54 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
  * second one would be inventing content over the account's own. */
 static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
 #ifdef MVXGIT_MVXRT
-    (void)ctx; (void)rp; (void)name;
-    return;                     /* MVX: the file's control is its own record */
+    /* MVX's control IS a record, in the file's dictionary, and `add` stages it
+       -- EXCEPT for a file that has no dictionary (#318 stage 5b).  CREATE-FILE
+       DATA makes one, and then there is no record to stage, so the file has no
+       %FILE% in the commit at all.  That is not merely a missing class: "%FILE%
+       is a file's EXISTENCE in git -- a checkout creates the file from it", so
+       without one the file is known only by its records, and a checkout
+       materialises the git directory and calls it a directory file.
+       Synthesised here, exactly as the other ports already synthesise theirs,
+       and marked halves=data so a checkout makes no dictionary for it. */
+    {
+        /* NOT FOR A PLAIN DIRECTORY.  "has no dictionary" is true of every
+           directory in an account -- docs/, a source tree, anything -- because
+           MVX lists any directory as a dir file.  Synthesising a control for
+           those would declare them MV files in the commit, and a checkout would
+           rebuild them as files instead of restoring a plain tree.  The suite's
+           "a plain directory is not a deleted file" assertion watches for
+           exactly that, and it caught this.
+           A hash-backed file has no directory of its own, which is what
+           separates the data-only file stage 4 can make from a source tree.  A
+           DIRECTORY-backed data-only file is therefore still missed here, and
+           keeps the behaviour it has today -- worth fixing with the VOC pointer,
+           which is the only thing that knows for certain, once reading it from
+           here is warranted. */
+        struct stat dsb;
+        if (stat(name, &dsb) == 0 && S_ISDIR(dsb.st_mode)) return;
+        if (!backend_has_file(ctx, name)) return;
+
+        mv_value dv, sv, fv;
+        mv_init(&dv); mv_init(&sv); mv_init(&fv);
+        mv_set_str(&dv, "DICT", 4);
+        mv_set_str(&sv, name, (int64_t)strlen(name));
+        int havedict = mv_open(ctx, &dv, &sv, &fv);
+        mv_clear(&dv); mv_clear(&sv); mv_clear(&fv);
+        if (havedict) return;          /* it has one; its own record travels */
+
+        char ctl[700], path[600];
+        snprintf(ctl, sizeof ctl, "hash halves=data");
+        snprintf(path, sizeof path, "%s.DICT/%%FILE%%", name);
+        mv_value a0, a1, a2, out;
+        mv_init(&a0); mv_init(&a1); mv_init(&a2); mv_init(&out);
+        mv_set_str(&a0, rp, (int64_t)strlen(rp));
+        mv_set_str(&a1, path, (int64_t)strlen(path));
+        mv_set_str(&a2, ctl, (int64_t)strlen(ctl));
+        mv_value *av[4] = { &a0, &a1, &a2, &out };
+        mvx_sub_GITSTAGEBLOB(ctx, 4, av);
+        mv_clear(&a0); mv_clear(&a1); mv_clear(&a2); mv_clear(&out);
+        return;
+    }
 #else
     char cls[128] = "";
     if (mv_fileclass(ctx, name, cls, sizeof cls) <= 0 || !cls[0]) return;
@@ -4439,6 +4485,35 @@ static int is_mv_file(const char *name) {
     return 1;   /* no on-disk directory ⇒ LMDB-backed */
 }
 
+/* WHICH HALVES A CONTROL DECLARES (#318 stage 5b).
+ *
+ * A file may be data with no dictionary, or a dictionary with no data -- U2's
+ * CREATE.FILE DATA and DICT, and on MVX the way a SHARED dictionary is made.
+ * The committed control says so with a trailing `halves=data` or `halves=dict`;
+ * absent means both, so every control ever written stays correct and unchanged.
+ *
+ * Returns MVCTL_DATA, MVCTL_DICT, or both. */
+#define MVCTL_DATA 1
+#define MVCTL_DICT 2
+#define MVCTL_BOTH (MVCTL_DATA | MVCTL_DICT)
+
+static int control_halves(const char *c, int64_t cl) {
+    if (!c || cl <= 0) return MVCTL_BOTH;
+    for (int64_t i = 0; i + 7 <= cl; i++) {
+        if (strncasecmp(c + i, "halves=", 7) != 0) continue;
+        /* a whole field: the open form separates with a space, the native
+           record with a value mark */
+        if (i && c[i - 1] != ' ' && c[i - 1] != '\t' &&
+            (unsigned char)c[i - 1] != 0xFD) continue;
+        const char *v = c + i + 7;
+        int64_t vl = cl - (i + 7);
+        if (vl >= 4 && strncasecmp(v, "data", 4) == 0) return MVCTL_DATA;
+        if (vl >= 4 && strncasecmp(v, "dict", 4) == 0) return MVCTL_DICT;
+        return MVCTL_BOTH;
+    }
+    return MVCTL_BOTH;
+}
+
 /* The open-account CLASS of a %FILE% control's content: the native FILE<VM>type,
    the bare open "DIR"/"hash", and the extended "hash <modulo> DYNAMIC|STATIC"
    all reduce to "DIR" or "hash".  Returns the length written to `out`, or -1 if
@@ -4450,7 +4525,15 @@ static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
     while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
-    if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return 3; }
+    /* THE CLASS IS THE FIRST TOKEN, for both (#318 stage 5b).  "DIR" used to be
+       matched at exactly three bytes while "hash" was matched as a prefix, so
+       "hash 11 DYNAMIC" parsed and "DIR anything" did not.  A control may now
+       carry a trailing halves= value, and an asymmetry there would mean it
+       parsed on one class and not the other. */
+    if (cl >= 3 && strncasecmp(c, "DIR", 3) == 0 &&
+        (cl == 3 || c[3] == ' ' || c[3] == '\t')) {
+        snprintf(out, cap, "DIR"); return 3;
+    }
     /* "hash", or "hash <modulo> DYNAMIC|STATIC" — the class is just "hash". */
     if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) { snprintf(out, cap, "hash"); return 4; }
     if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
@@ -5555,10 +5638,21 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         char lbuf[320];
         const char *lbase = tree_to_local(base, lbuf, sizeof lbuf);
         mv_set_str(&spec, lbase, (int64_t)strlen(lbase));
-        if (type[0]) {
+        /* WHICH HALVES THE COMMIT SAYS THIS FILE HAS (#318 stage 5b).  Absent
+           means both, so every commit written before this reads unchanged.
+           MVX's CREATE-FILE takes DATA and DICT as a leading qualifier, and the
+           type follows it. */
+        char committed[MV_GIT_CTL_MAX];
+        int chl = head_control(repo, head, base, committed, sizeof committed);
+        int halves = (chl >= 0) ? control_halves(committed, chl) : MVCTL_BOTH;
+        const char *qual = (halves == MVCTL_DATA) ? "DATA "
+                         : (halves == MVCTL_DICT) ? "DICT " : "";
+        if (type[0] || qual[0]) {
+            char tbuf[200];
+            snprintf(tbuf, sizeof tbuf, "%s%s", qual, type);
             mv_value tv;
             mv_init(&tv);
-            mv_set_str(&tv, type, (int64_t)strlen(type));
+            mv_set_str(&tv, tbuf, (int64_t)strlen(tbuf));
             mv_createfile(ctx, &spec, &tv);
             mv_clear(&tv);
         } else {
