@@ -75,6 +75,7 @@ echo "built $OUT/mvgitd"
 $CC -O2 -fPIC -D_FILE_OFFSET_BITS=64 -DMVXGIT_GITD \
     -I"$SRC" $LG2_CFLAGS \
     "$SRC/uv-git.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/mvxgit.c" \
+    "$SRC/mvconn.c" \
     "$SRC/agentcmd.c" "$SRC/agentseed.c" \
     -DUVGIT_VERSION="\"$UGVER\"" \
     -o "$OUT/uv-git" $LG2_LIBS

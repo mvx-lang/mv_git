@@ -70,6 +70,7 @@ sh "$HERE/embed-agent.sh"
 "$CC" -std=c11 -O2 -DMVXGIT_GITD -DMVXGIT_UDT -DUDTGIT_VERSION="\"$UGVER\"" \
     -I"$SRC" $LG2CFLAGS -I"$UDTHOME/bin/include" \
     "$SRC/mvxgit.c" "$SRC/mvsession.c" "$SRC/agent_rt.c" "$SRC/agentcmd.c" "$SRC/agentseed.c" \
+    "$SRC/mvconn.c" \
     "$SRC/udt-git.c" \
     $LG2LIBS \
     -o udt-git

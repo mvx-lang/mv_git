@@ -29,12 +29,14 @@
 #define _POSIX_C_SOURCE 200809L   /* expose gmtime_r in <time.h> under -std=c11 */
 #endif
 
+#include "mvconn.h"
 #include "mvxgit.h"      /* selects the record backend at compile time */
 
 #include <ctype.h>
 #include <dirent.h>
 #include <fnmatch.h>
 #include <git2.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,6 +113,19 @@ static char *xlate(const char *p, int64_t n, char from, char to,
     *outn = n;
     return b;
 }
+
+/* A RECORD'S BLOB FORM, AND THE RULE LIVES HERE ONCE (#267).  An attribute mark
+   becomes a newline; that is the whole translation, and it decides what a record
+   hashes to.  uv-git's stock-account learner used to carry its own copy of it,
+   under a comment saying it had to "match that exactly or nothing ever compares
+   equal" -- a rule that must agree with the engine, written twice, free to
+   drift.  Exported so there is one of it.
+   The result is `*outlen` bytes and is NOT NUL-terminated, the same as every
+   internal caller expects; free it. */
+char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen) {
+    return xlate(rec, len, (char)0xFE, '\n', outlen);
+}
+
 
 typedef struct { char *d; size_t len, cap; } sbuf;
 
@@ -1136,6 +1151,93 @@ static int head_control(git_repository *repo, git_tree *head, const char *base,
     }
     git_tree_entry_free(te);
     return n;
+}
+
+/* --- which backend a checkout puts a file on (#273) ------------------------
+ *
+ * The committed %FILE% control names the backend the file WAS on.  That is the
+ * default worth offering, not an instruction: a clone of an lmdb account may
+ * well want to be a Postgres one, and until now it had no way to say so.
+ *
+ * Resolved ABOVE THE SEAM, in the engine, deliberately.  mv_bind_driver is one
+ * of the names each arm supplies, and the CLI and the in-session verb are built
+ * against different arms -- the CLI through libmvxc, the verb through libmvxrt --
+ * so a choice implemented in one arm would not reach the other.  The two must
+ * agree about what a checkout does, so the deciding happens here and the arms
+ * keep doing only what they already do: bind this file to this backend.
+ *
+ * Order, most specific first:
+ *   --backend on the command line   mv_git_set_backend(), this run only
+ *   mvx.backend in the git config   repository, then the user's global
+ *   the committed %FILE% control    what the account was on
+ *
+ * $MVXDRIVER is untouched and keeps its own job: the substitute to use when a
+ * wanted backend is absent, which is a different question from which one to
+ * want. */
+static char g_backend[64];
+
+void mv_git_set_backend(const char *drv) {
+    if (drv && *drv) snprintf(g_backend, sizeof g_backend, "%s", drv);
+    else g_backend[0] = '\0';
+}
+
+/* `mvx.backend` from the account's git config.  git's own level order gives us
+   the repository's answer and then the user's --global one, which is exactly the
+   precedence wanted, for free.
+   get_string, not get_bool: it is get_bool whose answer varied across libgit2
+   builds (see mvx-git's own reader), and a name is a string anyway. */
+static void config_backend(git_repository *repo, char *out, size_t cap) {
+    out[0] = '\0';
+    if (!repo) return;
+    git_config *cfg = NULL;
+    if (git_repository_config(&cfg, repo) != 0) return;
+    git_buf v = GIT_BUF_INIT;
+    if (git_config_get_string_buf(&v, cfg, "mvx.backend") == 0 && v.ptr && v.ptr[0])
+        snprintf(out, cap, "%s", v.ptr);
+    git_buf_dispose(&v);
+    git_config_free(cfg);
+}
+
+/* What this checkout should put `file` on, given what it was committed on. */
+static void backend_for(git_repository *repo, const char *committed,
+                        char *out, size_t cap) {
+    if (g_backend[0]) { snprintf(out, cap, "%s", g_backend); return; }
+    char cfg[64];
+    config_backend(repo, cfg, sizeof cfg);
+    if (cfg[0]) { snprintf(out, cap, "%s", cfg); return; }
+    snprintf(out, cap, "%s", committed ? committed : "");
+}
+
+/* IS THIS COMMITTED BLOB THIS RECORD, ALLOWING FOR A TERMINATOR (#258)?
+ *
+ * We write a record's blob form without a trailing newline, because a record's
+ * attributes are separated by the mark and not terminated by one.  Plenty of
+ * blobs already in repositories DO end with one: they were committed by plain
+ * git from a working tree, and editors and build steps terminate text files.
+ * Comparing the two byte for byte then reports every such record as modified,
+ * for ever, and the account never reads clean -- which is where mv_package
+ * ended up (#258).
+ *
+ * So the comparison forgives exactly one trailing newline on the committed
+ * side.  Tolerant on read, strict on write: nothing here changes what we
+ * produce, only what we accept as already equal to it.
+ *
+ * Only consulted when the oids differ, so the usual path costs nothing. */
+static int blob_is_record(git_repository *repo, const git_oid *have,
+                          const git_oid *want) {
+    if (git_oid_equal(have, want)) return 1;
+    git_blob *b = NULL;
+    if (git_blob_lookup(&b, repo, have) != 0) return 0;
+    const char *c = git_blob_rawcontent(b);
+    int64_t n = (int64_t)git_blob_rawsize(b);
+    int same = 0;
+    if (n > 0 && c[n - 1] == '\n') {
+        git_oid trimmed;
+        if (git_odb_hash(&trimmed, c, (size_t)(n - 1), GIT_OBJECT_BLOB) == 0)
+            same = git_oid_equal(&trimmed, want);
+    }
+    git_blob_free(b);
+    return same;
 }
 
 /* Blob oid of a record's current content (translated, not stored). */
@@ -3622,8 +3724,54 @@ void mvx_sub_GITSTAGEBLOB(mv_ctx *ctx, int32_t argc, mv_value **argv);
  * second one would be inventing content over the account's own. */
 static void stage_file_control(mv_ctx *ctx, const char *rp, const char *name) {
 #ifdef MVXGIT_MVXRT
-    (void)ctx; (void)rp; (void)name;
-    return;                     /* MVX: the file's control is its own record */
+    /* MVX's control IS a record, in the file's dictionary, and `add` stages it
+       -- EXCEPT for a file that has no dictionary (#318 stage 5b).  CREATE-FILE
+       DATA makes one, and then there is no record to stage, so the file has no
+       %FILE% in the commit at all.  That is not merely a missing class: "%FILE%
+       is a file's EXISTENCE in git -- a checkout creates the file from it", so
+       without one the file is known only by its records, and a checkout
+       materialises the git directory and calls it a directory file.
+       Synthesised here, exactly as the other ports already synthesise theirs,
+       and marked halves=data so a checkout makes no dictionary for it. */
+    {
+        /* NOT FOR A PLAIN DIRECTORY.  "has no dictionary" is true of every
+           directory in an account -- docs/, a source tree, anything -- because
+           MVX lists any directory as a dir file.  Synthesising a control for
+           those would declare them MV files in the commit, and a checkout would
+           rebuild them as files instead of restoring a plain tree.  The suite's
+           "a plain directory is not a deleted file" assertion watches for
+           exactly that, and it caught this.
+           A hash-backed file has no directory of its own, which is what
+           separates the data-only file stage 4 can make from a source tree.  A
+           DIRECTORY-backed data-only file is therefore still missed here, and
+           keeps the behaviour it has today -- worth fixing with the VOC pointer,
+           which is the only thing that knows for certain, once reading it from
+           here is warranted. */
+        struct stat dsb;
+        if (stat(name, &dsb) == 0 && S_ISDIR(dsb.st_mode)) return;
+        if (!backend_has_file(ctx, name)) return;
+
+        mv_value dv, sv, fv;
+        mv_init(&dv); mv_init(&sv); mv_init(&fv);
+        mv_set_str(&dv, "DICT", 4);
+        mv_set_str(&sv, name, (int64_t)strlen(name));
+        int havedict = mv_open(ctx, &dv, &sv, &fv);
+        mv_clear(&dv); mv_clear(&sv); mv_clear(&fv);
+        if (havedict) return;          /* it has one; its own record travels */
+
+        char ctl[700], path[600];
+        snprintf(ctl, sizeof ctl, "hash halves=data");
+        snprintf(path, sizeof path, "%s.DICT/%%FILE%%", name);
+        mv_value a0, a1, a2, out;
+        mv_init(&a0); mv_init(&a1); mv_init(&a2); mv_init(&out);
+        mv_set_str(&a0, rp, (int64_t)strlen(rp));
+        mv_set_str(&a1, path, (int64_t)strlen(path));
+        mv_set_str(&a2, ctl, (int64_t)strlen(ctl));
+        mv_value *av[4] = { &a0, &a1, &a2, &out };
+        mvx_sub_GITSTAGEBLOB(ctx, 4, av);
+        mv_clear(&a0); mv_clear(&a1); mv_clear(&a2); mv_clear(&out);
+        return;
+    }
 #else
     char cls[128] = "";
     if (mv_fileclass(ctx, name, cls, sizeof cls) <= 0 || !cls[0]) return;
@@ -4337,6 +4485,35 @@ static int is_mv_file(const char *name) {
     return 1;   /* no on-disk directory ⇒ LMDB-backed */
 }
 
+/* WHICH HALVES A CONTROL DECLARES (#318 stage 5b).
+ *
+ * A file may be data with no dictionary, or a dictionary with no data -- U2's
+ * CREATE.FILE DATA and DICT, and on MVX the way a SHARED dictionary is made.
+ * The committed control says so with a trailing `halves=data` or `halves=dict`;
+ * absent means both, so every control ever written stays correct and unchanged.
+ *
+ * Returns MVCTL_DATA, MVCTL_DICT, or both. */
+#define MVCTL_DATA 1
+#define MVCTL_DICT 2
+#define MVCTL_BOTH (MVCTL_DATA | MVCTL_DICT)
+
+static int control_halves(const char *c, int64_t cl) {
+    if (!c || cl <= 0) return MVCTL_BOTH;
+    for (int64_t i = 0; i + 7 <= cl; i++) {
+        if (strncasecmp(c + i, "halves=", 7) != 0) continue;
+        /* a whole field: the open form separates with a space, the native
+           record with a value mark */
+        if (i && c[i - 1] != ' ' && c[i - 1] != '\t' &&
+            (unsigned char)c[i - 1] != 0xFD) continue;
+        const char *v = c + i + 7;
+        int64_t vl = cl - (i + 7);
+        if (vl >= 4 && strncasecmp(v, "data", 4) == 0) return MVCTL_DATA;
+        if (vl >= 4 && strncasecmp(v, "dict", 4) == 0) return MVCTL_DICT;
+        return MVCTL_BOTH;
+    }
+    return MVCTL_BOTH;
+}
+
 /* The open-account CLASS of a %FILE% control's content: the native FILE<VM>type,
    the bare open "DIR"/"hash", and the extended "hash <modulo> DYNAMIC|STATIC"
    all reduce to "DIR" or "hash".  Returns the length written to `out`, or -1 if
@@ -4348,7 +4525,15 @@ static int control_open(const char *c, int64_t cl, char *out, size_t cap) {
     while (cl > 0 && (c[cl - 1] == '\n' || c[cl - 1] == '\r' ||
                       c[cl - 1] == ' ' || c[cl - 1] == '\t'))
         cl--;
-    if (cl == 3 && strncasecmp(c, "DIR", 3) == 0) { snprintf(out, cap, "DIR"); return 3; }
+    /* THE CLASS IS THE FIRST TOKEN, for both (#318 stage 5b).  "DIR" used to be
+       matched at exactly three bytes while "hash" was matched as a prefix, so
+       "hash 11 DYNAMIC" parsed and "DIR anything" did not.  A control may now
+       carry a trailing halves= value, and an asymmetry there would mean it
+       parsed on one class and not the other. */
+    if (cl >= 3 && strncasecmp(c, "DIR", 3) == 0 &&
+        (cl == 3 || c[3] == ' ' || c[3] == '\t')) {
+        snprintf(out, cap, "DIR"); return 3;
+    }
     /* "hash", or "hash <modulo> DYNAMIC|STATIC" — the class is just "hash". */
     if (cl >= 4 && strncasecmp(c, "hash", 4) == 0) { snprintf(out, cap, "hash"); return 4; }
     if (cl >= 5 && memcmp(c, "FILE", 4) == 0 && (unsigned char)c[4] == 0xFD) {
@@ -4569,7 +4754,7 @@ void mvx_sub_GITSTATUS(mv_ctx *ctx, int32_t argc, mv_value **argv) {
                     char line[700];
                     snprintf(line, sizeof line, "?? %s", path);
                     sb_line(&s, line);
-                } else if (!git_oid_equal(&entry->id, &woid)) {
+                } else if (!blob_is_record(repo, &entry->id, &woid)) {
                     char line[700];
                     snprintf(line, sizeof line, " M %s", path);
                     sb_line(&s, line);
@@ -5070,7 +5255,7 @@ static void diff_run(mv_ctx *ctx, int32_t argc, mv_value **argv, int unified) {
             int changed = 1;
             if (git_odb_hash(&woid, buf ? buf : "", (size_t)bl,
                              GIT_OBJECT_BLOB) == 0)
-                changed = !git_oid_equal(&woid, &e->id);
+                changed = !blob_is_record(repo, &e->id, &woid);
             if (changed) {
                 char hdr[700];
                 snprintf(hdr, sizeof hdr, "diff %s", e->path);
@@ -5411,7 +5596,11 @@ static void file_type_of(git_repository *repo, git_tree *head, const char *base,
            a file silently made somewhere nobody chose. */
         char drv[64];
         control_driver(bc, bl, drv, sizeof drv);
-        if (drv[0]) mvx_bind_driver(base, drv);
+        /* What it was committed on is the default; --backend or mvx.backend
+           override it (#273). */
+        char want[64];
+        backend_for(repo, drv[0] ? drv : NULL, want, sizeof want);
+        if (want[0]) mv_bind_driver(base, want);
 #endif
         git_blob_free(b);
     }
@@ -5449,10 +5638,21 @@ static void materialize_file(mv_ctx *ctx, git_repository *repo, git_tree *head,
         char lbuf[320];
         const char *lbase = tree_to_local(base, lbuf, sizeof lbuf);
         mv_set_str(&spec, lbase, (int64_t)strlen(lbase));
-        if (type[0]) {
+        /* WHICH HALVES THE COMMIT SAYS THIS FILE HAS (#318 stage 5b).  Absent
+           means both, so every commit written before this reads unchanged.
+           MVX's CREATE-FILE takes DATA and DICT as a leading qualifier, and the
+           type follows it. */
+        char committed[MV_GIT_CTL_MAX];
+        int chl = head_control(repo, head, base, committed, sizeof committed);
+        int halves = (chl >= 0) ? control_halves(committed, chl) : MVCTL_BOTH;
+        const char *qual = (halves == MVCTL_DATA) ? "DATA "
+                         : (halves == MVCTL_DICT) ? "DICT " : "";
+        if (type[0] || qual[0]) {
+            char tbuf[200];
+            snprintf(tbuf, sizeof tbuf, "%s%s", qual, type);
             mv_value tv;
             mv_init(&tv);
-            mv_set_str(&tv, type, (int64_t)strlen(type));
+            mv_set_str(&tv, tbuf, (int64_t)strlen(tbuf));
             mv_createfile(ctx, &spec, &tv);
             mv_clear(&tv);
         } else {
@@ -6998,8 +7198,120 @@ void mv_git_batch_end(void) {
    carry binary: a committed record may contain NULs, so a caller that measures
    the result with strlen would truncate it and lose data silently.  Text-output
    callers pass NULL and use the NUL terminator as before. */
+#ifdef MVXGIT_MVXRT
+/* --- surviving an allocation failure (mv_git#261) -------------------------
+ * Every mv_fatal in this engine is out of memory -- there is no MV condition
+ * that aborts, because those already come back as the output string.  Out of
+ * memory used to abort anyway, which was fine when mvx-git was a command and
+ * is not now that a library drives it: a binding holding a session open across
+ * requests should get an error, not lose the process.
+ *
+ * INTERCEPTED AT THE ENTRY POINT, NOT AT THE CALL SITES.  The eight sites are
+ * inside small helpers (sb_put, ns_add, xlate) with many callers, and
+ * threading a failure back through all of them would touch far more code than
+ * the condition is worth.  run_sub_len is the funnel every engine entry point
+ * already goes through, so one guard covers all of them.
+ *
+ * WHAT IT COSTS, honestly: the unwind skips the intermediate frames, so
+ * whatever they held -- a git_repository, a buffer -- leaks.  For an
+ * allocation failure that is the better trade: the process keeps running and
+ * the caller is told.  It would not be, for a routine error.
+ *
+ * Only the OUTERMOST call guards, so a nested entry point unwinds to the one
+ * the caller is actually in.  Off MVX this is absent entirely -- udt-git and
+ * jbase-git keep their own mv_fatal. */
+#include <setjmp.h>
+static jmp_buf mvxg_unwind;
+static int     mvxg_guarded;
+static char    mvxg_fatal_msg[512];
+
+void mvxgit_fatal(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(mvxg_fatal_msg, sizeof mvxg_fatal_msg, fmt, ap);
+    va_end(ap);
+    if (mvxg_guarded) {
+        mvxg_guarded = 0;
+        longjmp(mvxg_unwind, 1);
+    }
+    /* No guard -- called straight from BASIC, where the runtime's own
+       behaviour is what a program expects. */
+    mv_hard_fatal("%s", mvxg_fatal_msg);
+}
+#endif
+
+#ifdef MVXGIT_MVXRT
+/* --- what the mvx arm answers for itself (#265) ---------------------------
+ * These used to be #defines onto mvx_openaccount / mvx_voc_class.  They are
+ * ours: nothing in mvx calls either, and mvx's own comments say what they are
+ * for -- "for the record-git filter", "see mv_voc_class in the record-git
+ * engine".  udt, jbase and the agent already carry their own; only this arm
+ * borrowed, because the #define was available. */
+
+/* The account's `mvx.openaccount` git config, surfaced as $MVX_OPENACCOUNT by
+ * the driver's connection (mvconn_export_open_account).  THE REPO IS WHERE THE
+ * ANSWER LIVES; the variable is only how it reaches the engine's deep call
+ * sites, which have no connection to ask.  (The #265 version of this comment
+ * named gitcallc.c as one of the front ends doing it -- that file was dead,
+ * left behind by gitcallcb.c and in no build script since #7.) */
+int mv_openaccount(void) {
+    /* ONE reading of the boolean, shared with the CLI side (mv_git#267).
+       These four arms had two spellings between them, and neither agreed
+       with the CLI's: "false" was ON here and OFF there. */
+    return mvconn_env_true(getenv("MVX_OPENACCOUNT"));
+}
+
+/* Classify a master-VOC record by its MVX type code: 0 keep, 1 always drop,
+ * 2 drop in the open interchange only.
+ *
+ * A CATALOGUED VERB IS REBUILT, NOT CARRIED.  `CATALOG BP MYPROG` writes `V` +
+ * CATALOG/MYPROG, and CATALOG/ is furniture that never travels (#130) -- so a
+ * committed record would name a directory the clone does not have.  BP travels
+ * and BUILD re-catalogues from it, so the record is DERIVED, and a wholesale
+ * add leaves it out; naming it explicitly still stages it.
+ *
+ * Pointers are dropped in the open interchange only, because the portable form
+ * carries the file type as <file>.DICT/%FILE% instead.  (Contrast UniData,
+ * whose account VOC is populated with the system verbs, so its classifier has
+ * more to drop -- which is exactly why each platform defines its own set.) */
+int mv_voc_class(const char *type, int64_t len) {
+    static const struct { const char *t; int c; } tbl[] = {
+        {"V", 1},                           /* catalogued verb: derived */
+        {"F", 2}, {"DIR", 2}, {"Q", 2},     /* file / directory / q-pointer */
+        {NULL, 0}
+    };
+    if (!type || len <= 0) return 0;
+    for (int i = 0; tbl[i].t; i++) {
+        size_t sl = strlen(tbl[i].t);
+        if ((size_t)len == sl && strncasecmp(type, tbl[i].t, sl) == 0)
+            return tbl[i].c;
+    }
+    return 0;
+}
+#endif
+
 static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
                          int64_t *outlen) {
+#ifdef MVXGIT_MVXRT
+    volatile int guard_is_mine = 0;
+    if (!mvxg_guarded) {
+        guard_is_mine = 1;
+        mvxg_guarded = 1;
+        if (setjmp(mvxg_unwind)) {
+            /* TEST HOOK, and the reason there is one: a path that cannot be
+               reached on purpose is a path that rots (mvx: "add a switch for
+               testability").  MVXGIT_TEST_FATAL makes the next engine call
+               take this branch. */
+            char *m = malloc(sizeof mvxg_fatal_msg + 16);
+            if (!m) mv_hard_fatal("%s", mvxg_fatal_msg);
+            snprintf(m, sizeof mvxg_fatal_msg + 16, "mvx-git: %s",
+                     mvxg_fatal_msg);
+            if (outlen) *outlen = (int64_t)strlen(m);
+            return m;
+        }
+    }
+    if (getenv("MVXGIT_TEST_FATAL")) mv_fatal("forced allocation failure");
+#endif
     mv_value vals[8];
     mv_value *argv[8];
     for (int i = 0; i < n; i++) {
@@ -7019,6 +7331,9 @@ static char *run_sub_len(sub_fn fn, mv_ctx *ctx, const char **args, int n,
     r[len] = '\0';
     if (outlen) *outlen = len;
     for (int i = 0; i <= n; i++) mv_clear(&vals[i]);
+#ifdef MVXGIT_MVXRT
+    if (guard_is_mine) mvxg_guarded = 0;
+#endif
     return r;
 }
 

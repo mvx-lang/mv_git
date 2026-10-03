@@ -50,6 +50,16 @@
 #  include "udtgit_rt.h"
 #elif defined(MVXGIT_JBASE)
 #  include "jbasegit_rt.h"
+#elif defined(MVXGIT_MVXC)
+/* THE SAME PLATFORM, REACHED THROUGH THE CLIENT LIBRARY (#267 stage 2).  Both
+   macros, and they mean different things -- the pattern build-udt.sh already
+   uses.  MVXGIT_MVXRT stays defined because it selects MVX *behaviour*: the
+   descriptor on disk, what the VOC classifier drops, the paths guarded with
+   #ifdef MVXGIT_MVXRT throughout the engine.  MVXGIT_MVXC only changes how the
+   records are reached -- libmvxc rather than libmvxrt -- so mvx-git talks to MVX
+   through the same contract every other consumer does. */
+#  define MVXGIT_MVXRT 1
+#  include "mvxcgit_rt.h"
 #else
 #  define MVXGIT_MVXRT 1        /* the native MVX runtime is the backend */
 #  include "mvx_runtime.h"
@@ -69,9 +79,35 @@
 #  define mv_createfile   mvx_createfile
 #  define mv_deletefile   mvx_deletefile
 #  define mv_filelist     mvx_filelist
-#  define mv_openaccount  mvx_openaccount
-#  define mv_fatal        mvx_fatal
-#  define mv_voc_class    mvx_voc_class
+/* Binding a file to a backend, and the abort of last resort.  Named through the
+   seam (#267) because the client arm answers both differently: it has no runtime
+   to call, and it must ask about a backend rather than prompt from inside the
+   library. */
+#  define mv_bind_driver  mvx_bind_driver
+#  define mv_hard_fatal   mvx_fatal
+#endif
+
+/* MVX BEHAVIOUR, SHARED BY BOTH MVX ARMS -- the runtime one and the client one
+   (#267 stage 2).  These are not transport, so they do not belong in either
+   branch above; mvxgit.c defines all three under the same MVXGIT_MVXRT guard
+   that both arms set.
+   NOT mvx_openaccount / mvx_voc_class (#265).  Both are OURS: the open account
+   format is a git-boundary translation, and the VOC classifier is the
+   record-git filter -- nothing in mvx calls either, and mvx's own headers say
+   so ("for the record-git filter", "see mv_voc_class in the record-git
+   engine").  The udt, jbase and agent arms already carry their own; the mvx arm
+   borrowed mvx's only because the #define was there.
+   NOT mvx_fatal either.  mvx-git is driven by other programs now -- the mvx
+   client library, and through it a binding that holds a session open across many
+   requests -- and a library that kills its host because one allocation failed is
+   unusable.  mvxgit_fatal records the message and unwinds to the engine entry
+   point, which already returns the user-visible string.  See mvxgit.c. */
+#ifdef MVXGIT_MVXRT
+int mv_openaccount(void);
+int mv_voc_class(const char *type, int64_t len);
+void mvxgit_fatal(const char *fmt, ...)
+    __attribute__((noreturn, format(printf, 1, 2)));
+#  define mv_fatal        mvxgit_fatal
 #endif
 
 /* Bring libgit2 up the way this product needs it (see mvxgit.c).  Every
@@ -155,6 +191,19 @@ const char *mv_git_id_item(void);
 /* The account prefix in force ("" or "acctA/") — see mv_git_set_prefix. */
 const char *mv_git_prefix(void);
 int   mv_git_platform_dict_record(const char *file, const char *id);
+
+/* Which backend a checkout should put its files on, overriding what they were
+   committed on (#273).  Set from --backend before the engine runs; empty means
+   "whatever the git config or the committed control says".  Resolved in the
+   engine so the CLI and the in-session verb cannot disagree about it. */
+void mv_git_set_backend(const char *drv);
+
+/* A record's blob form -- the attribute mark translated to a newline, which is
+   what decides the hash a record gets.  One rule, one place (#267): anything
+   that needs to know what a record WOULD hash to asks here rather than
+   reimplementing it and hoping the two stay equal.  `*outlen` bytes, not
+   NUL-terminated; free it. */
+char *mv_git_blobform(const char *rec, int64_t len, int64_t *outlen);
 char *mv_git_project(mv_ctx *ctx, const char *repo, const char *file,
                      const char *id, const char *rec);
 char *mv_git_filter_furniture(const char *list);

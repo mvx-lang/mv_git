@@ -23,6 +23,7 @@
 
 #define _POSIX_C_SOURCE 200809L   /* setenv, chdir under -std=c11 */
 
+#include "mvconn.h"
 #include "mvxgit.h"
 #include "mvsession.h"
 
@@ -67,27 +68,21 @@ static void deploy_git_verb(void);
 /* True if the account (cwd) opts into the open interchange format via git config
    `mvx.openaccount = true` — the same flag mvx-git honours.  Plain text scan of
    .git/config so the result matches across libgit2 versions. */
+/* udt-git works in the account it was run in, so one connection serves the run
+   (mv_git#267).  The --open-account flag is applied on every call rather than
+   once at creation: it is set while the arguments are parsed, which can happen
+   after the connection is first used. */
+static int g_open_flag;                 /* 1 = --open-account, -1 = --no-, 0 = ask */
+
+static mv_conn *conn(void) {
+    static mv_conn *c;
+    if (!c) c = mvconn_open(".");
+    if (g_open_flag) mvconn_set_open_account(c, g_open_flag > 0);
+    return c;
+}
+
 static int open_account_on(void) {
-    FILE *f = fopen(".git/config", "r");
-    if (!f) return 0;
-    char line[512];
-    int in_mvx = 0, on = 0;
-    while (fgets(line, sizeof line, f)) {
-        char *s = line;
-        while (*s == ' ' || *s == '\t') s++;
-        if (*s == '[') { in_mvx = strncasecmp(s, "[mvx]", 5) == 0; continue; }
-        if (in_mvx && strncasecmp(s, "openaccount", 11) == 0) {
-            char *eq = strchr(s, '=');
-            if (eq) {
-                eq++;
-                while (*eq == ' ' || *eq == '\t') eq++;
-                on = strncasecmp(eq, "true", 4) == 0 || *eq == '1' ||
-                     strncasecmp(eq, "yes", 3) == 0;
-            }
-        }
-    }
-    fclose(f);
-    return on;
+    return mvconn_open_account(conn());
 }
 
 /* Stage the whole account in the open (portable) form: every local file (from
@@ -388,32 +383,8 @@ static char *collect_index_changes(mv_ctx *ctx, const char *repo, int *ncreate,
    mvx-git uses (mv_git#88).  Declined by --no-open-account / the env, or by
    answering no; with no terminal the answer is yes, said out loud, because
    erroring would break every scripted clone. */
-static int g_open_flag;                 /* 1 = --open-account, -1 = --no-, 0 = ask */
-
 static int ask_open_account(const char *dir) {
-    if (g_open_flag) return g_open_flag > 0;
-    const char *env = getenv("MVXGIT_OPEN_ACCOUNT");
-    if (env && env[0])
-        return !(env[0] == '0' || !strcasecmp(env, "no") ||
-                 !strcasecmp(env, "false") || !strcasecmp(env, "off"));
-    if (!isatty(STDIN_FILENO)) {
-        fprintf(stderr,
-                "udt-git: '%s' was committed in the open account format — "
-                "checking it out as an open account.\n"
-                "         (--no-open-account, or MVXGIT_OPEN_ACCOUNT=0, for a "
-                "native checkout instead)\n", dir);
-        return 1;
-    }
-    fprintf(stderr,
-            "\n'%s' was committed in the open account format: its dictionaries "
-            "and file\ncontrols are in the portable shape that moves between MV "
-            "platforms.  Keeping\nit open is what lets this account travel back "
-            "the same way.\n\n"
-            "Make it an open account? [Y/n] ", dir);
-    fflush(stderr);
-    char buf[16];
-    if (!fgets(buf, sizeof buf, stdin)) return 1;
-    return !(buf[0] == 'n' || buf[0] == 'N');
+    return mvconn_ask_open_account(conn(), "udt-git", dir);
 }
 
 static int runcmd(const char *const cmd[]);
@@ -656,10 +627,8 @@ have_account:
            FOREIGN-native checkout should become open, or an open one should have
            the flag enabled -- so it must not be asked a second time here. */
         const char *chk[] = { "git", "cat-file", "-e", "HEAD:.mv-account", NULL };
-        if (!adopted && runcmd_quiet(chk) == 0 && ask_open_account(dir)) {
-            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
-            runcmd(cfg);
-        }
+        if (!adopted && runcmd_quiet(chk) == 0 && ask_open_account(dir))
+            mvconn_persist_open_account(conn());
     }
 
     /* 3. put an agent in it BEFORE materialising.  Records are reached through
@@ -681,8 +650,7 @@ have_account:
     char acctpath[4096];
     if (getcwd(acctpath, sizeof acctpath))
         setenv("MVXACCOUNT", acctpath, 1);
-    if (open_account_on())
-        setenv("MVX_OPENACCOUNT", "1", 1);
+    mvconn_export_open_account(conn());
 
     mv_ctx *ctx = mv_ctx_create();
     /* Not the literal ".git": an account can be a SUBDIRECTORY of a repository
@@ -793,18 +761,14 @@ static int do_adopt(int argc, char **argv, int i) {
                         "format, but this repository does not have the flag "
                         "set -- without it the next commit writes the native "
                         "form over it.\n", dir);
-        if (ask_open_account(dir)) {
-            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
-            runcmd(cfg);
-        }
+        if (ask_open_account(dir))
+            mvconn_persist_open_account(conn());
         break;
     case MV_ADOPT_ASK_CONVERT:
         fprintf(stderr, "udt-git adopt: %s is a native %s account and will be "
                         "converted to a UniData one.\n", dir, found);
-        if (ask_open_account(dir)) {
-            const char *cfg[] = { "git", "config", "mvx.openaccount", "true", NULL };
-            runcmd(cfg);
-        }
+        if (ask_open_account(dir))
+            mvconn_persist_open_account(conn());
         break;
     default:
         break;                  /* native to this system: nothing to ask */
@@ -1121,8 +1085,7 @@ int main(int argc, char **argv) {
        platform's system VOC items and synthesise the portable %FILE% /
        .mv-account form.  A plain commit keeps everything native, so it can be
        checked out into another UniData instance unchanged. */
-    if (open_account_on())
-        setenv("MVX_OPENACCOUNT", "1", 1);
+    mvconn_export_open_account(conn());
 
     mv_ctx *ctx = mv_ctx_create();
     /* THE REPOSITORY MAY BE ABOVE THE ACCOUNT (mv_git#44).  An account can sit

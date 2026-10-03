@@ -1843,6 +1843,211 @@ NEXT I"
 te "all thirty of the account's own master-file records travel" "30" \
    "$( cd "$MF" && git diff --cached --name-only | grep -c "^$MASTER/MYPARA" )"
 
+# --- half a file survives a round trip (mvx#318 stage 5b) --------------------
+# Half-files are an MVX feature for now: CREATE-FILE DICT makes a shared
+# dictionary, CREATE-FILE DATA a file that borrows one.  U2 has the same shapes
+# but mv_git's other arms cannot create them yet.
+#
+# The commit has to SAY which halves a file has, or a round trip invents the
+# missing one.  It says so with a trailing `halves=data` / `halves=dict` on the
+# control; absent means both, so every commit written before this reads
+# unchanged.  A data-only file has no control of its own to carry it -- %FILE%
+# lives in the dictionary and it has none -- so one is synthesised, which is
+# what the other ports already do for every file.
+#
+# Asserted on the STORE, not the listing: the question is whether a half was
+# invented, and only the backend's own shape answers that.
+#
+# CAN THIS mvx MAKE HALF A FILE AT ALL?  setup-mvx installs a published RELEASE
+# and this repo pins its tooling to the same one (mv_git#263), so CI runs
+# whatever mvx last shipped -- and CREATE-FILE DICT / DATA arrived in mvx#318
+# stage 4, after the current release.  Asked of the account rather than assumed,
+# so this block starts asserting on its own once a release carries it.
+hfcap=no
+if [ "$PLATFORM" = mvx ] && command -v sqlite3 >/dev/null 2>&1; then
+  HFPROBE="$WORK/hfprobe"; ACCT "$HFPROBE"
+  "$MVX" -a "$HFPROBE" -c 'CREATE-FILE DATA HFP' >/dev/null 2>&1
+  hfcap="$(sqlite3 "$HFPROBE/mvxdata.sqlite" '.tables' 2>/dev/null \
+             | tr -s ' ' '\n' | grep -cx 'HFP' | sed 's/^1$/yes/;s/^0$/no/')"
+fi
+if [ "$PLATFORM" = mvx ] && [ "$hfcap" != yes ]; then
+  skip "half a file survives a round trip (mvx#318)" \
+       "this mvx has no CREATE-FILE DICT / DATA -- it predates mvx#318 stage 4"
+fi
+if [ "$PLATFORM" = mvx ] && [ "$hfcap" = yes ]; then
+  say "-- half a file survives a round trip (mvx#318) --"
+  HFA="$WORK/halfacct"; ACCT "$HFA"
+  "$MVX" -a "$HFA" -c 'CREATE-FILE DICT HSHARED' >/dev/null 2>&1
+  "$MVX" -a "$HFA" -c 'CREATE-FILE DATA HDATA'   >/dev/null 2>&1
+  "$MVX" -a "$HFA" -c 'CREATE-FILE HBOTH'        >/dev/null 2>&1
+  mkdir -p "$HFA/plaintree"; printf 'not an MV file\n' > "$HFA/plaintree/README"
+  SEED "$HFA" 'OPEN "HDATA" TO F ELSE STOP
+WRITE "d" ON F,"K1"
+OPEN "DICT","HSHARED" TO D ELSE STOP
+WRITE "D":@AM:"1":@AM:"":@AM:"Name":@AM:"10L" ON D,"NAME"'
+  ( cd "$HFA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add -A >/dev/null 2>&1
+    "$MVXGIT" commit -m half >/dev/null 2>&1 )
+
+  te "the data-only file gets a control, saying so"  "hash halves=data" \
+     "$( cd "$HFA" && git cat-file -p 'HEAD:HDATA.DICT/%FILE%' 2>/dev/null )"
+  tn "and a plain directory does NOT get one"  "plaintree.DICT" \
+     "$( cd "$HFA" && git ls-tree -r --name-only HEAD )"
+
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$HFA" halfclone >/dev/null 2>&1 )
+  # EXACT names, one per line.  A substring test cannot tell HSHARED from
+  # DICT.HSHARED -- the second contains the first -- and asserting "no data half"
+  # that way passes on the very table it is meant to catch.
+  hct() { sqlite3 "$WORK/halfclone/mvxdata.sqlite" '.tables' 2>/dev/null \
+            | tr -s ' ' '\n' | grep -cx "$1"; }
+  te "the dictionary-only file keeps its dictionary" "1" "$(hct 'DICT.HSHARED')"
+  te "and gains no data half"                        "0" "$(hct 'HSHARED')"
+  te "the data-only file keeps its data"             "1" "$(hct 'HDATA')"
+  te "and gains no dictionary"                       "0" "$(hct 'DICT.HDATA')"
+  te "a whole file still has both"                   "1" "$(hct 'DICT.HBOTH')"
+  t  "and the plain tree is still a tree"               "not an MV file" \
+     "$(cat "$WORK/halfclone/plaintree/README" 2>/dev/null)"
+fi
+
+# --- a checkout chooses its own backend (mv_git#273) -------------------------
+# Pluggable per-file backends are an MVX concept: UniData, UniVerse and jBASE
+# have no equivalent, so this is mvx-only and a no-op elsewhere.
+#
+# The committed %FILE% control names the backend a file WAS on.  That is a
+# default worth offering, not an instruction -- a clone of an lmdb account may
+# want to be a sqlite one -- so --backend and mvx.backend override it.
+if [ "$PLATFORM" = mvx ]; then
+
+  # CAN THIS mvx BIND A FILE TO A BACKEND AT ALL?
+  #
+  # Asked through CREATE-FILE ... USING, which is mvx's own binding surface and
+  # sits upstream of everything a checkout does: if mvx cannot put a file on a
+  # named backend and then list it under its own name, a checkout cannot either,
+  # and that is mvx's bug and not this suite's to catch.  mvx-lang/mvx#309 fixed
+  # the lmdb driver dropping a bound spec's "params\n" prefix, which created the
+  # file under a mangled name -- two rows in LISTF, the dictionary exposed beside
+  # them.  The probe was checked against a build with that fix removed and
+  # reports NOT CAPABLE there, so it detects the real thing rather than passing
+  # on an empty answer (mv_git#134's rule, applied to a skip).
+  #
+  # setup-mvx installs a published RELEASE, so CI runs whatever mvx last shipped
+  # and this block starts asserting on its own the release after #309.
+  BKCAP="$WORK/bkcap"; ACCT "$BKCAP"
+  "$MVX" -a "$BKCAP" -c 'CREATE-FILE ZZPROBE USING lmdb' >/dev/null 2>&1
+  BKABLE="$("$MVX" -a "$BKCAP" -c LISTF 2>&1 | awk '
+      $1=="ZZPROBE" && $2=="lmdb" {n++} /DICT\.ZZPROBE/{d++}
+      END {print (n==1 && !d) ? "yes" : "no"}')"
+
+  if [ "$BKABLE" != yes ]; then
+    skip "a checkout chooses its own backend (mv_git#273)" \
+         "this mvx cannot bind a file to lmdb and list it cleanly — no lmdb driver, or older than mvx#309"
+  else
+  say "-- a checkout puts files on the backend it is told to (mv_git#273) --"
+  BKA="$WORK/bkacct"; ACCT "$BKA"; LINK "$BKA"
+  CF "$BKA" BKPARTS
+  SEED "$BKA" 'OPEN "BKPARTS" TO F ELSE STOP
+WRITE "Widget":@AM:"9.99" ON F, "W1"'
+  ( cd "$BKA" && git init -q . >/dev/null 2>&1
+    "$MVXGIT" init >/dev/null 2>&1
+    "$MVXGIT" add -A >/dev/null 2>&1
+    "$MVXGIT" commit -m base >/dev/null 2>&1 )
+
+  # WAS the file listed on, in the account it was committed FROM?  Read rather
+  # than assumed: the default backend is mvx's choice, not this suite's, and
+  # hard-coding today's answer would make this fail the day mvx changes it.
+  SRCBK="$("$MVX" -a "$BKA" -c LISTF 2>&1 | awk '$1=="BKPARTS"{print $2; exit}')"
+
+  # IS the file listed on backend $2, in account $1?  Answered yes/no rather
+  # than by printing the backend, because a row can be listed twice on an mvx
+  # without mvx#309 and then "print $2" yields two lines, which compares equal
+  # to neither backend and reads as a failure about the wrong thing.
+  bk_on() { "$MVX" -a "$1" -c LISTF 2>&1 |
+            awk -v d="$2" '$1=="BKPARTS" && $2==d {f=1} END {print f?"yes":"no"}'; }
+
+  # no switch: follow what was committed
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-plain >/dev/null 2>&1 )
+  te "no switch follows the committed backend" "yes" "$(bk_on "$WORK/bk-plain" "$SRCBK")"
+
+  # --backend: override it.  Asserted BOTH ways round -- on lmdb, and no longer
+  # on what it was committed on -- because "is it on lmdb" alone would also pass
+  # if the file were somehow listed on both.
+  ( cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend=lmdb "$BKA" bk-lmdb >/dev/null 2>&1 )
+  te "--backend puts it somewhere else"        "yes" "$(bk_on "$WORK/bk-lmdb" lmdb)"
+  te "and it did not stay where it was"        "no"  "$(bk_on "$WORK/bk-lmdb" "$SRCBK")"
+
+  # and the records are actually there, on the backend that was asked for
+  RDB="$WORK/bkread.b"
+  printf 'OPEN "BKPARTS" TO F ELSE STOP\nREAD R FROM F,"W1" THEN\n   PRINT "got:":R<1>\nEND ELSE\n   PRINT "MISSING"\nEND\n' > "$RDB"
+  ( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$MVXC" "$RDB" -o "$WORK/bkread" >/dev/null 2>&1 )
+  t  "the records moved with it"               "got:Widget" \
+     "$( cd "$WORK/bk-lmdb" && MVXACCOUNT=. "$WORK/bkread" 2>&1 )"
+
+  # mvx.backend in the git config -- the rung the VERB shares.  --backend is
+  # command-line surface, but the config is read in the engine, so an in-session
+  # checkout honours it too: this is the assertion that keeps the two agreeing.
+  #
+  # HOME is redirected, and only inside these subshells, because `git config
+  # --global` means "wherever HOME points" and the developer's own ~/.gitconfig
+  # is not ours to write.  HOME rather than GIT_CONFIG_GLOBAL on purpose:
+  # mvx-git reads the config through libgit2, which finds the global file by
+  # searching HOME and never looks at that variable.
+  #
+  # Note there is no repository-level case here, and there cannot be for a
+  # clone: the files are materialised as part of the clone, before anything
+  # could set a config value in the repository being created.  Per-repository
+  # mvx.backend governs a later checkout in an account that already exists.
+  BKHOME="$WORK/bkhome"; mkdir -p "$BKHOME"
+  ( export HOME="$BKHOME"
+    git config --global user.email t@t; git config --global user.name t
+    git config --global mvx.backend lmdb
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone "$BKA" bk-cfg >/dev/null 2>&1 )
+  te "the git config chooses it too"           "yes" "$(bk_on "$WORK/bk-cfg" lmdb)"
+
+  # and the switch beats the config, or the order is not an order.  The switch
+  # names what the account was committed on, so a switch that did NOT win would
+  # land the file on lmdb and be visible -- the case discriminates.
+  ( export HOME="$BKHOME"
+    cd "$WORK" && MVXGIT_OPEN_ACCOUNT=0 "$MVXGIT" clone --backend="$SRCBK" "$BKA" bk-both >/dev/null 2>&1 )
+  te "the switch outranks the config"          "yes" "$(bk_on "$WORK/bk-both" "$SRCBK")"
+  te "so the config did not win"               "no"  "$(bk_on "$WORK/bk-both" lmdb)"
+  fi
+fi
+
+say "-- a committed blob that ends in a newline is the same record (mv_git#258) --"
+# A record's attributes are SEPARATED by the mark, never terminated by one, so
+# the blob form ends on content.  A great many committed blobs end with a
+# newline anyway: plain git commits them from a working tree, and editors and
+# build steps terminate text files -- build-uv.sh appends one deliberately,
+# because UniVerse needs it to compile a source file, which is a file concern
+# and not a record one.
+#
+# Compared byte for byte, every such record reads modified for ever and the
+# account never comes up clean.  That is what mv_package was sitting in: twelve
+# phantom modifications with a real edit somewhere among them.
+NLA="$WORK/nlterm"; ACCT "$NLA"; LINK "$NLA"
+CF "$NLA" NLF
+SEED "$NLA" 'OPEN "NLF" TO F ELSE STOP
+WRITE "ONE":@AM:"TWO" ON F, "R1"'
+( cd "$NLA" && git init -q . >/dev/null 2>&1
+  "$MVXGIT" init >/dev/null 2>&1
+  "$MVXGIT" add NLF >/dev/null 2>&1
+  "$MVXGIT" commit -m base >/dev/null 2>&1
+  # Now put a TERMINATED blob in its place, exactly as a plain-git commit from
+  # a checked-out working tree does.  The file stays on disk, because that is
+  # the state the account is actually found in.
+  mkdir -p NLF
+  printf 'ONE\nTWO\n' > NLF/R1
+  git add NLF/R1 >/dev/null 2>&1
+  git -c user.email=t@t -c user.name=t commit -qm terminated >/dev/null 2>&1 )
+# ASSERTED ON STATUS ONLY, and deliberately.  `diff` compares the working-tree
+# file, which here matches the blob byte for byte, so it reports nothing either
+# way -- an assertion on it would pass without the fix and measure nothing.
+# Status is what compares the RECORD to the blob, and it is what reported " M"
+# for every record in mv_package.
+tn "a terminated blob does not read as modified" "NLF/R1" \
+   "$( cd "$NLA" && "$MVXGIT" status --short 2>&1 )"
+
 say "-- a file's own pointer is derived, not content (mv_git#131) --"
 # CREATE.FILE writes the VOC/MD pointer and DELETE.FILE removes it, and
 # <file>.DICT/%FILE% carries the geometry to write it again -- so committing the
