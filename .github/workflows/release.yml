@@ -16,7 +16,32 @@
 # in the udt-builder container.  Both are os/arch/endian-locked.
 # Copyright (C) 2026 Gordon Heydon.  GPL-2.0-only.
 #
-# Tag the bare version to release, e.g.:  git tag 5.0 && git push origin 5.0
+# TAG THE COMMIT BEING RELEASED, NOT THE MERGE THAT BRINGS IT TO MAIN
+# (mv_git#278).  Merge develop into main as usual, then tag the merge's SECOND
+# PARENT -- develop's HEAD:
+#
+#     git checkout main && git merge develop          # as before
+#     git tag -a 2.2.0 "$(git rev-parse main^2)"      # NOT main
+#     git push origin 2.2.0
+#
+# Main only ever receives develop merges, so the two have the SAME TREE and a
+# checkout of either is byte-for-byte identical -- but only the second parent
+# is an ancestor of develop as well as main.  Tagging the merge left every
+# build from develop naming 2.1.0-beta1, two releases stale: `git describe`
+# walks back to the nearest REACHABLE tag, and a merge commit on main is not
+# one.  version.sh falls through to describe for anything that is not a tag
+# build, so that string reached dev builds, developers' own builds, and
+# GIT --VERSION from both.
+#
+# It also lets ci-gate below use the run that already exists.  Develop's HEAD
+# has been through ci across all four ports on the way in; the merge commit
+# has to earn its own green run first, for an identical tree -- 2.2.0-beta1
+# waited about four minutes for exactly that.
+#
+# If main ever carries something develop does not -- a hotfix committed there
+# directly -- the trees differ and the merge itself is what to tag.  The
+# tag-placement job says when that has happened rather than leaving it to be
+# found at the next release.
 #
 # NOTHING here publishes unless `ci.yml` concluded success for the tagged
 # commit, with a green job for every port.  See the ci-gate job (mv_git#159).
@@ -107,18 +132,74 @@ jobs:
             # `index` on the first would silently ignore the rest.
             jobs="$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
                       --jq '[.jobs[] | select(.conclusion == "success") | .name]')"
-            for port in mvx udt uv jbase; do
+            # mvx-arm64 is in this list because the arm64 BINARY is published
+            # below (mv_git#257).  Gating only on `mvx` would let an arm64
+            # asset ship from a commit no arm64 ci run had exercised, which is
+            # the whole failure this loop exists to prevent -- one architecture
+            # passing is not the other passing.
+            for port in mvx mvx-arm64 udt uv jbase; do
               printf '%s' "$jobs" | jq -e --arg p "$port" 'index($p)' >/dev/null || {
                 echo "::error::ci run $url has no successful '$port' job."
                 exit 1
               }
             done
 
-            echo "ci is green for $SHA on every port (mvx, udt, uv, jbase): $url"
+            echo "ci is green for $SHA on every port (mvx, mvx-arm64, udt, uv, jbase): $url"
             break
           done
 
   # ---- source package --------------------------------------------------------
+  # ---- is the tag where a build from develop can see it? (mv_git#278) ----
+  # The symptom this prevents is silent and survived a whole 2.1.0 cycle: tag
+  # main's merge commit instead of develop's HEAD and every build from develop
+  # names the last tag on ITS line.  It reported 2.1.0-beta1 while 2.1.0 and
+  # 2.2.0-beta1 were both out.
+  #
+  # ASKED THE WAY version.sh ASKS IT.  That script falls through to
+  # `describe --tags --abbrev=0` for anything that is not a tag build, so the
+  # base version it would produce for a develop build is exactly what this
+  # computes -- the check and the behaviour cannot drift apart.
+  #
+  # REPORTS, DOES NOT BLOCK.  A tag main alone can reach is legitimate -- a
+  # hotfix committed straight to main is one -- and refusing to publish it
+  # would be a worse failure than a stale version string.  Release builds are
+  # not affected either way: the workflow passes the tag through
+  # $GITHUB_REF_NAME and version.sh takes it verbatim.
+  #
+  # Skipped for `dev`, where the tag is develop's HEAD by construction and the
+  # comparison would be against a version tag rather than the ref name.
+  tag-placement:
+    name: develop can see this tag
+    runs-on: ubuntu-latest
+    if: github.ref_name != 'dev'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0        # describe needs the history and the tags
+      - name: What develop will call itself
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          git fetch --quiet origin develop 2>/dev/null || {
+            echo "no develop branch here; nothing to check" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          base="$(git describe --tags --abbrev=0 origin/develop 2>/dev/null || echo 0)"
+          echo "a build from develop would say \`$base+g<sha>\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$base" = "$TAG" ]; then
+            echo "develop can see $TAG." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=develop cannot see $TAG::a build from develop would name '$base', not $TAG. For a develop release the tag belongs on the merge's second parent (git rev-parse main^2) -- see the header of this workflow. For a main-only hotfix this is expected."
+            {
+              echo
+              echo "**develop cannot see \`$TAG\`.** A build from develop would"
+              echo "name \`$base\`. For a develop release the tag belongs on the"
+              echo "merge's second parent (\`git rev-parse main^2\`); for a"
+              echo "main-only hotfix this is expected."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   source:
     needs: ci-gate
     runs-on: ubuntu-latest
@@ -146,9 +227,27 @@ jobs:
   # beside every tag comes from, and on mv_package#66 it went further — the job
   # it killed was `source`, which other jobs need, so the release shipped with
   # half its artifacts.  `source` alone creates it; the rest upload into it.
+  # TWO ARCHITECTURES (mv_git#257).  mvx publishes linux-amd64 and linux-arm64
+  # toolchains and fetches git as a bundled package at install time; this job
+  # published x86_64 only, so every arm64 install came up without git and the
+  # installer warned and carried on.
+  #
+  # Nothing here is arch-specific already: ARCH comes from `uname -m` and the
+  # endianness is probed, so the asset name follows the runner.  apt ships
+  # libgit2 1.7.2 for both, and the soname pins the MINOR -- so the arm64
+  # build carries exactly the runtime dependency the x86_64 one does rather
+  # than a new one.
+  #
+  # `needs: [ci-gate, source]` stays: both legs upload into the release that
+  # `source` created, and ci-gate now requires a green `mvx-arm64` job as well,
+  # so neither asset can ship from a commit its own architecture never built.
   mvx-binary:
     needs: [ci-gate, source]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false      # one arch failing must not withdraw the other
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - name: Check out mv_git
         uses: actions/checkout@v5
