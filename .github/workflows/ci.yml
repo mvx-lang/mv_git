@@ -37,10 +37,35 @@ concurrency:
 
 jobs:
   # ---- MVX: the native runtime, on a stock GitHub runner ---------------------
+  # BOTH ARCHITECTURES, AND THE JOB NAMES ARE LOAD-BEARING (mv_git#257).
+  # mvx publishes linux-amd64 and linux-arm64 toolchains and fetches git as a
+  # bundled package at install time, but mv_git published its mvx build for
+  # x86_64 only -- so every arm64 install came up without git, the installer
+  # warning and carrying on.
+  #
+  # CI FIRST, RELEASE SECOND.  release.yml's ci-gate requires a green job for
+  # every port by EXACT NAME, so an arm64 release leg added on its own would
+  # publish a binary no ci run had exercised while the gate passed.  The names
+  # below are what that gate matches -- `name:` is set explicitly because a
+  # matrix otherwise appends its values and would turn `mvx` into
+  # `mvx (x86_64)`, which the gate's exact match would never find again.
+  #
+  # Nothing is cross-compiled: ubuntu-24.04-arm builds natively, apt ships
+  # libgit2 1.7.2 for both (same soname, so the arm64 build carries exactly
+  # the runtime dependency the x86_64 one does), and setup-mvx maps
+  # `uname -m` = aarch64 to the linux-arm64 toolchain.
   mvx:
-    name: mvx
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.job }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false      # one arch failing must not hide the other's result
+      matrix:
+        include:
+          - job: mvx
+            runner: ubuntu-24.04
+          - job: mvx-arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out mv_git
         uses: actions/checkout@v5

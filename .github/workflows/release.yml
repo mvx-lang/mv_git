@@ -132,14 +132,19 @@ jobs:
             # `index` on the first would silently ignore the rest.
             jobs="$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
                       --jq '[.jobs[] | select(.conclusion == "success") | .name]')"
-            for port in mvx udt uv jbase; do
+            # mvx-arm64 is in this list because the arm64 BINARY is published
+            # below (mv_git#257).  Gating only on `mvx` would let an arm64
+            # asset ship from a commit no arm64 ci run had exercised, which is
+            # the whole failure this loop exists to prevent -- one architecture
+            # passing is not the other passing.
+            for port in mvx mvx-arm64 udt uv jbase; do
               printf '%s' "$jobs" | jq -e --arg p "$port" 'index($p)' >/dev/null || {
                 echo "::error::ci run $url has no successful '$port' job."
                 exit 1
               }
             done
 
-            echo "ci is green for $SHA on every port (mvx, udt, uv, jbase): $url"
+            echo "ci is green for $SHA on every port (mvx, mvx-arm64, udt, uv, jbase): $url"
             break
           done
 
@@ -222,9 +227,27 @@ jobs:
   # beside every tag comes from, and on mv_package#66 it went further — the job
   # it killed was `source`, which other jobs need, so the release shipped with
   # half its artifacts.  `source` alone creates it; the rest upload into it.
+  # TWO ARCHITECTURES (mv_git#257).  mvx publishes linux-amd64 and linux-arm64
+  # toolchains and fetches git as a bundled package at install time; this job
+  # published x86_64 only, so every arm64 install came up without git and the
+  # installer warned and carried on.
+  #
+  # Nothing here is arch-specific already: ARCH comes from `uname -m` and the
+  # endianness is probed, so the asset name follows the runner.  apt ships
+  # libgit2 1.7.2 for both, and the soname pins the MINOR -- so the arm64
+  # build carries exactly the runtime dependency the x86_64 one does rather
+  # than a new one.
+  #
+  # `needs: [ci-gate, source]` stays: both legs upload into the release that
+  # `source` created, and ci-gate now requires a green `mvx-arm64` job as well,
+  # so neither asset can ship from a commit its own architecture never built.
   mvx-binary:
     needs: [ci-gate, source]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false      # one arch failing must not withdraw the other
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - name: Check out mv_git
         uses: actions/checkout@v5
