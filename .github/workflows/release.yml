@@ -207,6 +207,10 @@ jobs:
       - uses: actions/checkout@v5
       # The source package carries the tag's version too, so a tarball and a
       # binary release of the same tag never disagree about what they are.
+      # IN-TREE, BOTH MANIFESTS SAY 0.0.0-dev (#282).  Deliberately -- a number
+      # committed there can only be stale or coincidentally right, and this
+      # step is why it does not have to be either.  Do not bump it before a
+      # release; tag, and the tag lands in the artifact.
       - name: Stamp the manifests with the tag
         run: . ./version.sh && mv_git_stamp_manifests . "${GITHUB_REF_NAME}"
       - uses: mvx-lang/mvx/.github/actions/publish-source@main

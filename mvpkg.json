@@ -1,6 +1,6 @@
 {
   "name": "mvx-lang/git",
-  "version": "2.0.3",
+  "version": "0.0.0-dev",
   "description": "git for hash-file records (branch/merge)",
   "license": "GPL-2.0-only",
   "artifact": "mv_git",
