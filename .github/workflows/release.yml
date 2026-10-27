@@ -50,12 +50,18 @@ name: release
 on:
   push:
     tags:
+      # ONE rolling dev tag per release line, moved to develop's HEAD by the
+      # nightly when there is something new and CI is green.  It builds through
+      # THIS workflow rather than a second copy of it, so a dev build is the
+      # same artifacts by the same steps as a release -- the only way a dev
+      # build is worth having.
+      #
+      # `<maj>.<min>.x-dev' MATCHES THE PATTERN ABOVE, so the dev tag needs no
+      # entry of its own any more.  It used to: the tag was a bare `dev', which
+      # both version readers took for a stable 0.0.0 (mvx#364).  The entry is
+      # gone rather than kept harmlessly, because a trigger for a shape we have
+      # just retired is how the shape comes back.
       - "[0-9]+.[0-9]+*"
-      # ONE rolling dev tag, moved to develop's HEAD by the nightly when there
-      # is something new and CI is green.  It builds through THIS workflow
-      # rather than a second copy of it, so a dev build is the same artifacts by
-      # the same steps as a release -- the only way a dev build is worth having.
-      - "dev"
 
   # A TAG PUSHED BY A WORKFLOW DOES NOT TRIGGER ONE.  GitHub will not let the
   # default GITHUB_TOKEN start another run -- it is how recursion is prevented --
