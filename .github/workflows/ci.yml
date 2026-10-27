@@ -113,6 +113,56 @@ jobs:
           test -x bin/mvx-git
           test -e CATALOG/GIT
 
+      # THE DECLARED LIBRARY MUST BE THE ONE THE BUILD NEEDS (mv_git#286).
+      # `clibs' in mvpkg.json is what MVPKG's preflight checks before it will
+      # install this package, and nothing ever checked it against the binaries
+      # it describes -- which is how it came to declare a version RANGE,
+      # `libgit2.so:>=1.7,<2.8', for a library whose soname pins the MINOR.  A
+      # machine with libgit2 1.9 satisfies that range and still cannot load a
+      # binary linked against 1.7, so the manifest was approving installs the
+      # loader refuses (mvx-lang/mvx#367).
+      #
+      # So read the sonames out of what was just built and require the manifest
+      # to name them exactly.  The empty-result guard is the point of the
+      # exercise: with nothing in LIB/ or bin/ linking libgit2 the extraction
+      # yields nothing, the loop below compares nothing, and the step passes
+      # while measuring nothing at all.
+      #
+      # It speaks for the arm it runs on.  udt, uv and jbase build in their own
+      # containers; all four ports need the same soname today, and a port that
+      # diverges wants its own alternative (`a|b', which MVPKG accepts) rather
+      # than a range.
+      - name: Assert mvpkg.json names the libgit2 the build needs
+        working-directory: mv_git
+        run: |
+          set -euo pipefail
+          command -v objdump >/dev/null 2>&1 || {
+            echo "::error::objdump is not installed -- cannot read what the build links"
+            exit 1
+          }
+          need="$(for f in LIB/*.so bin/*; do
+                    [ -f "$f" ] || continue
+                    objdump -p "$f" 2>/dev/null || true
+                  done | sed -n 's/^ *NEEDED *\(libgit2\.so[0-9.]*\).*/\1/p' | sort -u)"
+          if [ -z "$need" ]; then
+            echo "::error::nothing in LIB/ or bin/ links libgit2 -- this check compared nothing"
+            exit 1
+          fi
+          decl="$(jq -r '.clibs[]?' mvpkg.json | tr '|' '\n' | sort -u)"
+          printf 'the build needs:     %s\n' "$(printf '%s' "$need" | tr '\n' ' ')"
+          printf 'mvpkg.json declares: %s\n' "$(printf '%s' "$decl" | tr '\n' ' ')"
+          rc=0
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            printf '%s\n' "$decl" | grep -qxF "$n" || {
+              echo "::error::mvpkg.json clibs does not name $n -- MVPKG would approve an install the loader refuses"
+              rc=1
+            }
+          done <<EOF
+          $need
+          EOF
+          exit $rc
+
       - name: Run the suite
         working-directory: mv_git
         run: |

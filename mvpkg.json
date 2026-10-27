@@ -14,7 +14,7 @@
     "mvx-lang/cmd"
   ],
   "clibs": [
-    "libgit2.so:>=1.7,<2.8"
+    "libgit2.so.1.7"
   ],
   "shell": [
     "sudo",
